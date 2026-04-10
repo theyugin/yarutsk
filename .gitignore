@@ -1,0 +1,23 @@
+# Rust
+/target/
+Cargo.lock
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+dist/
+.pytest_cache/
+.benchmark/
+
+# maturin / build output
+*.whl
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

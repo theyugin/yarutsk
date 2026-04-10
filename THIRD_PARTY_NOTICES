@@ -1,0 +1,49 @@
+Third-Party Notices
+===================
+
+This project incorporates source code from the following third-party libraries.
+
+
+yaml-rust2
+----------
+Source:   https://github.com/Ethiraric/yaml-rust2
+Files:    src/scanner.rs, src/parser.rs, src/char_traits.rs, src/debug.rs
+License:  MIT OR Apache-2.0 (at your option)
+
+Copyright (c) 2015 Chen Yuheng
+Copyright (c) 2023 Ethiraric
+
+MIT License
+-----------
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Modifications
+-------------
+The vendored files have been modified as follows:
+
+  scanner.rs  — Added `Comment(String)` variant to `TokenType`. Modified
+                `skip_to_next_token` and `skip_ws_to_eol` to emit Comment
+                tokens instead of discarding comment text.
+
+  parser.rs   — Added `pending_comments` field and `drain_comments()` method
+                to `Parser`. Modified `scan_next_token` to collect Comment
+                tokens into `pending_comments` rather than returning them.
+
+  char_traits.rs, debug.rs — Vendored verbatim; no modifications.
