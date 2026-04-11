@@ -46,6 +46,31 @@ jobs:
       - name: yaml-test-suite compliance
         run: uv run pytest tests/test_yaml_suite.py -q --tb=short
 
+  # ── Type checking ──────────────────────────────────────────────────────────
+  typecheck:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.9"
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Build extension
+        run: uv run maturin develop
+
+      - name: mypy
+        run: uv run mypy
+
   # ── Rust lint ──────────────────────────────────────────────────────────────
   lint:
     name: Rust lint
@@ -73,6 +98,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
 
       - name: Install Rust (nightly)
         uses: dtolnay/rust-toolchain@nightly

@@ -38,16 +38,24 @@ maturin develop
 ## API
 
 ```python
-# Load
+# Load from stream (StringIO / BytesIO)
 doc  = yarutsk.load(stream)            # first document
-docs = yarutsk.load_all(stream)        # all documents
+docs = yarutsk.load_all(stream)        # all documents as a list
 
-# Dump
+# Load from string
+doc  = yarutsk.loads(text)
+docs = yarutsk.loads_all(text)
+
+# Dump to stream
 yarutsk.dump(doc, stream)
 yarutsk.dump_all(docs, stream)
 
+# Dump to string
+text  = yarutsk.dumps(doc)
+text  = yarutsk.dumps_all(docs)
+
 # Mapping access
-doc["key"]                             # get (returns native Python type or PyYamlDocument)
+doc["key"]                             # get (returns native Python type or YamlNode)
 doc["key"] = value                     # set
 "key" in doc                           # contains
 doc.keys()                             # insertion-ordered list

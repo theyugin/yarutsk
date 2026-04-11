@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "yarutsk"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A YAML round-trip library that preserves comments and insertion order"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,6 +25,12 @@ Homepage = "https://github.com/theyugin/yarutsk"
 Repository = "https://github.com/theyugin/yarutsk"
 
 [tool.maturin]
+include = ["yarutsk.pyi"]
+
+[tool.mypy]
+files = ["tests/typing_check.py"]
+python_version = "3.9"
+strict = true
 
 [tool.pytest.ini_options]
 addopts = "--timeout=5"
@@ -33,6 +39,7 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "maturin>=1.13.1",
+    "mypy>=1.19.1",
     "pytest-benchmark>=4.0.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.4.0",

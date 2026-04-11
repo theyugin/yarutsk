@@ -158,7 +158,7 @@ outer:
         doc = yarutsk.load(content)
         doc["b"] = 4
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         result = output.getvalue()
         assert result.index("z:") < result.index("a:")
         assert result.index("a:") < result.index("m:")
@@ -189,7 +189,7 @@ class TestCommentPreservation:
         content = io.StringIO("name: John  # inline comment")
         doc = yarutsk.load(content)
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         assert "# inline comment" in output.getvalue()
 
     def test_set_comment_inline(self):
@@ -197,7 +197,7 @@ class TestCommentPreservation:
         doc = yarutsk.load(content)
         doc.set_comment_inline("name", "new comment")
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         assert "# new comment" in output.getvalue()
 
     def test_set_comment_before(self):
@@ -205,7 +205,7 @@ class TestCommentPreservation:
         doc = yarutsk.load(content)
         doc.set_comment_before("name", "Header comment")
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         assert "# Header comment" in output.getvalue()
 
 
@@ -305,7 +305,7 @@ class TestCommentEdgeCases:
         yaml = "items:\n  # first item\n  - foo\n  - bar"
         doc = yarutsk.load(io.StringIO(yaml))
         out = io.StringIO()
-        doc.dump(out)
+        yarutsk.dump(doc, out)
         doc2 = yarutsk.load(io.StringIO(out.getvalue()))
         result = out.getvalue()
         assert "# first item" in result
@@ -323,14 +323,14 @@ class TestCommentEdgeCases:
         doc = yarutsk.load(io.StringIO("key: val"))
         doc.set_comment_inline("key", "text with spaces  ")
         out = io.StringIO()
-        doc.dump(out)
+        yarutsk.dump(doc, out)
         assert "# text with spaces  " in out.getvalue()
 
     def test_multiline_before_comment_round_trips(self):
         """Multi-line before-comment round-trips through dump/load."""
         doc = yarutsk.load(io.StringIO("# line one\n# line two\nkey: val"))
         out = io.StringIO()
-        doc.dump(out)
+        yarutsk.dump(doc, out)
         doc2 = yarutsk.load(io.StringIO(out.getvalue()))
         before = doc2.get_comment_before("key")
         assert "line one" in before
@@ -341,7 +341,7 @@ class TestCommentEdgeCases:
         doc = yarutsk.load(io.StringIO("key: val"))
         doc.set_comment_before("key", "first line\nsecond line")
         out = io.StringIO()
-        doc.dump(out)
+        yarutsk.dump(doc, out)
         result = out.getvalue()
         assert "# first line" in result
         assert "# second line" in result
@@ -382,6 +382,81 @@ class TestContains:
         assert "missing" not in doc
 
 
+class TestStringAPI:
+    """Test loads/dumps string-based API."""
+
+    def test_loads_basic(self):
+        doc = yarutsk.loads("name: John\nage: 30")
+        assert doc["name"] == "John"
+        assert doc["age"] == 30
+
+    def test_loads_empty(self):
+        assert yarutsk.loads("") is None
+
+    def test_loads_returns_first_doc(self):
+        doc = yarutsk.loads("---\na: 1\n---\nb: 2")
+        assert doc["a"] == 1
+
+    def test_loads_all_basic(self):
+        docs = yarutsk.loads_all("---\na: 1\n---\nb: 2")
+        assert len(docs) == 2
+        assert docs[0]["a"] == 1
+        assert docs[1]["b"] == 2
+
+    def test_loads_all_empty(self):
+        assert yarutsk.loads_all("") == []
+
+    def test_dumps_basic(self):
+        doc = yarutsk.loads("name: John\nage: 30")
+        result = yarutsk.dumps(doc)
+        assert isinstance(result, str)
+        assert "name: John" in result
+        assert "age: 30" in result
+
+    def test_dumps_preserves_comments(self):
+        doc = yarutsk.loads("key: val  # note")
+        result = yarutsk.dumps(doc)
+        assert "# note" in result
+
+    def test_dumps_all_basic(self):
+        docs = yarutsk.loads_all("---\na: 1\n---\nb: 2")
+        result = yarutsk.dumps_all(docs)
+        assert isinstance(result, str)
+        assert "---" in result
+        assert "a: 1" in result
+        assert "b: 2" in result
+
+    def test_dumps_all_single_no_separator(self):
+        docs = yarutsk.loads_all("x: 42")
+        result = yarutsk.dumps_all(docs)
+        assert "---" not in result
+
+    def test_loads_dumps_round_trip(self):
+        original = "name: Alice\nage: 30  # years\ncity: Berlin"
+        doc = yarutsk.loads(original)
+        result = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(result)
+        assert doc2["name"] == "Alice"
+        assert doc2["age"] == 30
+        assert doc2.get_comment_inline("age") == "years"
+
+    def test_loads_all_dumps_all_round_trip(self):
+        original = "---\na: 1\n---\nb: 2\n---\nc: 3"
+        docs = yarutsk.loads_all(original)
+        result = yarutsk.dumps_all(docs)
+        docs2 = yarutsk.loads_all(result)
+        assert len(docs2) == 3
+        assert docs2[0]["a"] == 1
+        assert docs2[1]["b"] == 2
+        assert docs2[2]["c"] == 3
+
+    def test_loads_is_equivalent_to_load(self):
+        yaml = "x: 1\ny: 2"
+        doc_stream = yarutsk.load(io.StringIO(yaml))
+        doc_str = yarutsk.loads(yaml)
+        assert repr(doc_stream) == repr(doc_str)
+
+
 class TestSerialization:
     """Test serialization functionality."""
 
@@ -389,7 +464,7 @@ class TestSerialization:
         content = io.StringIO("name: John\nage: 30")
         doc = yarutsk.load(content)
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         result = output.getvalue()
         assert "name: John" in result
         assert "age: 30" in result
@@ -398,7 +473,7 @@ class TestSerialization:
         content = io.StringIO("name: John\nage: 30")
         doc = yarutsk.load(content)
         output = io.BytesIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
         result = output.getvalue().decode("utf-8")
         assert "name: John" in result
         assert "age: 30" in result
@@ -413,7 +488,7 @@ items:
 """)
         doc = yarutsk.load(content)
         output = io.StringIO()
-        doc.dump(output)
+        yarutsk.dump(doc, output)
 
         # Reload and verify
         doc2 = yarutsk.load(io.StringIO(output.getvalue()))
