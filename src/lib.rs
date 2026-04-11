@@ -11,7 +11,7 @@ use builder::parse_str;
 use emitter::{emit_docs, emit_node};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList};
 use types::*;
 
 // ─── Scalar conversion ────────────────────────────────────────────────────────
@@ -84,9 +84,9 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         }));
     }
     // Plain dict/list fallback (for users passing native Python dicts/lists).
-    // Note: PyYamlMapping extends PyDict so it would match downcast::<PyDict>() too,
+    // Note: PyYamlMapping extends PyDict so it would match cast::<PyDict>() too,
     // but we already handled it with extract::<PyYamlMapping>() above.
-    if let Ok(d) = obj.downcast::<PyDict>() {
+    if let Ok(d) = obj.cast::<PyDict>() {
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
@@ -102,7 +102,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         }
         return Ok(YamlNode::Mapping(mapping));
     }
-    if let Ok(l) = obj.downcast::<PyList>() {
+    if let Ok(l) = obj.cast::<PyList>() {
         let mut seq = YamlSequence::new();
         for item in l.iter() {
             seq.items.push(YamlItem {
@@ -135,9 +135,8 @@ fn node_to_doc(py: Python<'_>, node: YamlNode) -> PyResult<Py<PyAny>> {
 /// For mappings and sequences, current values come from the parent dict/list (so that
 /// mutations made to nested objects after they were returned from __getitem__ are visible),
 /// while key ordering and comment metadata come from `inner`.
-#[allow(deprecated)] // downcast: no replacement available in PyO3 0.28 for typed Bound access
 fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
-    if let Ok(bound_m) = obj.downcast::<PyYamlMapping>() {
+    if let Ok(bound_m) = obj.cast::<PyYamlMapping>() {
         let borrow = bound_m.borrow();
         let dict_part = bound_m.as_super();
         let mut mapping = YamlMapping::new();
@@ -159,7 +158,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         }
         return Ok(YamlNode::Mapping(mapping));
     }
-    if let Ok(bound_s) = obj.downcast::<PyYamlSequence>() {
+    if let Ok(bound_s) = obj.cast::<PyYamlSequence>() {
         let borrow = bound_s.borrow();
         let list_part = bound_s.as_super();
         let inner_len = borrow.inner.items.len();

@@ -15,7 +15,6 @@ _Scalar = int | float | bool | str | None
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
 
-
 class YamlScalar:
     """A YAML scalar document node (int, float, bool, str, or null)."""
 
@@ -31,7 +30,6 @@ class YamlScalar:
     def __eq__(self, other: object) -> bool: ...
     def __repr__(self) -> str: ...
 
-
 class YamlMapping(dict[str, Any]):
     """A YAML mapping node. Subclass of dict — all standard dict operations work.
 
@@ -42,7 +40,6 @@ class YamlMapping(dict[str, Any]):
     """
 
     def __repr__(self) -> str: ...
-
     def sort_keys(
         self,
         key: Callable[[str], Any] | None = None,
@@ -72,7 +69,6 @@ class YamlMapping(dict[str, Any]):
         """Set or replace the block comment above *key*."""
         ...
 
-
 class YamlSequence(list[Any]):
     """A YAML sequence node. Subclass of list — all standard list operations work.
 
@@ -83,7 +79,6 @@ class YamlSequence(list[Any]):
     """
 
     def __repr__(self) -> str: ...
-
     def sort(
         self,
         key: Callable[[Any], Any] | None = None,
@@ -112,10 +107,11 @@ class YamlSequence(list[Any]):
         """Set or replace the block comment above the item at *idx*."""
         ...
 
-
 # ── Module-level functions ────────────────────────────────────────────────────
 
-def load(stream: IO[str] | IO[bytes]) -> "YamlMapping | YamlSequence | YamlScalar | None":
+def load(
+    stream: IO[str] | IO[bytes],
+) -> "YamlMapping | YamlSequence | YamlScalar | None":
     """Parse the first YAML document from a stream. Returns ``None`` for empty input."""
     ...
 
@@ -123,7 +119,9 @@ def loads(text: str) -> "YamlMapping | YamlSequence | YamlScalar | None":
     """Parse the first YAML document from a string. Returns ``None`` for empty input."""
     ...
 
-def load_all(stream: IO[str] | IO[bytes]) -> "list[YamlMapping | YamlSequence | YamlScalar]":
+def load_all(
+    stream: IO[str] | IO[bytes],
+) -> "list[YamlMapping | YamlSequence | YamlScalar]":
     """Parse all YAML documents from a stream, returning a list."""
     ...
 
@@ -131,7 +129,9 @@ def loads_all(text: str) -> "list[YamlMapping | YamlSequence | YamlScalar]":
     """Parse all YAML documents from a string, returning a list."""
     ...
 
-def dump(doc: "YamlMapping | YamlSequence | YamlScalar", stream: IO[str] | IO[bytes]) -> None:
+def dump(
+    doc: "YamlMapping | YamlSequence | YamlScalar", stream: IO[str] | IO[bytes]
+) -> None:
     """Serialize *doc* to *stream* in block-style YAML."""
     ...
 

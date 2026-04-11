@@ -187,7 +187,7 @@ def test_suite_summary():
     if not test_cases:
         pytest.skip("yaml-test-suite not available")
 
-    print(f"\n\nYAML Test Suite Summary:")
+    print("\n\nYAML Test Suite Summary:")
     print(f"Total test cases: {len(test_cases)}")
 
     passing = 0

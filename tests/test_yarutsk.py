@@ -602,7 +602,9 @@ class TestDumpDumpAll:
 class TestMultiDocument:
     """Test multi-document YAML support."""
 
-    MULTI_DOC = "---\nname: Alice\nage: 30\n---\nname: Bob\nage: 25\n---\nname: Carol\nage: 35"
+    MULTI_DOC = (
+        "---\nname: Alice\nage: 30\n---\nname: Bob\nage: 25\n---\nname: Carol\nage: 35"
+    )
 
     def test_load_all_returns_list(self):
         docs = yarutsk.load_all(io.StringIO(self.MULTI_DOC))

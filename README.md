@@ -170,7 +170,7 @@ Sorting preserves all comments — each entry or item carries its inline and bef
 
 ## Running tests
 
-The repo contains three test suites. You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv).
+The repo contains three test suites. You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv). Python 3.12 is the minimum — `YamlSequence` subclasses `list`, which requires PyO3's `extends = PyList` support introduced in Python 3.12.
 
 ```bash
 # 1. Clone with the yaml-test-suite submodule

@@ -19,9 +19,14 @@ from yarutsk import YamlMapping, YamlScalar, YamlSequence
 
 # ── load / loads ──────────────────────────────────────────────────────────────
 
+
 def check_load_from_stream() -> None:
-    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.StringIO("key: val"))
-    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.BytesIO(b"key: val"))
+    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
+        io.StringIO("key: val")
+    )
+    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
+        io.BytesIO(b"key: val")
+    )
     _ = doc, doc2
 
 
@@ -47,6 +52,7 @@ def check_loads_all() -> None:
 
 # ── dump / dumps ──────────────────────────────────────────────────────────────
 
+
 def check_dump_to_stream(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
     yarutsk.dump(doc, io.StringIO())
 
@@ -56,16 +62,21 @@ def check_dumps_to_string(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
     _ = text
 
 
-def check_dump_all_to_stream(docs: list[YamlMapping | YamlSequence | YamlScalar]) -> None:
+def check_dump_all_to_stream(
+    docs: list[YamlMapping | YamlSequence | YamlScalar],
+) -> None:
     yarutsk.dump_all(docs, io.StringIO())
 
 
-def check_dumps_all_to_string(docs: list[YamlMapping | YamlSequence | YamlScalar]) -> None:
+def check_dumps_all_to_string(
+    docs: list[YamlMapping | YamlSequence | YamlScalar],
+) -> None:
     text: str = yarutsk.dumps_all(docs)
     _ = text
 
 
 # ── None-guard required before using the document ────────────────────────────
+
 
 def check_none_narrowing() -> str:
     doc = yarutsk.loads("key: val")
@@ -84,8 +95,9 @@ def check_scalar(s: YamlScalar) -> None:
 
 # ── YamlMapping interface ─────────────────────────────────────────────────────
 
+
 def check_mapping_access(m: YamlMapping) -> None:
-    val = m["key"]             # YamlMapping | YamlSequence | int | float | bool | str | None
+    val = m["key"]  # YamlMapping | YamlSequence | int | float | bool | str | None
     m["key"] = "new"
     m["key"] = 42
     contained: bool = "key" in m
@@ -132,6 +144,7 @@ def check_mapping_sort(m: YamlMapping) -> None:
 
 # ── YamlSequence interface ────────────────────────────────────────────────────
 
+
 def check_sequence_access(s: YamlSequence) -> None:
     item = s[0]
     s[0] = "replaced"
@@ -175,7 +188,10 @@ def check_sequence_comments(s: YamlSequence) -> None:
 def check_sequence_sort(s: YamlSequence) -> None:
     s.sort()
     s.sort(reverse=True)
-    key_fn: Callable[[Any], int] = lambda v: len(str(v))
+
+    def key_fn(v: Any) -> int:
+        return len(str(v))
+
     s.sort(key=key_fn, reverse=True)
 
 
