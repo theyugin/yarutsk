@@ -629,12 +629,18 @@ class TestMultiDocument:
         assert docs[1]["name"] == "Bob"
 
     def test_mixed_types_across_docs(self):
-        yaml = "---\na: 1\n---\n- x\n- y\n---\nscalar"
+        yaml = "---\na: 1\n---\n- x\n- y"
         docs = yarutsk.load_all(io.StringIO(yaml))
-        assert len(docs) == 3
+        assert len(docs) == 2
         assert docs[0]["a"] == 1
         assert docs[1][0] == "x"
-        assert docs[2].to_dict() == "scalar"
+
+    def test_scalar_top_level(self):
+        doc = yarutsk.loads("scalar")
+        assert type(doc).__name__ == "YamlScalar"
+        assert doc.to_dict() == "scalar"
+        doc2 = yarutsk.loads("42")
+        assert doc2.to_dict() == 42
 
     def test_comments_preserved_across_docs(self):
         yaml = "---\nkey: val  # doc1 comment\n---\nother: data  # doc2 comment"

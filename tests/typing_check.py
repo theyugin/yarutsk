@@ -13,49 +13,53 @@ import io
 from typing import Any, Callable
 
 import yarutsk
-from yarutsk import YamlDocument, YamlMapping, YamlSequence
+from yarutsk import YamlMapping, YamlScalar, YamlSequence
 
 
 # ── load / loads ──────────────────────────────────────────────────────────────
 
 def check_load_from_stream() -> None:
-    doc: YamlDocument | None = yarutsk.load(io.StringIO("key: val"))
-    doc2: YamlDocument | None = yarutsk.load(io.BytesIO(b"key: val"))
+    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.StringIO("key: val"))
+    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.BytesIO(b"key: val"))
     _ = doc, doc2
 
 
 def check_loads_from_string() -> None:
-    doc: YamlDocument | None = yarutsk.loads("key: val")
-    empty: YamlDocument | None = yarutsk.loads("")
+    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("key: val")
+    empty: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("")
     _ = doc, empty
 
 
 def check_load_all() -> None:
-    docs: list[YamlDocument] = yarutsk.load_all(io.StringIO("---\na: 1\n---\nb: 2"))
+    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.load_all(
+        io.StringIO("---\na: 1\n---\nb: 2")
+    )
     _ = docs
 
 
 def check_loads_all() -> None:
-    docs: list[YamlDocument] = yarutsk.loads_all("---\na: 1\n---\nb: 2")
+    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all(
+        "---\na: 1\n---\nb: 2"
+    )
     _ = docs
 
 
 # ── dump / dumps ──────────────────────────────────────────────────────────────
 
-def check_dump_to_stream(doc: YamlDocument) -> None:
+def check_dump_to_stream(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
     yarutsk.dump(doc, io.StringIO())
 
 
-def check_dumps_to_string(doc: YamlDocument) -> None:
+def check_dumps_to_string(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
     text: str = yarutsk.dumps(doc)
     _ = text
 
 
-def check_dump_all_to_stream(docs: list[YamlDocument]) -> None:
+def check_dump_all_to_stream(docs: list[YamlMapping | YamlSequence | YamlScalar]) -> None:
     yarutsk.dump_all(docs, io.StringIO())
 
 
-def check_dumps_all_to_string(docs: list[YamlDocument]) -> None:
+def check_dumps_all_to_string(docs: list[YamlMapping | YamlSequence | YamlScalar]) -> None:
     text: str = yarutsk.dumps_all(docs)
     _ = text
 
@@ -66,34 +70,15 @@ def check_none_narrowing() -> str:
     doc = yarutsk.loads("key: val")
     if doc is None:
         return ""
-    # After the None check mypy knows doc: YamlDocument
+    # After the None check mypy knows doc: YamlMapping | YamlSequence | YamlScalar
     return yarutsk.dumps(doc)
 
 
-# ── YamlDocument mapping interface ───────────────────────────────────────────
-
-def check_document_mapping_access(doc: YamlDocument) -> None:
-    val = doc["key"]           # YamlMapping | YamlSequence | int | float | bool | str | None
-    doc["key"] = "new"
-    doc["key"] = 42
-    doc["key"] = True
-    doc["key"] = None
-    contained: bool = "key" in doc
-    length: int = len(doc)
-    keys: list[str] = doc.keys()
-    _ = val, contained, length, keys
-
-
-def check_document_sequence_access(doc: YamlDocument) -> None:
-    item = doc[0]
-    doc[0] = "replaced"
-    doc[-1] = 99
-    _ = item
-
-
-def check_document_to_dict(doc: YamlDocument) -> None:
-    d: Any = doc.to_dict()
-    _ = d
+def check_scalar(s: YamlScalar) -> None:
+    v: int | float | bool | str | None = s.value
+    d: int | float | bool | str | None = s.to_dict()
+    eq: bool = s == 42
+    _ = v, d, eq
 
 
 # ── YamlMapping interface ─────────────────────────────────────────────────────
@@ -111,6 +96,22 @@ def check_mapping_access(m: YamlMapping) -> None:
 def check_mapping_to_dict(m: YamlMapping) -> None:
     d: Any = m.to_dict()
     _ = d
+
+
+def check_mapping_dict_compat(m: YamlMapping) -> None:
+    del m["key"]
+    vals = m.values()
+    pairs = m.items()
+    got = m.get("key")
+    got2 = m.get("key", "fallback")
+    popped = m.pop("key")
+    popped2 = m.pop("key", 0)
+    m.update({"a": 1})
+    sd = m.setdefault("key", "default")
+    eq: bool = m == {"a": 1}
+    for k in m:
+        _k: str = k
+    _ = vals, pairs, got, got2, popped, popped2, sd, eq
 
 
 def check_mapping_comments(m: YamlMapping) -> None:
@@ -143,6 +144,33 @@ def check_sequence_to_dict(s: YamlSequence) -> None:
     _ = d
 
 
+def check_sequence_list_compat(s: YamlSequence) -> None:
+    del s[0]
+    contained: bool = "x" in s
+    eq: bool = s == [1, 2, 3]
+    s.append("x")
+    s.insert(0, "y")
+    popped = s.pop()
+    popped2 = s.pop(0)
+    s.remove("x")
+    s.extend(["a", "b"])
+    idx: int = s.index("x")
+    idx2: int = s.index("x", 1, 5)
+    n: int = s.count("x")
+    s.reverse()
+    for item in s:
+        _ = item
+    _ = contained, eq, popped, popped2, idx, idx2, n
+
+
+def check_sequence_comments(s: YamlSequence) -> None:
+    inline: str | None = s.get_comment_inline(0)
+    before: str | None = s.get_comment_before(-1)
+    s.set_comment_inline(0, "note")
+    s.set_comment_before(0, "header")
+    _ = inline, before
+
+
 def check_sequence_sort(s: YamlSequence) -> None:
     s.sort()
     s.sort(reverse=True)
@@ -150,35 +178,11 @@ def check_sequence_sort(s: YamlSequence) -> None:
     s.sort(key=key_fn, reverse=True)
 
 
-# ── Comments on YamlDocument ─────────────────────────────────────────────────
-
-def check_document_comments(doc: YamlDocument) -> None:
-    inline: str | None = doc.get_comment_inline("key")
-    before: str | None = doc.get_comment_before("key")
-    doc.set_comment_inline("key", "note")
-    doc.set_comment_before("key", "header")
-    _ = inline, before
-
-
-# ── Sorting on YamlDocument ───────────────────────────────────────────────────
-
-def check_document_sort_keys(doc: YamlDocument) -> None:
-    doc.sort_keys()
-    doc.sort_keys(reverse=True)
-    key_fn: Callable[[str], int] = len
-    doc.sort_keys(key=key_fn, reverse=True, recursive=True)
-
-
-def check_document_sort(doc: YamlDocument) -> None:
-    doc.sort()
-    doc.sort(reverse=True)
-
-
 # ── Type errors that mypy should catch (kept as comments to document intent) ──
 #
-#   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlDocument | None
-#                                           # dumps requires YamlDocument
+#   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlMapping | YamlSequence | None
+#                                           # dumps requires YamlMapping | YamlSequence
 #
-#   keys: list[int] = doc.keys()           # keys() returns list[str]
+#   keys: list[int] = m.keys()             # keys() returns list[str]
 #
-#   text: int = yarutsk.dumps(doc)         # dumps returns str
+#   text: int = yarutsk.dumps(m)           # dumps returns str
