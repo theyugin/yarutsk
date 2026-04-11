@@ -181,13 +181,9 @@ impl Builder {
             Event::Scalar(value, style, _, _) => {
                 let typed = match style {
                     TScalarStyle::Plain => ScalarValue::from_str(&value),
-                    _ => {
-                        if value.is_empty() {
-                            ScalarValue::Null
-                        } else {
-                            ScalarValue::Str(value.clone())
-                        }
-                    }
+                    // Quoted scalars are always strings — even an empty "" or '' is ""
+                    // not null (quoting is explicit intent to represent a string value).
+                    _ => ScalarValue::Str(value.clone()),
                 };
 
                 match self.stack.last_mut() {

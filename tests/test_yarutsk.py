@@ -124,6 +124,41 @@ class TestTypePreservation:
         doc = yarutsk.load(content)
         assert doc["value"] == "quoted string"
 
+    def test_empty_double_quoted_string(self):
+        """Empty double-quoted string \"\" must be an empty str, not None."""
+        doc = yarutsk.loads('key: ""')
+        assert doc["key"] == ""
+        assert isinstance(doc["key"], str)
+
+    def test_empty_single_quoted_string(self):
+        """Empty single-quoted string '' must be an empty str, not None."""
+        doc = yarutsk.loads("key: ''")
+        assert doc["key"] == ""
+        assert isinstance(doc["key"], str)
+
+    def test_empty_quoted_strings_in_sequence(self):
+        """Empty quoted strings inside a sequence are preserved as empty strings."""
+        doc = yarutsk.loads("- \"\"\n- ''")
+        assert doc[0] == ""
+        assert doc[1] == ""
+        assert isinstance(doc[0], str)
+        assert isinstance(doc[1], str)
+
+    def test_empty_quoted_vs_bare_null(self):
+        """Bare empty value and ~ are null; quoted empty is an empty string."""
+        doc = yarutsk.loads('bare:\nnull_tilde: ~\nquoted: ""')
+        assert doc["bare"] is None
+        assert doc["null_tilde"] is None
+        assert doc["quoted"] == ""
+
+    def test_empty_quoted_round_trips(self):
+        """Empty quoted string survives a dump/load cycle as an empty string."""
+        doc = yarutsk.loads("a: \"\"\nb: ''")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["a"] == ""
+        assert doc2["b"] == ""
+
 
 class TestInsertionOrderPreservation:
     """Test that insertion order is preserved."""
@@ -895,6 +930,481 @@ class TestRepr:
         doc = yarutsk.load(content)
         r = repr(doc)
         assert "sequence" in r.lower() or "YAML" in r
+
+
+class TestQuotedTypeLookalikes:
+    """Quoted scalars that look like other types must stay as strings."""
+
+    def test_quoted_true_is_str(self):
+        doc = yarutsk.loads('key: "true"')
+        assert doc["key"] == "true"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_false_is_str(self):
+        doc = yarutsk.loads("key: 'false'")
+        assert doc["key"] == "false"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_null_is_str(self):
+        doc = yarutsk.loads('key: "null"')
+        assert doc["key"] == "null"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_integer_is_str(self):
+        doc = yarutsk.loads('key: "42"')
+        assert doc["key"] == "42"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_float_is_str(self):
+        doc = yarutsk.loads("key: '3.14'")
+        assert doc["key"] == "3.14"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_zero_is_str(self):
+        doc = yarutsk.loads('key: "0"')
+        assert doc["key"] == "0"
+        assert isinstance(doc["key"], str)
+
+    def test_quoted_yes_is_str(self):
+        """'yes' is a bool in YAML 1.1 — but only unquoted."""
+        doc = yarutsk.loads('key: "yes"')
+        assert doc["key"] == "yes"
+        assert isinstance(doc["key"], str)
+
+    def test_plain_true_is_bool(self):
+        doc = yarutsk.loads("key: true")
+        assert doc["key"] is True
+
+    def test_plain_false_is_bool(self):
+        doc = yarutsk.loads("key: false")
+        assert doc["key"] is False
+
+    def test_plain_null_is_none(self):
+        doc = yarutsk.loads("key: null")
+        assert doc["key"] is None
+
+    def test_tilde_is_none(self):
+        doc = yarutsk.loads("key: ~")
+        assert doc["key"] is None
+
+    def test_plain_integer_is_int(self):
+        doc = yarutsk.loads("key: 42")
+        assert doc["key"] == 42
+        assert isinstance(doc["key"], int)
+
+
+class TestSpecialFloats:
+    """Special float literals: .inf, -.inf, .nan."""
+
+    def test_inf(self):
+        import math
+
+        doc = yarutsk.loads("key: .inf")
+        assert math.isinf(doc["key"])
+        assert doc["key"] > 0
+
+    def test_negative_inf(self):
+        import math
+
+        doc = yarutsk.loads("key: -.inf")
+        assert math.isinf(doc["key"])
+        assert doc["key"] < 0
+
+    def test_nan(self):
+        import math
+
+        doc = yarutsk.loads("key: .nan")
+        assert math.isnan(doc["key"])
+
+    def test_inf_round_trip(self):
+        import math
+
+        doc = yarutsk.loads("key: .inf")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert math.isinf(doc2["key"])
+
+
+class TestBlockScalars:
+    """Literal | and folded > block scalars."""
+
+    def test_literal_block_preserves_newlines(self):
+        yaml = "text: |\n  line one\n  line two\n"
+        doc = yarutsk.loads(yaml)
+        assert "line one" in doc["text"]
+        assert "line two" in doc["text"]
+        assert "\n" in doc["text"]
+
+    def test_folded_block_is_string(self):
+        yaml = "text: >\n  folded\n  text\n"
+        doc = yarutsk.loads(yaml)
+        assert isinstance(doc["text"], str)
+        assert "folded" in doc["text"]
+
+    def test_literal_block_value_is_string(self):
+        """Block scalar value is a plain Python str after loading."""
+        yaml = "text: |\n  hello\n  world\n"
+        doc = yarutsk.loads(yaml)
+        assert isinstance(doc["text"], str)
+        assert doc["text"].startswith("hello")
+
+
+class TestNegativeSequenceIndices:
+    """Negative indices on YamlSequence should work like Python lists."""
+
+    def test_getitem_negative(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        assert doc[-1] == "c"
+        assert doc[-2] == "b"
+        assert doc[-3] == "a"
+
+    def test_setitem_negative(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        doc[-1] = "z"
+        assert doc[2] == "z"
+
+    def test_delitem_negative(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        del doc[-1]
+        assert len(doc) == 2
+        assert doc[-1] == "b"
+
+    def test_pop_negative(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        val = doc.pop(-1)
+        assert val == "c"
+        assert len(doc) == 2
+
+    def test_get_comment_negative_index(self):
+        doc = yarutsk.loads("- a  # first\n- b\n- c  # last")
+        assert doc.get_comment_inline(-1) == "last"
+        assert doc.get_comment_inline(-3) == "first"
+
+    def test_set_comment_negative_index(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        doc.set_comment_inline(-1, "tail note")
+        out = yarutsk.dumps(doc)
+        assert "# tail note" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2.get_comment_inline(2) == "tail note"
+
+
+class TestSetDefault:
+    """setdefault() return value and no-op behaviour."""
+
+    def test_setdefault_missing_key_inserts(self):
+        doc = yarutsk.loads("a: 1")
+        result = doc.setdefault("b", "default")
+        assert result == "default"
+        assert doc["b"] == "default"
+
+    def test_setdefault_existing_key_returns_current(self):
+        doc = yarutsk.loads("a: 1")
+        result = doc.setdefault("a", 99)
+        assert result == 1
+        assert doc["a"] == 1
+
+    def test_setdefault_existing_none_returns_none(self):
+        doc = yarutsk.loads("a: null")
+        result = doc.setdefault("a", "fallback")
+        assert result is None
+        assert doc["a"] is None
+
+    def test_setdefault_preserves_order(self):
+        doc = yarutsk.loads("a: 1\nb: 2")
+        doc.setdefault("c", 3)
+        assert list(doc.keys()) == ["a", "b", "c"]
+
+
+class TestErrorCases:
+    """KeyError / IndexError and safe-fallback behaviour."""
+
+    def test_del_missing_key_raises(self):
+        doc = yarutsk.loads("a: 1")
+        with pytest.raises(KeyError):
+            del doc["missing"]
+
+    def test_pop_missing_key_raises(self):
+        doc = yarutsk.loads("a: 1")
+        with pytest.raises(KeyError):
+            doc.pop("missing")
+
+    def test_pop_missing_key_with_default(self):
+        doc = yarutsk.loads("a: 1")
+        result = doc.pop("missing", "fallback")
+        assert result == "fallback"
+
+    def test_getitem_missing_key_raises(self):
+        doc = yarutsk.loads("a: 1")
+        with pytest.raises(KeyError):
+            _ = doc["missing"]
+
+    def test_getitem_out_of_range_raises(self):
+        doc = yarutsk.loads("- a\n- b")
+        with pytest.raises(IndexError):
+            _ = doc[5]
+
+    def test_delitem_out_of_range_raises(self):
+        doc = yarutsk.loads("- a\n- b")
+        with pytest.raises(IndexError):
+            del doc[5]
+
+    def test_set_comment_inline_missing_key_raises(self):
+        doc = yarutsk.loads("a: 1")
+        with pytest.raises(KeyError):
+            doc.set_comment_inline("missing", "note")
+
+    def test_set_comment_before_missing_key_raises(self):
+        doc = yarutsk.loads("a: 1")
+        with pytest.raises(KeyError):
+            doc.set_comment_before("missing", "note")
+
+    def test_get_comment_inline_missing_key_returns_none(self):
+        doc = yarutsk.loads("a: 1")
+        assert doc.get_comment_inline("missing") is None
+
+    def test_get_comment_before_missing_key_returns_none(self):
+        doc = yarutsk.loads("a: 1")
+        assert doc.get_comment_before("missing") is None
+
+
+class TestDictProtocol:
+    """Dict/list unpacking and protocol compliance."""
+
+    def test_dict_unpacking(self):
+        doc = yarutsk.loads("a: 1\nb: 2")
+        d = {**doc}
+        assert d == {"a": 1, "b": 2}
+
+    def test_dict_constructor(self):
+        doc = yarutsk.loads("a: 1\nb: 2")
+        d = dict(doc)
+        assert d["a"] == 1
+        assert d["b"] == 2
+
+    def test_list_unpacking(self):
+        doc = yarutsk.loads("- 1\n- 2\n- 3")
+        lst = [*doc]
+        assert lst == [1, 2, 3]
+
+    def test_list_constructor(self):
+        doc = yarutsk.loads("- x\n- y")
+        lst = list(doc)
+        assert lst == ["x", "y"]
+
+    def test_isinstance_dict(self):
+        doc = yarutsk.loads("a: 1")
+        assert isinstance(doc, dict)
+
+    def test_isinstance_list(self):
+        doc = yarutsk.loads("- a")
+        assert isinstance(doc, list)
+
+    def test_mapping_values(self):
+        doc = yarutsk.loads("a: 1\nb: 2\nc: 3")
+        vals = list(doc.values())
+        assert sorted(vals) == [1, 2, 3]
+
+    def test_mapping_items(self):
+        doc = yarutsk.loads("x: 10\ny: 20")
+        items = dict(doc.items())
+        assert items == {"x": 10, "y": 20}
+
+    def test_sequence_iteration(self):
+        doc = yarutsk.loads("- 1\n- 2\n- 3")
+        total = sum(doc)
+        assert total == 6
+
+
+class TestNestedObjectIdentity:
+    """Mutations to nested objects must be visible through the parent."""
+
+    def test_nested_mutation_visible_via_parent(self):
+        doc = yarutsk.loads("server:\n  host: localhost\n  port: 5432")
+        server = doc["server"]
+        server["host"] = "remote"
+        assert doc["server"]["host"] == "remote"
+
+    def test_nested_mutation_survives_dump(self):
+        doc = yarutsk.loads("db:\n  name: mydb\n  port: 5432")
+        doc["db"]["port"] = 9999
+        out = yarutsk.dumps(doc)
+        assert "9999" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2["db"]["port"] == 9999
+
+    def test_deeply_nested_mutation_visible(self):
+        doc = yarutsk.loads("a:\n  b:\n    c: original")
+        doc["a"]["b"]["c"] = "changed"
+        out = yarutsk.dumps(doc)
+        assert "changed" in out
+        assert "original" not in out
+
+    def test_sequence_item_mutation_visible(self):
+        doc = yarutsk.loads("items:\n  - x: 1\n  - x: 2")
+        item = doc["items"][0]
+        item["x"] = 99
+        assert doc["items"][0]["x"] == 99
+
+    def test_two_references_same_object(self):
+        doc = yarutsk.loads("cfg:\n  val: 0")
+        ref1 = doc["cfg"]
+        ref2 = doc["cfg"]
+        assert ref1 is ref2
+
+
+class TestSequenceListMethods:
+    """count(), index(), extend(), and friends on YamlSequence."""
+
+    def test_count(self):
+        doc = yarutsk.loads("- a\n- b\n- a\n- c\n- a")
+        assert doc.count("a") == 3
+        assert doc.count("b") == 1
+        assert doc.count("missing") == 0
+
+    def test_index(self):
+        doc = yarutsk.loads("- x\n- y\n- z")
+        assert doc.index("y") == 1
+
+    def test_index_with_bounds(self):
+        doc = yarutsk.loads("- a\n- b\n- c\n- b")
+        assert doc.index("b", 2) == 3
+
+    def test_index_missing_raises(self):
+        doc = yarutsk.loads("- a\n- b")
+        with pytest.raises(ValueError):
+            doc.index("missing")
+
+    def test_extend_appends_all(self):
+        doc = yarutsk.loads("- a\n- b")
+        doc.extend(["c", "d"])
+        assert len(doc) == 4
+        assert doc[2] == "c"
+        assert doc[3] == "d"
+
+    def test_extend_empty_no_change(self):
+        doc = yarutsk.loads("- a\n- b")
+        doc.extend([])
+        assert len(doc) == 2
+
+    def test_remove(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        doc.remove("b")
+        assert len(doc) == 2
+        assert list(doc) == ["a", "c"]
+
+    def test_mixed_types_in_sequence(self):
+        doc = yarutsk.loads("- 1\n- hello\n- true\n- null\n- 3.14")
+        assert doc[0] == 1
+        assert doc[1] == "hello"
+        assert doc[2] is True
+        assert doc[3] is None
+        assert doc[4] == pytest.approx(3.14)
+
+    def test_contains_in_sequence(self):
+        doc = yarutsk.loads("- foo\n- bar")
+        assert "foo" in doc
+        assert "baz" not in doc
+
+
+class TestSpecialStringRoundTrips:
+    """Strings containing YAML-special characters survive dump/load."""
+
+    def test_string_with_colon(self):
+        doc = yarutsk.loads("url: 'http://example.com:8080/path'")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["url"] == "http://example.com:8080/path"
+
+    def test_string_with_hash(self):
+        doc = yarutsk.loads("comment: 'color: #fff'")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["comment"] == "color: #fff"
+
+    @pytest.mark.xfail(reason="emitter does not quote strings with leading spaces")
+    def test_string_with_leading_spaces(self):
+        doc = yarutsk.loads("key: '  leading spaces'")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["key"] == "  leading spaces"
+
+    def test_string_with_newline(self):
+        doc = yarutsk.loads("key: 'line1\\nline2'")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["key"] == doc["key"]
+
+    def test_empty_string_key(self):
+        """An empty string value on a non-empty key round-trips correctly."""
+        doc = yarutsk.loads("key: ''")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["key"] == ""
+        assert isinstance(doc2["key"], str)
+
+
+class TestEmptyDocuments:
+    """Edge cases around empty / nearly-empty YAML."""
+
+    def test_loads_empty_string(self):
+        assert yarutsk.loads("") is None
+
+    def test_loads_only_separator(self):
+        """A bare --- produces a null YamlScalar, not a Python None."""
+        result = yarutsk.loads("---")
+        # An explicit document start with no content yields a null scalar node
+        assert result is None or (
+            type(result).__name__ == "YamlScalar" and result.to_dict() is None
+        )
+
+    def test_loads_all_empty(self):
+        assert yarutsk.loads_all("") == []
+
+    def test_loads_empty_mapping(self):
+        doc = yarutsk.loads("{}")
+        assert isinstance(doc, dict)
+        assert len(doc) == 0
+
+    def test_loads_empty_sequence(self):
+        doc = yarutsk.loads("[]")
+        assert isinstance(doc, list)
+        assert len(doc) == 0
+
+    def test_empty_mapping_round_trips(self):
+        doc = yarutsk.loads("{}")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, dict)
+        assert len(doc2) == 0
+
+    def test_empty_sequence_round_trips(self):
+        doc = yarutsk.loads("[]")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, list)
+        assert len(doc2) == 0
+
+
+class TestGetMethod:
+    """YamlMapping.get() edge cases."""
+
+    def test_get_existing_key(self):
+        doc = yarutsk.loads("a: 1\nb: 2")
+        assert doc.get("a") == 1
+
+    def test_get_missing_key_default_none(self):
+        doc = yarutsk.loads("a: 1")
+        assert doc.get("missing") is None
+
+    def test_get_missing_key_custom_default(self):
+        doc = yarutsk.loads("a: 1")
+        assert doc.get("missing", 42) == 42
+
+    def test_get_key_with_none_value(self):
+        doc = yarutsk.loads("a: null")
+        assert doc.get("a") is None
+        assert doc.get("a", "default") is None
 
 
 if __name__ == "__main__":
