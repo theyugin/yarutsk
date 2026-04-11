@@ -33,19 +33,14 @@ fn scalar_to_py(py: Python<'_>, v: &ScalarValue) -> PyResult<Py<PyAny>> {
 // ─── Node ↔ Python conversion ─────────────────────────────────────────────────
 
 /// Convert a YamlNode to its Python representation.
-/// Mapping → PyYamlMapping, Sequence → PyYamlSequence, scalar/null → Python primitive.
+/// Mapping → PyYamlMapping (dict subclass), Sequence → PyYamlSequence (list subclass),
+/// scalar/null → Python primitive.
 fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
-        YamlNode::Mapping(m) => Ok(PyYamlMapping { inner: m.clone() }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
-        YamlNode::Sequence(s) => Ok(PyYamlSequence { inner: s.clone() }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone()),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone()),
     }
 }
 
@@ -56,11 +51,138 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             value: ScalarValue::Null,
         }));
     }
+    // Check our custom types before primitives (PyYamlMapping extends PyDict,
+    // so the PyDict check below would also match — order matters here).
     if let Ok(m) = obj.extract::<PyYamlMapping>() {
         return Ok(YamlNode::Mapping(m.inner));
     }
     if let Ok(s) = obj.extract::<PyYamlSequence>() {
         return Ok(YamlNode::Sequence(s.inner));
+    }
+    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+        return Ok(sc.inner);
+    }
+    // Primitives — bool must come before i64 (bool is a subtype of int in Python)
+    if let Ok(b) = obj.extract::<bool>() {
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Bool(b),
+        }));
+    }
+    if let Ok(n) = obj.extract::<i64>() {
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Int(n),
+        }));
+    }
+    if let Ok(f) = obj.extract::<f64>() {
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Float(f),
+        }));
+    }
+    if let Ok(s) = obj.extract::<String>() {
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Str(s),
+        }));
+    }
+    // Plain dict/list fallback (for users passing native Python dicts/lists).
+    // Note: PyYamlMapping extends PyDict so it would match downcast::<PyDict>() too,
+    // but we already handled it with extract::<PyYamlMapping>() above.
+    if let Ok(d) = obj.downcast::<PyDict>() {
+        let mut mapping = YamlMapping::new();
+        for (k, v) in d.iter() {
+            let key: String = k.extract()?;
+            let node = py_to_node(&v)?;
+            mapping.entries.insert(
+                key,
+                YamlEntry {
+                    value: node,
+                    comment_before: None,
+                    comment_inline: None,
+                },
+            );
+        }
+        return Ok(YamlNode::Mapping(mapping));
+    }
+    if let Ok(l) = obj.downcast::<PyList>() {
+        let mut seq = YamlSequence::new();
+        for item in l.iter() {
+            seq.items.push(YamlItem {
+                value: py_to_node(&item)?,
+                comment_before: None,
+                comment_inline: None,
+            });
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
+    Err(PyRuntimeError::new_err(format!(
+        "Cannot convert {obj} to YAML node"
+    )))
+}
+
+/// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
+fn node_to_doc(py: Python<'_>, node: YamlNode) -> PyResult<Py<PyAny>> {
+    match node {
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s),
+        other => Ok(PyYamlScalar { inner: other }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind()),
+    }
+}
+
+/// Extract a YamlNode from a PyYamlMapping, PyYamlSequence, or PyYamlScalar for serialisation.
+///
+/// For mappings and sequences, current values come from the parent dict/list (so that
+/// mutations made to nested objects after they were returned from __getitem__ are visible),
+/// while key ordering and comment metadata come from `inner`.
+#[allow(deprecated)] // downcast: no replacement available in PyO3 0.28 for typed Bound access
+fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
+    if let Ok(bound_m) = obj.downcast::<PyYamlMapping>() {
+        let borrow = bound_m.borrow();
+        let dict_part = bound_m.as_super();
+        let mut mapping = YamlMapping::new();
+        // Walk inner.entries for key order and comment data; read values from parent dict.
+        for (k, e) in &borrow.inner.entries {
+            let py_val = match dict_part.get_item(k)? {
+                Some(v) => v,
+                None => continue, // key was removed; skip
+            };
+            let node = extract_yaml_node(&py_val)?;
+            mapping.entries.insert(
+                k.clone(),
+                YamlEntry {
+                    value: node,
+                    comment_before: e.comment_before.clone(),
+                    comment_inline: e.comment_inline.clone(),
+                },
+            );
+        }
+        return Ok(YamlNode::Mapping(mapping));
+    }
+    if let Ok(bound_s) = obj.downcast::<PyYamlSequence>() {
+        let borrow = bound_s.borrow();
+        let list_part = bound_s.as_super();
+        let inner_len = borrow.inner.items.len();
+        let mut seq = YamlSequence::new();
+        for i in 0..inner_len {
+            let py_val = list_part.get_item(i)?;
+            let node = extract_yaml_node(&py_val)?;
+            seq.items.push(YamlItem {
+                value: node,
+                comment_before: borrow.inner.items[i].comment_before.clone(),
+                comment_inline: borrow.inner.items[i].comment_inline.clone(),
+            });
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
+    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+        return Ok(sc.inner);
+    }
+    // Scalars passed directly (int, str, etc.)
+    if obj.is_none() {
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Null,
+        }));
     }
     if let Ok(b) = obj.extract::<bool>() {
         return Ok(YamlNode::Scalar(YamlScalar {
@@ -82,43 +204,62 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             value: ScalarValue::Str(s),
         }));
     }
-    Err(PyRuntimeError::new_err(format!(
-        "Cannot convert {obj} to YAML node"
-    )))
-}
-
-/// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
-fn node_to_doc(py: Python<'_>, node: YamlNode) -> PyResult<Py<PyAny>> {
-    match node {
-        YamlNode::Mapping(m) => Ok(PyYamlMapping { inner: m }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
-        YamlNode::Sequence(s) => Ok(PyYamlSequence { inner: s }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
-        other => Ok(PyYamlScalar { inner: other }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
-    }
-}
-
-/// Extract a YamlNode from a PyYamlMapping, PyYamlSequence, or PyYamlScalar for serialisation.
-fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
-    if let Ok(m) = obj.extract::<PyYamlMapping>() {
-        return Ok(YamlNode::Mapping(m.inner));
-    }
-    if let Ok(s) = obj.extract::<PyYamlSequence>() {
-        return Ok(YamlNode::Sequence(s.inner));
-    }
-    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return Ok(sc.inner);
-    }
     Err(PyRuntimeError::new_err(
         "expected YamlMapping, YamlSequence, or YamlScalar",
     ))
+}
+
+// ─── Python object creation helpers ──────────────────────────────────────────
+
+/// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
+/// The parent dict is populated with the mapping's entries.
+fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping) -> PyResult<Py<PyAny>> {
+    // Build Python values before moving m into the struct.
+    let py_pairs: Vec<(String, Py<PyAny>)> = m
+        .entries
+        .iter()
+        .map(|(k, e)| {
+            let v = node_to_py(py, &e.value)?;
+            Ok((k.clone(), v))
+        })
+        .collect::<PyResult<_>>()?;
+
+    let obj: Py<PyYamlMapping> = Py::new(py, PyYamlMapping { inner: m })?;
+
+    // Populate the underlying dict with Python-visible values.
+    {
+        let bound = obj.bind(py);
+        let dict_part = bound.as_super();
+        for (k, v) in &py_pairs {
+            dict_part.set_item(k.as_str(), v.bind(py))?;
+        }
+    }
+
+    Ok(obj.into_any())
+}
+
+/// Create a PyYamlSequence (list subclass) from a Rust YamlSequence.
+/// The parent list is populated with the sequence's items.
+fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence) -> PyResult<Py<PyAny>> {
+    // Build Python values before moving s into the struct.
+    let py_items: Vec<Py<PyAny>> = s
+        .items
+        .iter()
+        .map(|item| node_to_py(py, &item.value))
+        .collect::<PyResult<_>>()?;
+
+    let obj: Py<PyYamlSequence> = Py::new(py, PyYamlSequence { inner: s })?;
+
+    // Populate the underlying list with Python-visible values.
+    {
+        let bound = obj.bind(py);
+        let list_part = bound.as_super();
+        for v in &py_items {
+            list_part.append(v.bind(py))?;
+        }
+    }
+
+    Ok(obj.into_any())
 }
 
 // ─── Repr helpers ─────────────────────────────────────────────────────────────
@@ -384,28 +525,6 @@ fn mapping_update(dest: &mut YamlMapping, other: &Bound<'_, PyAny>) -> PyResult<
     Ok(())
 }
 
-/// Build a PyList of (key, value) tuples for a mapping.
-fn mapping_items(py: Python<'_>, m: &YamlMapping) -> PyResult<Py<PyAny>> {
-    let mut pairs: Vec<Py<PyAny>> = Vec::with_capacity(m.entries.len());
-    for (k, e) in &m.entries {
-        let v = node_to_py(py, &e.value)?;
-        let k_py: Py<PyAny> = k.as_str().into_pyobject(py)?.into_any().unbind();
-        let t = PyTuple::new(py, [k_py, v])?.into_any().unbind();
-        pairs.push(t);
-    }
-    Ok(PyList::new(py, pairs)?.into_any().unbind())
-}
-
-/// Build a PyList of values for a mapping.
-fn mapping_values(py: Python<'_>, m: &YamlMapping) -> PyResult<Py<PyAny>> {
-    let vals: Vec<Py<PyAny>> = m
-        .entries
-        .values()
-        .map(|e| node_to_py(py, &e.value))
-        .collect::<PyResult<_>>()?;
-    Ok(PyList::new(py, vals)?.into_any().unbind())
-}
-
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
 /// A YAML scalar document node (int, float, bool, str, or null).
@@ -446,10 +565,11 @@ impl PyYamlScalar {
     }
 }
 
-// ─── PyYamlMapping (Python: YamlMapping) ──────────────────────────────────────
+// ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
 
-/// A YAML mapping node.
-#[pyclass(name = "YamlMapping", from_py_object)]
+/// A YAML mapping node. Subclass of dict; the parent dict is always kept in
+/// sync with `inner` so that standard dict operations work transparently.
+#[pyclass(name = "YamlMapping", extends = PyDict, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlMapping {
     inner: types::YamlMapping,
@@ -457,95 +577,66 @@ pub struct PyYamlMapping {
 
 #[pymethods]
 impl PyYamlMapping {
-    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
-        match self.inner.entries.get(key) {
-            Some(entry) => node_to_py(py, &entry.value),
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+    #[new]
+    fn new() -> Self {
+        PyYamlMapping {
+            inner: types::YamlMapping::new(),
         }
     }
 
-    fn __setitem__(&mut self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    // ── Mutations (must sync parent dict) ────────────────────────────────────
+
+    fn __setitem__(slf: &Bound<'_, Self>, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let node = py_to_node(value)?;
-        if let Some(entry) = self.inner.entries.get_mut(key) {
-            entry.value = node;
-        } else {
-            self.inner.entries.insert(
-                key.to_owned(),
-                YamlEntry {
-                    value: node,
-                    comment_before: None,
-                    comment_inline: None,
-                },
-            );
+        let py = slf.py();
+        {
+            let mut borrow = slf.borrow_mut();
+            if let Some(entry) = borrow.inner.entries.get_mut(key) {
+                entry.value = node.clone();
+            } else {
+                borrow.inner.entries.insert(
+                    key.to_owned(),
+                    YamlEntry {
+                        value: node.clone(),
+                        comment_before: None,
+                        comment_inline: None,
+                    },
+                );
+            }
         }
+        let py_val = node_to_py(py, &node)?;
+        slf.as_super().set_item(key, py_val.bind(py))?;
         Ok(())
     }
 
-    fn __delitem__(&mut self, key: &str) -> PyResult<()> {
-        if self.inner.entries.shift_remove(key).is_none() {
+    fn __delitem__(slf: &Bound<'_, Self>, key: &str) -> PyResult<()> {
+        let removed = {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.entries.shift_remove(key).is_some()
+        };
+        if !removed {
             return Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()));
         }
+        slf.as_super().del_item(key)?;
         Ok(())
-    }
-
-    fn __contains__(&self, key: &str) -> bool {
-        self.inner.entries.contains_key(key)
-    }
-
-    fn __len__(&self) -> usize {
-        self.inner.entries.len()
-    }
-
-    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let keys: Vec<&str> = self.inner.entries.keys().map(|k| k.as_str()).collect();
-        let list = PyList::new(py, keys)?;
-        Ok(list.call_method0("__iter__")?.unbind())
-    }
-
-    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let self_dict = mapping_to_dict(py, &self.inner)?;
-        self_dict.bind(py).eq(other)
-    }
-
-    fn __repr__(&self, py: Python<'_>) -> String {
-        mapping_repr(py, &self.inner)
-    }
-
-    fn keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let keys: Vec<&str> = self.inner.entries.keys().map(|k| k.as_str()).collect();
-        Ok(PyList::new(py, keys)?.into_any().unbind())
-    }
-
-    fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        mapping_values(py, &self.inner)
-    }
-
-    fn items(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        mapping_items(py, &self.inner)
-    }
-
-    #[pyo3(signature = (key, default=None))]
-    fn get(
-        &self,
-        py: Python<'_>,
-        key: &str,
-        default: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        match self.inner.entries.get(key) {
-            Some(entry) => node_to_py(py, &entry.value),
-            None => Ok(default.unwrap_or_else(|| py.None())),
-        }
     }
 
     #[pyo3(signature = (key, default=None))]
     fn pop(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         key: &str,
         default: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        match self.inner.entries.shift_remove(key) {
-            Some(entry) => node_to_py(py, &entry.value),
+        let entry = {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.entries.shift_remove(key)
+        };
+        match entry {
+            Some(e) => {
+                slf.as_super().del_item(key)?;
+                node_to_py(py, &e.value)
+            }
             None => match default {
                 Some(d) => Ok(d),
                 None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
@@ -553,31 +644,77 @@ impl PyYamlMapping {
         }
     }
 
-    fn update(&mut self, _py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<()> {
-        mapping_update(&mut self.inner, other)
+    fn update(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<()> {
+        // Update inner via existing helper.
+        {
+            let mut borrow = slf.borrow_mut();
+            mapping_update(&mut borrow.inner, other)?;
+        }
+        // Rebuild parent dict entirely so order and contents match inner.
+        let py = slf.py();
+        let dict_part = slf.as_super();
+        dict_part.clear();
+        let borrow = slf.borrow();
+        for (k, e) in &borrow.inner.entries {
+            let py_val = node_to_py(py, &e.value)?;
+            dict_part.set_item(k, py_val.bind(py))?;
+        }
+        Ok(())
     }
 
     #[pyo3(signature = (key, default=None))]
     fn setdefault(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         key: &str,
         default: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        if !self.inner.entries.contains_key(key) {
+        let contains = slf.borrow().inner.entries.contains_key(key);
+        if !contains {
             let default_val = default.unwrap_or_else(|| py.None());
             let node = py_to_node(default_val.bind(py))?;
-            self.inner.entries.insert(
-                key.to_owned(),
-                YamlEntry {
-                    value: node,
-                    comment_before: None,
-                    comment_inline: None,
-                },
-            );
+            let py_val = node_to_py(py, &node)?;
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.entries.insert(
+                    key.to_owned(),
+                    YamlEntry {
+                        value: node,
+                        comment_before: None,
+                        comment_inline: None,
+                    },
+                );
+            }
+            slf.as_super().set_item(key, py_val.bind(py))?;
         }
-        node_to_py(py, &self.inner.entries[key].value)
+        let borrow = slf.borrow();
+        node_to_py(py, &borrow.inner.entries[key].value)
     }
+
+    #[pyo3(signature = (key=None, reverse=false, recursive=false))]
+    fn sort_keys(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        key: Option<Py<PyAny>>,
+        reverse: bool,
+        recursive: bool,
+    ) -> PyResult<()> {
+        {
+            let mut borrow = slf.borrow_mut();
+            sort_mapping(py, &mut borrow.inner, key.as_ref(), reverse, recursive)?;
+        }
+        // Rebuild parent dict in sorted order.
+        let dict_part = slf.as_super();
+        dict_part.clear();
+        let borrow = slf.borrow();
+        for (k, e) in &borrow.inner.entries {
+            let py_val = node_to_py(py, &e.value)?;
+            dict_part.set_item(k, py_val.bind(py))?;
+        }
+        Ok(())
+    }
+
+    // ── Read-only extras ──────────────────────────────────────────────────────
 
     fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         mapping_to_dict(py, &self.inner)
@@ -615,22 +752,16 @@ impl PyYamlMapping {
         }
     }
 
-    #[pyo3(signature = (key=None, reverse=false, recursive=false))]
-    fn sort_keys(
-        &mut self,
-        py: Python<'_>,
-        key: Option<Py<PyAny>>,
-        reverse: bool,
-        recursive: bool,
-    ) -> PyResult<()> {
-        sort_mapping(py, &mut self.inner, key.as_ref(), reverse, recursive)
+    fn __repr__(&self, py: Python<'_>) -> String {
+        mapping_repr(py, &self.inner)
     }
 }
 
-// ─── PyYamlSequence (Python: YamlSequence) ────────────────────────────────────
+// ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
 
-/// A YAML sequence node.
-#[pyclass(name = "YamlSequence", from_py_object)]
+/// A YAML sequence node. Subclass of list; the parent list is always kept in
+/// sync with `inner` so that standard list operations work transparently.
+#[pyclass(name = "YamlSequence", extends = PyList, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlSequence {
     inner: types::YamlSequence,
@@ -638,184 +769,211 @@ pub struct PyYamlSequence {
 
 #[pymethods]
 impl PyYamlSequence {
-    fn __getitem__(&self, py: Python<'_>, key: isize) -> PyResult<Py<PyAny>> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if key < 0 { len + key } else { key };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
+    #[new]
+    fn new() -> Self {
+        PyYamlSequence {
+            inner: types::YamlSequence::new(),
         }
-        node_to_py(py, &self.inner.items[real_idx as usize].value)
     }
 
-    fn __setitem__(&mut self, key: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    // ── Mutations (must sync parent list) ────────────────────────────────────
+
+    fn __setitem__(slf: &Bound<'_, Self>, key: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let node = py_to_node(value)?;
-        let len = self.inner.items.len() as isize;
+        let py = slf.py();
+        let len = slf.borrow().inner.items.len() as isize;
         let real_idx = if key < 0 { len + key } else { key };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
+            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
         }
-        self.inner.items[real_idx as usize].value = node;
+        {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.items[real_idx as usize].value = node.clone();
+        }
+        let py_val = node_to_py(py, &node)?;
+        slf.as_super().set_item(real_idx as usize, py_val.bind(py))?;
         Ok(())
     }
 
-    fn __delitem__(&mut self, key: isize) -> PyResult<()> {
-        let len = self.inner.items.len() as isize;
+    fn __delitem__(slf: &Bound<'_, Self>, key: isize) -> PyResult<()> {
+        let len = slf.borrow().inner.items.len() as isize;
         let real_idx = if key < 0 { len + key } else { key };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
+            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
         }
-        self.inner.items.remove(real_idx as usize);
+        {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.items.remove(real_idx as usize);
+        }
+        slf.as_super().del_item(real_idx as usize)?;
         Ok(())
     }
 
-    fn __contains__(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
-        for item in &self.inner.items {
-            let v = node_to_py(py, &item.value)?;
-            if v.bind(py).eq(value)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    fn __len__(&self) -> usize {
-        self.inner.items.len()
-    }
-
-    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let items: Vec<Py<PyAny>> = self
-            .inner
-            .items
-            .iter()
-            .map(|i| node_to_py(py, &i.value))
-            .collect::<PyResult<_>>()?;
-        let list = PyList::new(py, items)?;
-        Ok(list.call_method0("__iter__")?.unbind())
-    }
-
-    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let self_list = sequence_to_dict(py, &self.inner)?;
-        self_list.bind(py).eq(other)
-    }
-
-    fn __repr__(&self, py: Python<'_>) -> String {
-        sequence_repr(py, &self.inner)
-    }
-
-    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        sequence_to_dict(py, &self.inner)
-    }
-
-    fn append(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.inner.items.push(YamlItem {
-            value: py_to_node(value)?,
-            comment_before: None,
-            comment_inline: None,
-        });
-        Ok(())
-    }
-
-    fn insert(&mut self, idx: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if idx < 0 {
-            (len + idx).max(0) as usize
-        } else {
-            idx.min(len) as usize
-        };
-        self.inner.items.insert(
-            real_idx,
-            YamlItem {
-                value: py_to_node(value)?,
-                comment_before: None,
-                comment_inline: None,
-            },
-        );
-        Ok(())
-    }
-
-    #[pyo3(signature = (idx=-1))]
-    fn pop(&mut self, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
-        let len = self.inner.items.len() as isize;
-        if len == 0 {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "pop from empty list",
-            ));
-        }
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "pop index out of range",
-            ));
-        }
-        let item = self.inner.items.remove(real_idx as usize);
-        node_to_py(py, &item.value)
-    }
-
-    fn remove(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        for (i, item) in self.inner.items.iter().enumerate() {
-            let v = node_to_py(py, &item.value)?;
-            if v.bind(py).eq(value)? {
-                self.inner.items.remove(i);
-                return Ok(());
-            }
-        }
-        Err(pyo3::exceptions::PyValueError::new_err("value not in list"))
-    }
-
-    fn extend(&mut self, _py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
-        if let Ok(other) = iterable.extract::<PyYamlSequence>() {
-            self.inner.items.extend(other.inner.items);
-            return Ok(());
-        }
-        for item in iterable.try_iter()? {
-            let item = item?;
-            self.inner.items.push(YamlItem {
-                value: py_to_node(&item)?,
+    fn append(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let node = py_to_node(value)?;
+        let py = slf.py();
+        {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.items.push(YamlItem {
+                value: node.clone(),
                 comment_before: None,
                 comment_inline: None,
             });
         }
+        let py_val = node_to_py(py, &node)?;
+        slf.as_super().append(py_val.bind(py))?;
         Ok(())
     }
 
-    #[pyo3(signature = (value, start=0, stop=None))]
-    fn index(
-        &self,
-        py: Python<'_>,
-        value: &Bound<'_, PyAny>,
-        start: isize,
-        stop: Option<isize>,
-    ) -> PyResult<usize> {
-        let len = self.inner.items.len() as isize;
-        let start = if start < 0 { (len + start).max(0) } else { start };
-        let end = stop.unwrap_or(len);
-        let end = if end < 0 { (len + end).max(0) } else { end.min(len) };
-        for i in (start as usize)..(end as usize) {
-            let v = node_to_py(py, &self.inner.items[i].value)?;
-            if v.bind(py).eq(value)? {
-                return Ok(i);
+    fn insert(slf: &Bound<'_, Self>, idx: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let node = py_to_node(value)?;
+        let py = slf.py();
+        let real_idx = {
+            let borrow = slf.borrow();
+            let len = borrow.inner.items.len() as isize;
+            if idx < 0 {
+                (len + idx).max(0) as usize
+            } else {
+                idx.min(len) as usize
             }
+        };
+        {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.items.insert(
+                real_idx,
+                YamlItem {
+                    value: node.clone(),
+                    comment_before: None,
+                    comment_inline: None,
+                },
+            );
         }
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "value is not in list",
-        ))
+        let py_val = node_to_py(py, &node)?;
+        slf.as_super().insert(real_idx, py_val.bind(py))?;
+        Ok(())
     }
 
-    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
-        let mut n = 0usize;
-        for item in &self.inner.items {
-            let v = node_to_py(py, &item.value)?;
-            if v.bind(py).eq(value)? {
-                n += 1;
+    #[pyo3(signature = (idx=-1))]
+    fn pop(slf: &Bound<'_, Self>, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
+        let (real_idx, node) = {
+            let mut borrow = slf.borrow_mut();
+            let len = borrow.inner.items.len() as isize;
+            if len == 0 {
+                return Err(pyo3::exceptions::PyIndexError::new_err(
+                    "pop from empty list",
+                ));
+            }
+            let real_idx = if idx < 0 { len + idx } else { idx };
+            if real_idx < 0 || real_idx >= len {
+                return Err(pyo3::exceptions::PyIndexError::new_err(
+                    "pop index out of range",
+                ));
+            }
+            let item = borrow.inner.items.remove(real_idx as usize);
+            (real_idx, item.value)
+        };
+        slf.as_super().del_item(real_idx as usize)?;
+        node_to_py(py, &node)
+    }
+
+    fn remove(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
+        let idx = {
+            let borrow = slf.borrow();
+            let mut found = None;
+            for (i, item) in borrow.inner.items.iter().enumerate() {
+                let v = node_to_py(py, &item.value)?;
+                if v.bind(py).eq(value)? {
+                    found = Some(i);
+                    break;
+                }
+            }
+            found.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("value not in list"))?
+        };
+        {
+            let mut borrow = slf.borrow_mut();
+            borrow.inner.items.remove(idx);
+        }
+        slf.as_super().del_item(idx)?;
+        Ok(())
+    }
+
+    fn extend(slf: &Bound<'_, Self>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
+        // Collect (YamlItem, Py<PyAny>) pairs.
+        let mut pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
+        if let Ok(other) = iterable.extract::<PyYamlSequence>() {
+            for item in &other.inner.items {
+                let py_val = node_to_py(py, &item.value)?;
+                pairs.push((
+                    YamlItem {
+                        value: item.value.clone(),
+                        comment_before: None,
+                        comment_inline: None,
+                    },
+                    py_val,
+                ));
+            }
+        } else {
+            for py_item in iterable.try_iter()? {
+                let py_item = py_item?;
+                let node = py_to_node(&py_item)?;
+                let py_val = node_to_py(py, &node)?;
+                pairs.push((
+                    YamlItem {
+                        value: node,
+                        comment_before: None,
+                        comment_inline: None,
+                    },
+                    py_val,
+                ));
             }
         }
-        Ok(n)
+        {
+            let mut borrow = slf.borrow_mut();
+            for (item, _) in &pairs {
+                borrow.inner.items.push(item.clone());
+            }
+        }
+        let list_part = slf.as_super();
+        for (_, py_val) in pairs {
+            list_part.append(py_val.bind(py))?;
+        }
+        Ok(())
+    }
+
+    fn reverse(slf: &Bound<'_, Self>) -> PyResult<()> {
+        slf.borrow_mut().inner.items.reverse();
+        slf.as_super().call_method0("reverse")?;
+        Ok(())
+    }
+
+    #[pyo3(signature = (key=None, reverse=false))]
+    fn sort(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        key: Option<Py<PyAny>>,
+        reverse: bool,
+    ) -> PyResult<()> {
+        {
+            let mut borrow = slf.borrow_mut();
+            sort_sequence(py, &mut borrow.inner, key.as_ref(), reverse)?;
+        }
+        // Rebuild parent list from sorted inner.
+        let list_part = slf.as_super();
+        list_part.call_method0("clear")?;
+        let borrow = slf.borrow();
+        for item in &borrow.inner.items {
+            let py_val = node_to_py(py, &item.value)?;
+            list_part.append(py_val.bind(py))?;
+        }
+        Ok(())
+    }
+
+    // ── Read-only extras ──────────────────────────────────────────────────────
+
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        sequence_to_dict(py, &self.inner)
     }
 
     fn get_comment_inline(&self, idx: isize) -> PyResult<Option<String>> {
@@ -856,13 +1014,8 @@ impl PyYamlSequence {
         Ok(())
     }
 
-    fn reverse(&mut self) {
-        self.inner.items.reverse();
-    }
-
-    #[pyo3(signature = (key=None, reverse=false))]
-    fn sort(&mut self, py: Python<'_>, key: Option<Py<PyAny>>, reverse: bool) -> PyResult<()> {
-        sort_sequence(py, &mut self.inner, key.as_ref(), reverse)
+    fn __repr__(&self, py: Python<'_>) -> String {
+        sequence_repr(py, &self.inner)
     }
 }
 

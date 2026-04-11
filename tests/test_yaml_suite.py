@@ -65,10 +65,8 @@ def load_test_cases():
             content = yaml_file.read_text(encoding="utf-8")
 
             try:
-                import yaml as pyyaml
-
-                tests = pyyaml.safe_load(content)
-            except ImportError:
+                tests = yarutsk.loads(content)
+            except Exception:
                 continue
 
             if not isinstance(tests, list):

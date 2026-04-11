@@ -311,6 +311,33 @@ class TestCommentEdgeCases:
         assert "# first item" in result
         assert doc2["items"][0] == "foo"
 
+    def test_append_then_comment_survives_dump(self):
+        """Appending an item and adding a comment on the new item round-trips correctly."""
+        doc = yarutsk.loads("items:\n  - foo\n  - bar")
+        items = doc["items"]
+        items.append("baz")
+        items.set_comment_inline(2, "newly added")
+        result = yarutsk.dumps(doc)
+        assert "baz" in result
+        assert "# newly added" in result
+        # Reload and verify the comment survived the round-trip
+        doc2 = yarutsk.loads(result)
+        assert doc2["items"][2] == "baz"
+        assert doc2["items"].get_comment_inline(2) == "newly added"
+
+    def test_nested_mapping_mutation_then_comment_survives_dump(self):
+        """Mutating a nested mapping and adding a comment on it round-trips correctly."""
+        doc = yarutsk.loads("server:\n  host: localhost\n  port: 5432")
+        server = doc["server"]
+        server["port"] = 5433
+        server.set_comment_inline("port", "changed")
+        result = yarutsk.dumps(doc)
+        assert "5433" in result
+        assert "# changed" in result
+        doc2 = yarutsk.loads(result)
+        assert doc2["server"]["port"] == 5433
+        assert doc2["server"].get_comment_inline("port") == "changed"
+
     def test_inline_on_sequence_item_does_not_attach_to_parent_key(self):
         """Inline comment on a sequence item is NOT on the mapping key above."""
         doc = yarutsk.load(io.StringIO("items:\n  - foo  # item comment"))

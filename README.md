@@ -26,6 +26,18 @@ print(out.getvalue())
 # port: 5433
 ```
 
+`YamlMapping` is a subclass of `dict` and `YamlSequence` is a subclass of `list`, so they work everywhere a dict or list is expected:
+
+```python
+import json
+
+doc = yarutsk.loads("name: Alice\nscores: [10, 20, 30]")
+
+isinstance(doc, dict)           # True
+isinstance(doc["scores"], list) # True
+json.dumps(doc)                 # '{"name": "Alice", "scores": [10, 20, 30]}'
+```
+
 ## Installation
 
 Built with [Maturin](https://github.com/PyO3/maturin). From the repo root:
@@ -57,7 +69,7 @@ text = yarutsk.dumps(doc)
 text = yarutsk.dumps_all(docs)
 ```
 
-`load` / `loads` return a `YamlMapping`, `YamlSequence`, `YamlScalar`, or `None` (for empty input). Nested nodes are also returned as `YamlMapping` or `YamlSequence`; scalar leaves are returned as native Python primitives (`int`, `float`, `bool`, `str`, or `None`).
+`load` / `loads` return a `YamlMapping`, `YamlSequence`, `YamlScalar`, or `None` (for empty input). Nested nodes are also `YamlMapping` or `YamlSequence`; scalar leaves are returned as native Python primitives (`int`, `float`, `bool`, `str`, or `None`).
 
 ### YamlScalar
 
@@ -71,27 +83,30 @@ doc.to_dict()                          # same as .value
 
 ### YamlMapping
 
-`YamlMapping` behaves like an insertion-ordered `dict`:
+`YamlMapping` is a subclass of `dict` with insertion-ordered keys. All standard dict operations work directly:
 
 ```python
-# Access
+# Standard dict interface (inherited)
 doc["key"]                             # get (KeyError if missing)
 doc["key"] = value                     # set (preserves position if key exists)
-del doc["key"]                         # delete (KeyError if missing)
+del doc["key"]                         # delete
 "key" in doc                           # membership test
 len(doc)                               # number of entries
 for key in doc: ...                    # iterate over keys in order
-
-# Dict-like helpers
-doc.keys()                             # list of keys in insertion order
-doc.values()                           # list of values in insertion order
-doc.items()                            # list of (key, value) pairs
+doc.keys()                             # KeysView in insertion order
+doc.values()                           # ValuesView in insertion order
+doc.items()                            # ItemsView of (key, value) pairs
 doc.get("key")                         # returns None if missing
 doc.get("key", default)                # returns default if missing
 doc.pop("key")                         # remove & return (KeyError if missing)
 doc.pop("key", default)                # remove & return, or default
 doc.setdefault("key", default)         # get or insert default
 doc.update(other)                      # merge from dict or YamlMapping
+doc == {"a": 1}                        # equality comparison
+
+# Works with any dict-expecting library
+isinstance(doc, dict)                  # True
+json.dumps(doc)                        # works
 
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python dict
@@ -111,18 +126,16 @@ doc.sort_keys(recursive=True)          # also sort all nested mappings
 
 ### YamlSequence
 
-`YamlSequence` behaves like a Python `list`:
+`YamlSequence` is a subclass of `list`. All standard list operations work directly:
 
 ```python
-# Access
+# Standard list interface (inherited)
 doc[0]                                 # get by index (negative indices supported)
 doc[0] = value                         # set by index
 del doc[0]                             # delete by index
 value in doc                           # membership test
 len(doc)                               # number of items
 for item in doc: ...                   # iterate over items
-
-# List-like helpers
 doc.append(value)                      # add to end
 doc.insert(idx, value)                 # insert before index
 doc.pop()                              # remove & return last item
@@ -130,9 +143,13 @@ doc.pop(idx)                           # remove & return item at index
 doc.remove(value)                      # remove first occurrence (ValueError if missing)
 doc.extend(iterable)                   # append items from list or YamlSequence
 doc.index(value)                       # index of first occurrence
-doc.index(value, start, stop)          # search within slice
 doc.count(value)                       # number of occurrences
 doc.reverse()                          # reverse in-place
+doc == [1, 2, 3]                       # equality comparison
+
+# Works with any list-expecting library
+isinstance(doc, list)                  # True
+json.dumps(doc)                        # works
 
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python list
@@ -143,7 +160,7 @@ doc.get_comment_before(idx)            # -> str | None
 doc.set_comment_inline(idx, text)
 doc.set_comment_before(idx, text)
 
-# Sorting
+# Sorting (preserves comment metadata)
 doc.sort()                             # natural order, in-place
 doc.sort(reverse=True)
 doc.sort(key=lambda v: len(v))         # custom key function on item values
@@ -153,15 +170,14 @@ Sorting preserves all comments — each entry or item carries its inline and bef
 
 ## Running tests
 
-The repo contains three test suites. You need Rust (nightly) and Python 3.9+ with [uv](https://github.com/astral-sh/uv).
+The repo contains three test suites. You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv).
 
 ```bash
 # 1. Clone with the yaml-test-suite submodule
-git clone --recurse-submodules https://github.com/anomalyco/yarutsk
+git clone --recurse-submodules https://github.com/theyugin/yarutsk
 cd yarutsk
 
 # 2. Create a virtual environment and install dev dependencies
-#    (includes pytest, pyyaml, ruamel-yaml, pytest-benchmark)
 uv sync --group dev
 
 # 3. Build the extension in dev (debug) mode
@@ -180,6 +196,7 @@ uv run pytest tests/test_yaml_suite.py -q       # yaml-test-suite compliance
 Benchmarks compare yarutsk against PyYAML and ruamel.yaml using [pytest-benchmark](https://pytest-benchmark.readthedocs.io/):
 
 ```bash
+uv sync --group benchmark
 uv run pytest benchmarks/ -v --benchmark-min-rounds=10
 ```
 
@@ -188,6 +205,8 @@ ruamel.yaml is the closest analogue to yarutsk (it also preserves comments), so 
 ## Internals
 
 The scanner and parser are vendored from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2) (MIT licensed) with one targeted modification: the comment-skipping loop in the scanner now emits `Comment` tokens instead of discarding them. Everything else — block/flow parsing, scalar type coercion, multi-document support — comes from yaml-rust2 unchanged. The builder layer wires those tokens to the data model, and a hand-written block-style emitter serialises it back out.
+
+`YamlMapping` and `YamlSequence` are PyO3 pyclasses that extend Python's built-in `dict` and `list` types. A Rust `inner` field stores the full YAML data model (including comments); the parent dict/list is kept in sync on every mutation so that all standard Python operations work transparently.
 
 ## Disclaimer
 

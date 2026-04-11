@@ -233,7 +233,7 @@ class TestYarutskBenchmarks:
 
         def serialize():
             output = io.StringIO()
-            doc.dump(output)
+            yarutsk.dump(doc, output)
             return output.getvalue()
 
         result = benchmark(serialize)
@@ -245,7 +245,7 @@ class TestYarutskBenchmarks:
 
         def serialize():
             output = io.StringIO()
-            doc.dump(output)
+            yarutsk.dump(doc, output)
             return output.getvalue()
 
         result = benchmark(serialize)
@@ -257,7 +257,7 @@ class TestYarutskBenchmarks:
 
         def serialize():
             output = io.StringIO()
-            doc.dump(output)
+            yarutsk.dump(doc, output)
             return output.getvalue()
 
         result = benchmark(serialize)
@@ -278,7 +278,7 @@ class TestYarutskBenchmarks:
 
         def serialize():
             output = io.StringIO()
-            doc.dump(output)
+            yarutsk.dump(doc, output)
             return output.getvalue()
 
         result = benchmark(serialize)

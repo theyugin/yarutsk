@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 from typing import Any, Callable
+from collections.abc import KeysView
 
 import yarutsk
 from yarutsk import YamlMapping, YamlScalar, YamlSequence
@@ -89,7 +90,7 @@ def check_mapping_access(m: YamlMapping) -> None:
     m["key"] = 42
     contained: bool = "key" in m
     length: int = len(m)
-    keys: list[str] = m.keys()
+    keys: KeysView[str] = m.keys()
     _ = val, contained, length, keys
 
 
@@ -183,6 +184,6 @@ def check_sequence_sort(s: YamlSequence) -> None:
 #   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlMapping | YamlSequence | None
 #                                           # dumps requires YamlMapping | YamlSequence
 #
-#   keys: list[int] = m.keys()             # keys() returns list[str]
+#   keys: list[int] = list(m.keys())        # keys() returns KeysView[str], not list[int]
 #
 #   text: int = yarutsk.dumps(m)           # dumps returns str
