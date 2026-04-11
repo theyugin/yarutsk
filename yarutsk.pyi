@@ -61,11 +61,11 @@ class YamlMapping(dict[str, Any]):
         """Return the block comment above *key*, lines joined with ``\\n``."""
         ...
 
-    def set_comment_inline(self, key: str, comment: str) -> None:
+    def set_comment_inline(self, key: str, comment: str | None) -> None:
         """Set or replace the inline comment for *key*."""
         ...
 
-    def set_comment_before(self, key: str, comment: str) -> None:
+    def set_comment_before(self, key: str, comment: str | None) -> None:
         """Set or replace the block comment above *key*."""
         ...
 
@@ -99,11 +99,11 @@ class YamlSequence(list[Any]):
         """Return the block comment above the item at *idx*, lines joined with ``\\n``."""
         ...
 
-    def set_comment_inline(self, idx: int, comment: str) -> None:
+    def set_comment_inline(self, idx: int, comment: str | None) -> None:
         """Set or replace the inline comment for the item at *idx*."""
         ...
 
-    def set_comment_before(self, idx: int, comment: str) -> None:
+    def set_comment_before(self, idx: int, comment: str | None) -> None:
         """Set or replace the block comment above the item at *idx*."""
         ...
 

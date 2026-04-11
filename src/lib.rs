@@ -436,94 +436,6 @@ fn sort_mapping(
     Ok(())
 }
 
-fn sort_sequence(
-    py: Python<'_>,
-    s: &mut YamlSequence,
-    key: Option<&Py<PyAny>>,
-    reverse: bool,
-) -> PyResult<()> {
-    let items = std::mem::take(&mut s.items);
-
-    let computed: Vec<Py<PyAny>> = items
-        .iter()
-        .map(|item| {
-            let v = node_to_py(py, &item.value)?;
-            if let Some(key_fn) = key {
-                key_fn.bind(py).call1((v,)).map(|r| r.unbind())
-            } else {
-                Ok(v)
-            }
-        })
-        .collect::<PyResult<_>>()?;
-
-    let mut zipped: Vec<(Py<PyAny>, YamlItem)> = computed.into_iter().zip(items).collect();
-
-    let mut err: Option<PyErr> = None;
-    zipped.sort_by(|(ka, _), (kb, _)| {
-        if err.is_some() {
-            return std::cmp::Ordering::Equal;
-        }
-        py_compare(ka.bind(py), kb.bind(py), &mut err)
-    });
-    if let Some(e) = err {
-        return Err(e);
-    }
-
-    if reverse {
-        zipped.reverse();
-    }
-    s.items = zipped.into_iter().map(|(_, item)| item).collect();
-    Ok(())
-}
-
-// ─── Shared mapping helpers ───────────────────────────────────────────────────
-
-/// Merge all entries from `other` into `dest`, overwriting existing keys.
-/// Accepts PyYamlMapping, any dict-like object with a `keys()` method, or an
-/// iterable of (key, value) pairs.
-fn mapping_update(dest: &mut YamlMapping, other: &Bound<'_, PyAny>) -> PyResult<()> {
-    if let Ok(m) = other.extract::<PyYamlMapping>() {
-        for (k, e) in m.inner.entries {
-            dest.entries.insert(k, e);
-        }
-        return Ok(());
-    }
-    // Duck-typing: if it has a keys() method, treat as a mapping
-    if other.hasattr("keys")? {
-        let keys = other.call_method0("keys")?;
-        for key in keys.try_iter()? {
-            let key = key?;
-            let val = other.get_item(&key)?;
-            let k: String = key.extract()?;
-            let node = py_to_node(&val)?;
-            dest.entries.insert(
-                k,
-                YamlEntry {
-                    value: node,
-                    comment_before: None,
-                    comment_inline: None,
-                },
-            );
-        }
-        return Ok(());
-    }
-    // Fallback: iterable of (key, value) pairs
-    for item in other.try_iter()? {
-        let item = item?;
-        let (key, val): (String, Bound<'_, PyAny>) = item.extract()?;
-        let node = py_to_node(&val)?;
-        dest.entries.insert(
-            key,
-            YamlEntry {
-                value: node,
-                comment_before: None,
-                comment_inline: None,
-            },
-        );
-    }
-    Ok(())
-}
-
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
 /// A YAML scalar document node (int, float, bool, str, or null).
@@ -644,19 +556,71 @@ impl PyYamlMapping {
     }
 
     fn update(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<()> {
-        // Update inner via existing helper.
-        {
-            let mut borrow = slf.borrow_mut();
-            mapping_update(&mut borrow.inner, other)?;
-        }
-        // Rebuild parent dict entirely so order and contents match inner.
+        // Update inner AND parent dict together for only the keys in `other`,
+        // leaving unchanged keys untouched in both. This avoids an O(n) full rebuild
+        // and the unnecessary node_to_py calls for keys not present in `other`.
         let py = slf.py();
         let dict_part = slf.as_super();
-        dict_part.clear();
-        let borrow = slf.borrow();
-        for (k, e) in &borrow.inner.entries {
-            let py_val = node_to_py(py, &e.value)?;
-            dict_part.set_item(k, py_val.bind(py))?;
+        if let Ok(m) = other.extract::<PyYamlMapping>() {
+            // Read existing Python values from `other`'s parent dict to avoid
+            // re-creating Python objects for nested mappings/sequences.
+            let other_bound = other.cast::<PyYamlMapping>()?;
+            let other_dict = other_bound.as_super();
+            {
+                let mut borrow = slf.borrow_mut();
+                for (k, e) in &m.inner.entries {
+                    borrow.inner.entries.insert(k.clone(), e.clone());
+                }
+            }
+            for k in m.inner.entries.keys() {
+                if let Some(py_val) = other_dict.get_item(k)? {
+                    dict_part.set_item(k, &py_val)?;
+                }
+            }
+            return Ok(());
+        }
+        // Duck-typing: keys() + __getitem__, or iterable of pairs.
+        // Update inner and parent dict key-by-key without full rebuild.
+        if other.hasattr("keys")? {
+            let keys = other.call_method0("keys")?;
+            for key in keys.try_iter()? {
+                let key = key?;
+                let val = other.get_item(&key)?;
+                let k: String = key.extract()?;
+                let node = py_to_node(&val)?;
+                let py_val = node_to_py(py, &node)?;
+                {
+                    let mut borrow = slf.borrow_mut();
+                    borrow.inner.entries.insert(
+                        k.clone(),
+                        YamlEntry {
+                            value: node,
+                            comment_before: None,
+                            comment_inline: None,
+                        },
+                    );
+                }
+                dict_part.set_item(k.as_str(), py_val.bind(py))?;
+            }
+            return Ok(());
+        }
+        for item in other.try_iter()? {
+            let item = item?;
+            let (k, val): (String, Bound<'_, PyAny>) = item.extract()?;
+            let node = py_to_node(&val)?;
+            let py_val = node_to_py(py, &node)?;
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.entries.insert(
+                    k.clone(),
+                    YamlEntry {
+                        value: node,
+                        comment_before: None,
+                        comment_inline: None,
+                    },
+                );
+            }
+            dict_part.set_item(k.as_str(), py_val.bind(py))?;
         }
         Ok(())
     }
@@ -702,13 +666,29 @@ impl PyYamlMapping {
             let mut borrow = slf.borrow_mut();
             sort_mapping(py, &mut borrow.inner, key.as_ref(), reverse, recursive)?;
         }
-        // Rebuild parent dict in sorted order.
         let dict_part = slf.as_super();
-        dict_part.clear();
-        let borrow = slf.borrow();
-        for (k, e) in &borrow.inner.entries {
-            let py_val = node_to_py(py, &e.value)?;
-            dict_part.set_item(k, py_val.bind(py))?;
+        if recursive {
+            // Recursive sort may have reordered nested objects' inner.entries too.
+            // Recreate Python objects from inner (simpler than chasing nested refs).
+            dict_part.clear();
+            let borrow = slf.borrow();
+            for (k, e) in &borrow.inner.entries {
+                let py_val = node_to_py(py, &e.value)?;
+                dict_part.set_item(k, py_val.bind(py))?;
+            }
+        } else {
+            // Non-recursive: only key order changed; Python objects are unchanged.
+            // Read them back from parent dict in the new sorted order and reinsert —
+            // no node_to_py calls needed.
+            let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+            let py_vals: Vec<Py<PyAny>> = sorted_keys
+                .iter()
+                .filter_map(|k| dict_part.get_item(k).ok()?.map(|v| v.unbind()))
+                .collect();
+            dict_part.clear();
+            for (k, v) in sorted_keys.iter().zip(py_vals.iter()) {
+                dict_part.set_item(k.as_str(), v.bind(py))?;
+            }
         }
         Ok(())
     }
@@ -733,18 +713,18 @@ impl PyYamlMapping {
             .and_then(|e| e.comment_before.clone())
     }
 
-    fn set_comment_inline(&mut self, key: &str, comment: &str) -> PyResult<()> {
+    fn set_comment_inline(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
         if let Some(entry) = self.inner.entries.get_mut(key) {
-            entry.comment_inline = Some(comment.to_owned());
+            entry.comment_inline = comment.map(str::to_owned);
             Ok(())
         } else {
             Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
         }
     }
 
-    fn set_comment_before(&mut self, key: &str, comment: &str) -> PyResult<()> {
+    fn set_comment_before(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
         if let Some(entry) = self.inner.entries.get_mut(key) {
-            entry.comment_before = Some(comment.to_owned());
+            entry.comment_before = comment.map(str::to_owned);
             Ok(())
         } else {
             Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
@@ -804,7 +784,13 @@ impl PyYamlSequence {
             let mut borrow = slf.borrow_mut();
             borrow.inner.items.remove(real_idx as usize);
         }
-        slf.as_super().del_item(real_idx as usize)?;
+        // Use set_slice(i, i+1, []) instead of del_item(): del_item routes through
+        // PySequence_DelItem which dispatches via sq_ass_item back to our __delitem__,
+        // causing a recursive removal loop. set_slice calls PyList_SetSlice at C level,
+        // bypassing the MRO entirely.
+        let empty = PyList::empty(slf.py());
+        slf.as_super()
+            .set_slice(real_idx as usize, real_idx as usize + 1, empty.as_any())?;
         Ok(())
     }
 
@@ -871,7 +857,10 @@ impl PyYamlSequence {
             let item = borrow.inner.items.remove(real_idx as usize);
             (real_idx, item.value)
         };
-        slf.as_super().del_item(real_idx as usize)?;
+        // Same C-level slice trick as __delitem__ to avoid re-entering our override.
+        let empty = PyList::empty(py);
+        slf.as_super()
+            .set_slice(real_idx as usize, real_idx as usize + 1, empty.as_any())?;
         node_to_py(py, &node)
     }
 
@@ -942,8 +931,20 @@ impl PyYamlSequence {
     }
 
     fn reverse(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let py = slf.py();
+        let list_part = slf.as_super();
+        let n = list_part.len();
+        // Collect existing Python objects in reversed order before clearing.
+        // No node_to_py calls needed — values are unchanged, only order changes.
+        let reversed: Vec<Py<PyAny>> = (0..n)
+            .rev()
+            .map(|i| list_part.get_item(i).map(|v| v.unbind()))
+            .collect::<PyResult<_>>()?;
         slf.borrow_mut().inner.items.reverse();
-        slf.as_super().call_method0("reverse")?;
+        list_part.call_method0("clear")?;
+        for v in &reversed {
+            list_part.append(v.bind(py))?;
+        }
         Ok(())
     }
 
@@ -954,17 +955,52 @@ impl PyYamlSequence {
         key: Option<Py<PyAny>>,
         reverse: bool,
     ) -> PyResult<()> {
+        let list_part = slf.as_super();
+        let n = list_part.len();
+        // Collect (inner_item, py_obj) pairs — reuse Python objects from parent list
+        // so we never call node_to_py here.
+        let pairs: Vec<(YamlItem, Py<PyAny>)> = {
+            let borrow = slf.borrow();
+            (0..n)
+                .map(|i| Ok((borrow.inner.items[i].clone(), list_part.get_item(i)?.unbind())))
+                .collect::<PyResult<_>>()?
+        };
+        // Compute sort keys from existing Python objects (apply key fn if given).
+        let sort_keys: Vec<Py<PyAny>> = pairs
+            .iter()
+            .map(|(_, py_obj)| {
+                if let Some(key_fn) = &key {
+                    key_fn.bind(py).call1((py_obj.bind(py),)).map(|r| r.unbind())
+                } else {
+                    Ok(py_obj.clone_ref(py))
+                }
+            })
+            .collect::<PyResult<_>>()?;
+        let mut zipped: Vec<(Py<PyAny>, YamlItem, Py<PyAny>)> = sort_keys
+            .into_iter()
+            .zip(pairs)
+            .map(|(k, (item, obj))| (k, item, obj))
+            .collect();
+        let mut err: Option<PyErr> = None;
+        zipped.sort_by(|(ka, _, _), (kb, _, _)| {
+            if err.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            py_compare(ka.bind(py), kb.bind(py), &mut err)
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        if reverse {
+            zipped.reverse();
+        }
         {
             let mut borrow = slf.borrow_mut();
-            sort_sequence(py, &mut borrow.inner, key.as_ref(), reverse)?;
+            borrow.inner.items = zipped.iter().map(|(_, item, _)| item.clone()).collect();
         }
-        // Rebuild parent list from sorted inner.
-        let list_part = slf.as_super();
         list_part.call_method0("clear")?;
-        let borrow = slf.borrow();
-        for item in &borrow.inner.items {
-            let py_val = node_to_py(py, &item.value)?;
-            list_part.append(py_val.bind(py))?;
+        for (_, _, py_obj) in &zipped {
+            list_part.append(py_obj.bind(py))?;
         }
         Ok(())
     }
@@ -993,23 +1029,23 @@ impl PyYamlSequence {
         Ok(self.inner.items[real_idx as usize].comment_before.clone())
     }
 
-    fn set_comment_inline(&mut self, idx: isize, comment: &str) -> PyResult<()> {
+    fn set_comment_inline(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
             return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
         }
-        self.inner.items[real_idx as usize].comment_inline = Some(comment.to_owned());
+        self.inner.items[real_idx as usize].comment_inline = comment.map(str::to_owned);
         Ok(())
     }
 
-    fn set_comment_before(&mut self, idx: isize, comment: &str) -> PyResult<()> {
+    fn set_comment_before(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
             return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
         }
-        self.inner.items[real_idx as usize].comment_before = Some(comment.to_owned());
+        self.inner.items[real_idx as usize].comment_before = comment.map(str::to_owned);
         Ok(())
     }
 

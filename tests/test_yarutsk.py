@@ -374,6 +374,201 @@ class TestCommentEdgeCases:
         assert "# second line" in result
 
 
+class TestCommentMutations:
+    """Tests for comment behaviour when values or structure are mutated."""
+
+    # ── overwrite / clear ────────────────────────────────────────────────────
+
+    def test_overwrite_inline_comment(self):
+        """Calling set_comment_inline twice keeps only the latest text."""
+        doc = yarutsk.loads("key: val  # original")
+        doc.set_comment_inline("key", "updated")
+        out = yarutsk.dumps(doc)
+        assert "# updated" in out
+        assert "original" not in out
+
+    def test_overwrite_before_comment(self):
+        """Calling set_comment_before twice keeps only the latest text."""
+        doc = yarutsk.loads("# original\nkey: val")
+        doc.set_comment_before("key", "updated")
+        out = yarutsk.dumps(doc)
+        assert "# updated" in out
+        assert "original" not in out
+
+    def test_clear_inline_comment_with_none(self):
+        """set_comment_inline(key, None) removes the comment from output."""
+        doc = yarutsk.loads("key: val  # remove me")
+        doc.set_comment_inline("key", None)
+        out = yarutsk.dumps(doc)
+        assert "#" not in out
+
+    def test_clear_before_comment_with_none(self):
+        """set_comment_before(key, None) removes the comment from output."""
+        doc = yarutsk.loads("# remove me\nkey: val")
+        doc.set_comment_before("key", None)
+        out = yarutsk.dumps(doc)
+        assert "#" not in out
+
+    # ── both comment types on the same key ───────────────────────────────────
+
+    def test_inline_and_before_on_same_key(self):
+        """A key can carry both an inline and a before-comment simultaneously."""
+        doc = yarutsk.loads("# above\nkey: val  # beside")
+        assert doc.get_comment_before("key") == "above"
+        assert doc.get_comment_inline("key") == "beside"
+        out = yarutsk.dumps(doc)
+        assert "# above" in out
+        assert "# beside" in out
+
+    def test_set_both_comment_types_then_round_trip(self):
+        doc = yarutsk.loads("key: val")
+        doc.set_comment_before("key", "header")
+        doc.set_comment_inline("key", "side")
+        doc2 = yarutsk.loads(yarutsk.dumps(doc))
+        assert doc2.get_comment_before("key") == "header"
+        assert doc2.get_comment_inline("key") == "side"
+
+    # ── comment survives value mutation ─────────────────────────────────────
+
+    def test_inline_comment_survives_value_change(self):
+        """Changing a value via __setitem__ preserves the existing inline comment."""
+        doc = yarutsk.loads("port: 5432  # db port")
+        doc["port"] = 5433
+        out = yarutsk.dumps(doc)
+        assert "5433" in out
+        assert "# db port" in out
+
+    def test_before_comment_survives_value_change(self):
+        """Changing a value via __setitem__ preserves the existing before-comment."""
+        doc = yarutsk.loads("# db port\nport: 5432")
+        doc["port"] = 5433
+        out = yarutsk.dumps(doc)
+        assert "5433" in out
+        assert "# db port" in out
+
+    # ── comments gone after deletion ─────────────────────────────────────────
+
+    def test_comment_gone_after_del(self):
+        """After deleting a key its comment no longer appears in output."""
+        doc = yarutsk.loads("a: 1  # keep\nb: 2  # gone")
+        del doc["b"]
+        out = yarutsk.dumps(doc)
+        assert "# keep" in out
+        assert "# gone" not in out
+
+    def test_comment_gone_after_pop(self):
+        doc = yarutsk.loads("a: 1\n# before b\nb: 2")
+        doc.pop("b")
+        out = yarutsk.dumps(doc)
+        assert "before b" not in out
+
+    # ── update() ─────────────────────────────────────────────────────────────
+
+    def test_update_preserves_comments_on_untouched_keys(self):
+        """update() with a key not in other leaves existing comments intact."""
+        doc = yarutsk.loads("a: 1  # side\nb: 2")
+        doc.update({"b": 99})
+        out = yarutsk.dumps(doc)
+        assert "# side" in out
+        assert "99" in out
+
+    def test_update_with_new_key_no_comment(self):
+        """A key introduced via update() has no comment."""
+        doc = yarutsk.loads("a: 1")
+        doc.update({"b": 2})
+        assert doc.get_comment_inline("b") is None
+        assert doc.get_comment_before("b") is None
+
+    # ── comment on newly added key ───────────────────────────────────────────
+
+    def test_add_comment_to_new_key(self):
+        """A key added via __setitem__ can receive a comment and round-trips."""
+        doc = yarutsk.loads("a: 1")
+        doc["b"] = 2
+        doc.set_comment_inline("b", "new key")
+        out = yarutsk.dumps(doc)
+        assert "b: 2" in out
+        assert "# new key" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2.get_comment_inline("b") == "new key"
+
+
+class TestCommentSequenceMutations:
+    """Tests for comment behaviour on sequence items after mutation."""
+
+    # ── set_comment_* on sequence indices ────────────────────────────────────
+
+    def test_set_inline_on_sequence_item(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        doc.set_comment_inline(1, "middle")
+        out = yarutsk.dumps(doc)
+        assert "# middle" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2.get_comment_inline(1) == "middle"
+
+    def test_set_before_on_sequence_item(self):
+        doc = yarutsk.loads("- a\n- b\n- c")
+        doc.set_comment_before(2, "last item")
+        out = yarutsk.dumps(doc)
+        assert "# last item" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2.get_comment_before(2) == "last item"
+
+    def test_overwrite_inline_on_sequence_item(self):
+        doc = yarutsk.loads("- a  # old\n- b")
+        doc.set_comment_inline(0, "new")
+        out = yarutsk.dumps(doc)
+        assert "# new" in out
+        assert "old" not in out
+
+    def test_clear_inline_on_sequence_item(self):
+        doc = yarutsk.loads("- a  # remove\n- b")
+        doc.set_comment_inline(0, None)
+        out = yarutsk.dumps(doc)
+        assert "#" not in out
+
+    # ── insert() shifts comments ─────────────────────────────────────────────
+
+    def test_insert_shifts_item_with_comment(self):
+        """insert(0, …) shifts existing items; the comment travels with them."""
+        doc = yarutsk.loads("- a\n- b  # on b")
+        doc.insert(0, "z")
+        # "b" is now at index 2; its comment should be there
+        assert doc[2] == "b"
+        assert doc.get_comment_inline(2) == "on b"
+
+    def test_insert_new_item_has_no_comment(self):
+        doc = yarutsk.loads("- a\n- b")
+        doc.insert(1, "new")
+        assert doc.get_comment_inline(1) is None
+        assert doc.get_comment_before(1) is None
+
+    # ── pop() removes comment ────────────────────────────────────────────────
+
+    def test_pop_removes_comment_from_output(self):
+        doc = yarutsk.loads("- a  # first\n- b\n- c")
+        doc.pop(0)
+        out = yarutsk.dumps(doc)
+        assert "# first" not in out
+
+    def test_pop_shifts_remaining_comments(self):
+        """After pop(0), what was item 1 is now item 0 and keeps its comment."""
+        doc = yarutsk.loads("- a\n- b  # on b\n- c")
+        doc.pop(0)
+        assert doc[0] == "b"
+        assert doc.get_comment_inline(0) == "on b"
+
+    # ── reverse() keeps comments with their items ────────────────────────────
+
+    def test_reverse_keeps_comments_with_items(self):
+        doc = yarutsk.loads("- a  # first\n- b\n- c  # last")
+        doc.reverse()
+        assert doc[0] == "c"
+        assert doc.get_comment_inline(0) == "last"
+        assert doc[2] == "a"
+        assert doc.get_comment_inline(2) == "first"
+
+
 class TestSorting:
     """Test sorting functionality."""
 
