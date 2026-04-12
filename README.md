@@ -170,7 +170,7 @@ Sorting preserves all comments — each entry or item carries its inline and bef
 
 ## Running tests
 
-The repo contains three test suites. You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv). Python 3.12 is the minimum — `YamlSequence` subclasses `list`, which requires PyO3's `extends = PyList` support introduced in Python 3.12.
+You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv). Python 3.12 is the minimum — `YamlSequence` subclasses `list`, which requires PyO3's `extends = PyList` support introduced in Python 3.12.
 
 ```bash
 # 1. Clone with the yaml-test-suite submodule
@@ -184,23 +184,11 @@ uv sync --group dev
 uv run maturin develop
 
 # 4. Run the suites
-uv run pytest tests/test_yarutsk.py -v          # core library tests
-uv run pytest tests/test_sort.py -v             # key-ordering tests
-uv run pytest tests/test_yaml_suite.py -q       # yaml-test-suite compliance
+uv run pytest tests/ --ignore=tests/test_yaml_suite.py -v  # core library tests
+uv run pytest tests/test_yaml_suite.py -q                   # yaml-test-suite compliance
 ```
 
-`test_yaml_suite.py` requires the `yaml-test-suite` submodule and PyYAML (both available after the steps above). Round-trip tests that fail due to YAML normalisation (flow→block, anchors, folded scalars) are marked `xfail` and do not count as failures.
-
-## Benchmarks
-
-Benchmarks compare yarutsk against PyYAML and ruamel.yaml using [pytest-benchmark](https://pytest-benchmark.readthedocs.io/):
-
-```bash
-uv sync --group benchmark
-uv run pytest benchmarks/ -v --benchmark-min-rounds=10
-```
-
-ruamel.yaml is the closest analogue to yarutsk (it also preserves comments), so it is the primary point of comparison.
+`test_yaml_suite.py` requires the `yaml-test-suite` submodule. Tests that fail due to known YAML normalisation differences are marked `xfail` and do not count as failures.
 
 ## Internals
 

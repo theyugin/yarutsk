@@ -16,6 +16,10 @@ dist/
 # maturin / build output
 *.whl
 
+# Profiling output
+perf.data
+flamegraph.svg
+
 # Editor
 .idea/
 .vscode/

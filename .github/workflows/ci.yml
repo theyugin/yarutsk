@@ -41,7 +41,7 @@ jobs:
         run: uv run maturin develop
 
       - name: Core tests
-        run: uv run pytest tests/test_yarutsk.py tests/test_sort.py -v
+        run: uv run pytest tests/ --ignore=tests/test_yaml_suite.py -v
 
       - name: yaml-test-suite compliance
         run: uv run pytest tests/test_yaml_suite.py -q --tb=short

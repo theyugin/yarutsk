@@ -41,13 +41,7 @@ dev = [
     "maturin>=1.13.1",
     "mypy>=1.19.1",
     "pre-commit>=4.0.0",
-    "pytest-benchmark>=4.0.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.4.0",
     "ruff>=0.15.10",
-]
-benchmark = [
-    { include-group = "dev" },
-    "pyyaml>=6.0.3",
-    "ruamel-yaml>=0.18.16",
 ]

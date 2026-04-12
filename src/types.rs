@@ -10,9 +10,32 @@ pub enum YamlNode {
     Null,
 }
 
+/// How a scalar value was written in the source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScalarStyle {
+    Plain,
+    SingleQuoted,
+    DoubleQuoted,
+    /// Literal block scalar (`|`).
+    Literal,
+    /// Folded block scalar (`>`).
+    Folded,
+}
+
+/// Whether a mapping or sequence used flow (`{…}`/`[…]`) or block (`key:`/`- `) style.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContainerStyle {
+    Block,
+    Flow,
+}
+
 #[derive(Debug, Clone)]
 pub struct YamlScalar {
     pub value: ScalarValue,
+    /// The quoting style used in the source (or `Plain` for newly constructed scalars).
+    pub style: ScalarStyle,
+    /// Optional YAML tag (e.g. `"!!str"`, `"!python/tuple"`).
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,12 +113,26 @@ impl ScalarValue {
 #[derive(Debug, Clone)]
 pub struct YamlMapping {
     pub entries: IndexMap<String, YamlEntry>,
+    /// Block (`key: value`) or flow (`{key: value}`) style.
+    pub style: ContainerStyle,
+    /// Optional YAML tag.
+    pub tag: Option<String>,
 }
 
 impl YamlMapping {
     pub fn new() -> Self {
         YamlMapping {
             entries: IndexMap::new(),
+            style: ContainerStyle::Block,
+            tag: None,
+        }
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        YamlMapping {
+            entries: IndexMap::with_capacity(n),
+            style: ContainerStyle::Block,
+            tag: None,
         }
     }
 }
@@ -116,11 +153,27 @@ pub struct YamlEntry {
 #[derive(Debug, Clone)]
 pub struct YamlSequence {
     pub items: Vec<YamlItem>,
+    /// Block (`- item`) or flow (`[item]`) style.
+    pub style: ContainerStyle,
+    /// Optional YAML tag.
+    pub tag: Option<String>,
 }
 
 impl YamlSequence {
     pub fn new() -> Self {
-        YamlSequence { items: Vec::new() }
+        YamlSequence {
+            items: Vec::new(),
+            style: ContainerStyle::Block,
+            tag: None,
+        }
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        YamlSequence {
+            items: Vec::with_capacity(n),
+            style: ContainerStyle::Block,
+            tag: None,
+        }
     }
 }
 

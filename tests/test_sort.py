@@ -162,6 +162,14 @@ m: 3  # m comment
         assert list(doc.keys()) == ["a", "z"]
         assert list(doc["a"].keys()) == ["m", "b"]  # inner unchanged
 
+    def test_sort_then_insert(self):
+        """New keys inserted after sort go to the end."""
+        content = io.StringIO("z: 1\na: 2\nm: 3")
+        doc = yarutsk.load(content)
+        doc.sort_keys()
+        doc["b"] = 4
+        assert list(doc.keys()) == ["a", "m", "z", "b"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

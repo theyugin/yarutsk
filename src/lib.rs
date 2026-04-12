@@ -39,8 +39,8 @@ fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone()),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone()),
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), false),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), false),
     }
 }
 
@@ -49,6 +49,8 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if obj.is_none() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Null,
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     // Check our custom types before primitives (PyYamlMapping extends PyDict,
@@ -66,21 +68,29 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if let Ok(b) = obj.extract::<bool>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Bool(b),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(n) = obj.extract::<i64>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Int(n),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(f) = obj.extract::<f64>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Float(f),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(s) = obj.extract::<String>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Str(s),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     // Plain dict/list fallback (for users passing native Python dicts/lists).
@@ -119,11 +129,12 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
 }
 
 /// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
-fn node_to_doc(py: Python<'_>, node: YamlNode) -> PyResult<Py<PyAny>> {
+/// `explicit_start` is true when the source had an explicit `---` marker for this document.
+fn node_to_doc(py: Python<'_>, node: YamlNode, explicit_start: bool) -> PyResult<Py<PyAny>> {
     match node {
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s),
-        other => Ok(PyYamlScalar { inner: other }
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, explicit_start),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, explicit_start),
+        other => Ok(PyYamlScalar { inner: other, explicit_start }
             .into_pyobject(py)?
             .into_any()
             .unbind()),
@@ -139,14 +150,26 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if let Ok(bound_m) = obj.cast::<PyYamlMapping>() {
         let borrow = bound_m.borrow();
         let dict_part = bound_m.as_super();
-        let mut mapping = YamlMapping::new();
-        // Walk inner.entries for key order and comment data; read values from parent dict.
+        let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
+        // Preserve container style and tag from inner.
+        mapping.style = borrow.inner.style;
+        mapping.tag = borrow.inner.tag.clone();
+        // Walk inner.entries for key order and comment data.
+        // For scalar/null values, inner.entries[k].value is always current and has
+        // the original style/tag info, so use it directly.
+        // For container values, read from the parent dict so that any mutations to
+        // returned child objects (which don't propagate back to inner) are visible.
         for (k, e) in &borrow.inner.entries {
-            let py_val = match dict_part.get_item(k)? {
-                Some(v) => v,
-                None => continue, // key was removed; skip
+            let node = match &e.value {
+                YamlNode::Scalar(_) | YamlNode::Null => e.value.clone(),
+                _ => {
+                    let py_val = match dict_part.get_item(k)? {
+                        Some(v) => v,
+                        None => continue, // key was removed; skip
+                    };
+                    extract_yaml_node(&py_val)?
+                }
             };
-            let node = extract_yaml_node(&py_val)?;
             mapping.entries.insert(
                 k.clone(),
                 YamlEntry {
@@ -162,10 +185,18 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let borrow = bound_s.borrow();
         let list_part = bound_s.as_super();
         let inner_len = borrow.inner.items.len();
-        let mut seq = YamlSequence::new();
+        let mut seq = YamlSequence::with_capacity(inner_len);
+        // Preserve container style and tag from inner.
+        seq.style = borrow.inner.style;
+        seq.tag = borrow.inner.tag.clone();
         for i in 0..inner_len {
-            let py_val = list_part.get_item(i)?;
-            let node = extract_yaml_node(&py_val)?;
+            let node = match &borrow.inner.items[i].value {
+                YamlNode::Scalar(_) | YamlNode::Null => borrow.inner.items[i].value.clone(),
+                _ => {
+                    let py_val = list_part.get_item(i)?;
+                    extract_yaml_node(&py_val)?
+                }
+            };
             seq.items.push(YamlItem {
                 value: node,
                 comment_before: borrow.inner.items[i].comment_before.clone(),
@@ -181,26 +212,36 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if obj.is_none() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Null,
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(b) = obj.extract::<bool>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Bool(b),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(n) = obj.extract::<i64>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Int(n),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(f) = obj.extract::<f64>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Float(f),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     if let Ok(s) = obj.extract::<String>() {
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Str(s),
+            style: ScalarStyle::Plain,
+            tag: None,
         }));
     }
     Err(PyRuntimeError::new_err(
@@ -212,7 +253,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
 
 /// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
 /// The parent dict is populated with the mapping's entries.
-fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping) -> PyResult<Py<PyAny>> {
+fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, explicit_start: bool) -> PyResult<Py<PyAny>> {
     // Build Python values before moving m into the struct.
     let py_pairs: Vec<(String, Py<PyAny>)> = m
         .entries
@@ -223,7 +264,7 @@ fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping) -> PyResult<Py<PyAny
         })
         .collect::<PyResult<_>>()?;
 
-    let obj: Py<PyYamlMapping> = Py::new(py, PyYamlMapping { inner: m })?;
+    let obj: Py<PyYamlMapping> = Py::new(py, PyYamlMapping { inner: m, explicit_start })?;
 
     // Populate the underlying dict with Python-visible values.
     {
@@ -239,7 +280,7 @@ fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping) -> PyResult<Py<PyAny
 
 /// Create a PyYamlSequence (list subclass) from a Rust YamlSequence.
 /// The parent list is populated with the sequence's items.
-fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence) -> PyResult<Py<PyAny>> {
+fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence, explicit_start: bool) -> PyResult<Py<PyAny>> {
     // Build Python values before moving s into the struct.
     let py_items: Vec<Py<PyAny>> = s
         .items
@@ -247,7 +288,7 @@ fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence) -> PyResult<Py<PyA
         .map(|item| node_to_py(py, &item.value))
         .collect::<PyResult<_>>()?;
 
-    let obj: Py<PyYamlSequence> = Py::new(py, PyYamlSequence { inner: s })?;
+    let obj: Py<PyYamlSequence> = Py::new(py, PyYamlSequence { inner: s, explicit_start })?;
 
     // Populate the underlying list with Python-visible values.
     {
@@ -349,17 +390,8 @@ fn write_to_stream(stream: &Bound<'_, PyAny>, text: &str) -> PyResult<()> {
 
 // ─── Parse / emit helpers ─────────────────────────────────────────────────────
 
-fn parse_text(text: &str) -> PyResult<Vec<YamlNode>> {
+fn parse_text(text: &str) -> PyResult<(Vec<YamlNode>, Vec<bool>)> {
     parse_str(text).map_err(|e| PyRuntimeError::new_err(format!("Parse error: {e}")))
-}
-
-fn emit_node_to_string(node: &YamlNode) -> String {
-    let mut out = String::new();
-    emit_node(node, 0, &mut out);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out
 }
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
@@ -443,6 +475,8 @@ fn sort_mapping(
 #[derive(Clone)]
 pub struct PyYamlScalar {
     inner: YamlNode, // YamlNode::Scalar or YamlNode::Null
+    /// True when the document this node belongs to had an explicit `---` marker.
+    pub explicit_start: bool,
 }
 
 #[pymethods]
@@ -474,6 +508,67 @@ impl PyYamlScalar {
         let v = self.value(py)?;
         Ok(format!("YamlScalar({})", v.bind(py).repr()?))
     }
+
+    /// The scalar style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``.
+    /// Newly created scalars use ``"plain"``.
+    #[getter]
+    fn style(&self) -> &'static str {
+        match &self.inner {
+            YamlNode::Scalar(s) => match s.style {
+                ScalarStyle::Plain => "plain",
+                ScalarStyle::SingleQuoted => "single",
+                ScalarStyle::DoubleQuoted => "double",
+                ScalarStyle::Literal => "literal",
+                ScalarStyle::Folded => "folded",
+            },
+            _ => "plain",
+        }
+    }
+
+    #[setter]
+    fn set_style(&mut self, style: &str) -> PyResult<()> {
+        let new_style = match style {
+            "plain" => ScalarStyle::Plain,
+            "single" => ScalarStyle::SingleQuoted,
+            "double" => ScalarStyle::DoubleQuoted,
+            "literal" => ScalarStyle::Literal,
+            "folded" => ScalarStyle::Folded,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected plain/single/double/literal/folded"
+                )))
+            }
+        };
+        if let YamlNode::Scalar(s) = &mut self.inner {
+            s.style = new_style;
+        }
+        Ok(())
+    }
+
+    /// The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``.
+    fn get_tag(&self) -> Option<&str> {
+        match &self.inner {
+            YamlNode::Scalar(s) => s.tag.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn set_tag(&mut self, tag: Option<&str>) {
+        if let YamlNode::Scalar(s) = &mut self.inner {
+            s.tag = tag.map(str::to_owned);
+        }
+    }
+
+    /// Whether this document had an explicit `---` marker in the source.
+    #[getter]
+    fn get_explicit_start(&self) -> bool {
+        self.explicit_start
+    }
+
+    #[setter]
+    fn set_explicit_start(&mut self, value: bool) {
+        self.explicit_start = value;
+    }
 }
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
@@ -484,6 +579,8 @@ impl PyYamlScalar {
 #[derive(Clone)]
 pub struct PyYamlMapping {
     inner: types::YamlMapping,
+    /// True when the document this mapping belongs to had an explicit `---` marker.
+    pub explicit_start: bool,
 }
 
 #[pymethods]
@@ -492,6 +589,7 @@ impl PyYamlMapping {
     fn new() -> Self {
         PyYamlMapping {
             inner: types::YamlMapping::new(),
+            explicit_start: false,
         }
     }
 
@@ -731,6 +829,63 @@ impl PyYamlMapping {
         }
     }
 
+    /// The YAML tag on this mapping (e.g. ``"!!map"``), or ``None``.
+    fn get_tag(&self) -> Option<&str> {
+        self.inner.tag.as_deref()
+    }
+
+    fn set_tag(&mut self, tag: Option<&str>) {
+        self.inner.tag = tag.map(str::to_owned);
+    }
+
+    /// Whether this document had an explicit `---` marker in the source.
+    #[getter]
+    fn get_explicit_start(&self) -> bool {
+        self.explicit_start
+    }
+
+    #[setter]
+    fn set_explicit_start(&mut self, value: bool) {
+        self.explicit_start = value;
+    }
+
+    /// Return the underlying YAML node for a key as a YamlScalar, YamlMapping,
+    /// or YamlSequence object, preserving style/tag metadata.
+    /// Raises KeyError if the key is absent.
+    fn get_node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
+        match self.inner.entries.get(key) {
+            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), false)?),
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
+    /// Set the scalar style for the value at `key`.
+    /// `style` must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+    /// Raises KeyError if the key is absent; raises ValueError for unknown styles.
+    fn set_scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
+        let new_style = match style {
+            "plain" => ScalarStyle::Plain,
+            "single" => ScalarStyle::SingleQuoted,
+            "double" => ScalarStyle::DoubleQuoted,
+            "literal" => ScalarStyle::Literal,
+            "folded" => ScalarStyle::Folded,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected plain/single/double/literal/folded"
+                )))
+            }
+        };
+        match self.inner.entries.get_mut(key) {
+            Some(entry) => {
+                if let YamlNode::Scalar(s) = &mut entry.value {
+                    s.style = new_style;
+                }
+                Ok(())
+            }
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         mapping_repr(py, &self.inner)
     }
@@ -744,6 +899,8 @@ impl PyYamlMapping {
 #[derive(Clone)]
 pub struct PyYamlSequence {
     inner: types::YamlSequence,
+    /// True when the document this sequence belongs to had an explicit `---` marker.
+    pub explicit_start: bool,
 }
 
 #[pymethods]
@@ -752,6 +909,7 @@ impl PyYamlSequence {
     fn new() -> Self {
         PyYamlSequence {
             inner: types::YamlSequence::new(),
+            explicit_start: false,
         }
     }
 
@@ -1049,6 +1207,26 @@ impl PyYamlSequence {
         Ok(())
     }
 
+    /// The YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``.
+    fn get_tag(&self) -> Option<&str> {
+        self.inner.tag.as_deref()
+    }
+
+    fn set_tag(&mut self, tag: Option<&str>) {
+        self.inner.tag = tag.map(str::to_owned);
+    }
+
+    /// Whether this document had an explicit `---` marker in the source.
+    #[getter]
+    fn get_explicit_start(&self) -> bool {
+        self.explicit_start
+    }
+
+    #[setter]
+    fn set_explicit_start(&mut self, value: bool) {
+        self.explicit_start = value;
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         sequence_repr(py, &self.inner)
     }
@@ -1059,53 +1237,81 @@ impl PyYamlSequence {
 #[pyfunction]
 fn load(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let text = read_stream(stream)?;
-    let mut docs = parse_text(&text)?;
+    let (mut docs, mut explicit) = parse_text(&text)?;
     if docs.is_empty() {
         return Ok(py.None());
     }
-    node_to_doc(py, docs.swap_remove(0))
+    node_to_doc(py, docs.swap_remove(0), explicit.swap_remove(0))
 }
 
 #[pyfunction]
 fn loads(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let mut docs = parse_text(text)?;
+    let (mut docs, mut explicit) = parse_text(text)?;
     if docs.is_empty() {
         return Ok(py.None());
     }
-    node_to_doc(py, docs.swap_remove(0))
+    node_to_doc(py, docs.swap_remove(0), explicit.swap_remove(0))
 }
 
 #[pyfunction]
 fn load_all(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let text = read_stream(stream)?;
-    let docs = parse_text(&text)?;
+    let (docs, explicit) = parse_text(&text)?;
     let pydocs: Vec<Py<PyAny>> = docs
         .into_iter()
-        .map(|d| node_to_doc(py, d))
+        .zip(explicit)
+        .map(|(d, e)| node_to_doc(py, d, e))
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
 
 #[pyfunction]
 fn loads_all(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let docs = parse_text(text)?;
+    let (docs, explicit) = parse_text(text)?;
     let pydocs: Vec<Py<PyAny>> = docs
         .into_iter()
-        .map(|d| node_to_doc(py, d))
+        .zip(explicit)
+        .map(|(d, e)| node_to_doc(py, d, e))
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
 
+/// Return true if the Python doc object has `explicit_start = True`.
+fn get_explicit_start_flag(obj: &Bound<'_, PyAny>) -> bool {
+    if let Ok(m) = obj.cast::<PyYamlMapping>() {
+        return m.borrow().explicit_start;
+    }
+    if let Ok(s) = obj.cast::<PyYamlSequence>() {
+        return s.borrow().explicit_start;
+    }
+    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+        return sc.explicit_start;
+    }
+    false
+}
+
+fn emit_doc_to_string(doc: &Bound<'_, PyAny>) -> PyResult<String> {
+    let explicit = get_explicit_start_flag(doc);
+    let node = extract_yaml_node(doc)?;
+    let mut out = String::new();
+    if explicit {
+        out.push_str("---\n");
+    }
+    emit_node(&node, 0, &mut out);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 #[pyfunction]
 fn dump(doc: &Bound<'_, PyAny>, stream: &Bound<'_, PyAny>) -> PyResult<()> {
-    let node = extract_yaml_node(doc)?;
-    write_to_stream(stream, &emit_node_to_string(&node))
+    write_to_stream(stream, &emit_doc_to_string(doc)?)
 }
 
 #[pyfunction]
 fn dumps(doc: &Bound<'_, PyAny>) -> PyResult<String> {
-    let node = extract_yaml_node(doc)?;
-    Ok(emit_node_to_string(&node))
+    emit_doc_to_string(doc)
 }
 
 #[pyfunction]
