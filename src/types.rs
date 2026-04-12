@@ -122,6 +122,265 @@ impl ScalarValue {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Null ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_null_variants() {
+        for s in &["", "null", "Null", "NULL", "~"] {
+            assert!(
+                matches!(ScalarValue::from_str(s), ScalarValue::Null),
+                "expected Null for {s:?}"
+            );
+        }
+    }
+
+    // ── Bool ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_bool_true_variants() {
+        for s in &[
+            "true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON",
+        ] {
+            assert!(
+                matches!(ScalarValue::from_str(s), ScalarValue::Bool(true)),
+                "expected Bool(true) for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_str_bool_false_variants() {
+        for s in &[
+            "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF",
+        ] {
+            assert!(
+                matches!(ScalarValue::from_str(s), ScalarValue::Bool(false)),
+                "expected Bool(false) for {s:?}"
+            );
+        }
+    }
+
+    // ── Integer ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_integer_decimal() {
+        assert!(matches!(ScalarValue::from_str("0"), ScalarValue::Int(0)));
+        assert!(matches!(ScalarValue::from_str("42"), ScalarValue::Int(42)));
+        assert!(matches!(ScalarValue::from_str("-1"), ScalarValue::Int(-1)));
+        assert!(matches!(
+            ScalarValue::from_str("9223372036854775807"),
+            ScalarValue::Int(i64::MAX)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("-9223372036854775808"),
+            ScalarValue::Int(i64::MIN)
+        ));
+    }
+
+    #[test]
+    fn from_str_integer_hex() {
+        assert!(matches!(
+            ScalarValue::from_str("0xFF"),
+            ScalarValue::Int(255)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("0XFF"),
+            ScalarValue::Int(255)
+        ));
+        assert!(matches!(ScalarValue::from_str("0x0"), ScalarValue::Int(0)));
+        assert!(matches!(
+            ScalarValue::from_str("0xDEAD"),
+            ScalarValue::Int(0xDEAD)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("0x7fffffffffffffff"),
+            ScalarValue::Int(i64::MAX)
+        ));
+    }
+
+    #[test]
+    fn from_str_integer_octal() {
+        assert!(matches!(
+            ScalarValue::from_str("0o77"),
+            ScalarValue::Int(63)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("0O77"),
+            ScalarValue::Int(63)
+        ));
+        assert!(matches!(ScalarValue::from_str("0o0"), ScalarValue::Int(0)));
+        assert!(matches!(
+            ScalarValue::from_str("0o777"),
+            ScalarValue::Int(0o777)
+        ));
+    }
+
+    #[test]
+    fn from_str_integer_overflow_falls_back_to_str() {
+        // One past i64::MAX — parse::<i64> fails, from_str_radix won't be tried
+        assert!(matches!(
+            ScalarValue::from_str("9223372036854775808"),
+            ScalarValue::Str(_)
+        ));
+    }
+
+    // ── Float ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_float_decimal() {
+        assert!(matches!(
+            ScalarValue::from_str("1.5"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("0.0"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("-1.5"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(ScalarValue::from_str(".5"), ScalarValue::Float(_)));
+        // Whole-number float: must have trailing dot to be a float
+        assert!(matches!(ScalarValue::from_str("1."), ScalarValue::Float(_)));
+    }
+
+    #[test]
+    fn from_str_float_exponent() {
+        assert!(matches!(
+            ScalarValue::from_str("1e5"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("1E5"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("1.5e-3"),
+            ScalarValue::Float(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("1.5E+10"),
+            ScalarValue::Float(_)
+        ));
+    }
+
+    #[test]
+    fn from_str_float_infinity() {
+        assert!(matches!(
+            ScalarValue::from_str(".inf"),
+            ScalarValue::Float(f) if f.is_infinite() && f > 0.0
+        ));
+        assert!(matches!(
+            ScalarValue::from_str(".Inf"),
+            ScalarValue::Float(f) if f.is_infinite() && f > 0.0
+        ));
+        assert!(matches!(
+            ScalarValue::from_str(".INF"),
+            ScalarValue::Float(f) if f.is_infinite() && f > 0.0
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("-.inf"),
+            ScalarValue::Float(f) if f.is_infinite() && f < 0.0
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("-.INF"),
+            ScalarValue::Float(f) if f.is_infinite() && f < 0.0
+        ));
+    }
+
+    #[test]
+    fn from_str_float_nan() {
+        assert!(matches!(
+            ScalarValue::from_str(".nan"),
+            ScalarValue::Float(f) if f.is_nan()
+        ));
+        assert!(matches!(
+            ScalarValue::from_str(".NaN"),
+            ScalarValue::Float(f) if f.is_nan()
+        ));
+        assert!(matches!(
+            ScalarValue::from_str(".NAN"),
+            ScalarValue::Float(f) if f.is_nan()
+        ));
+    }
+
+    #[test]
+    fn from_str_float_requires_dot_or_e() {
+        // A bare integer-looking string without . or e is not a float
+        // "1" → Int, not Float
+        assert!(matches!(ScalarValue::from_str("1"), ScalarValue::Int(1)));
+    }
+
+    // ── String fallback ────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_string_fallback() {
+        for s in &["hello", "world", "YAML", "not-a-bool", "1.2.3", "v1.0"] {
+            assert!(
+                matches!(ScalarValue::from_str(s), ScalarValue::Str(_)),
+                "expected Str for {s:?}"
+            );
+        }
+    }
+
+    // ── Edge cases ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_invalid_hex_prefix_only_is_str() {
+        // "0x" with no digits — from_str_radix("", 16) fails → falls through to Str
+        assert!(matches!(ScalarValue::from_str("0x"), ScalarValue::Str(_)));
+        assert!(matches!(ScalarValue::from_str("0X"), ScalarValue::Str(_)));
+    }
+
+    #[test]
+    fn from_str_invalid_octal_digit_is_str() {
+        // '8' and '9' are not valid octal digits
+        assert!(matches!(ScalarValue::from_str("0o8"), ScalarValue::Str(_)));
+        assert!(matches!(ScalarValue::from_str("0o9"), ScalarValue::Str(_)));
+    }
+
+    #[test]
+    fn from_str_underscore_integer_is_str() {
+        // Rust's parse::<i64>() does not accept underscores, so these stay as Str.
+        // The emitter preserves the original source text so round-trip still works.
+        assert!(matches!(
+            ScalarValue::from_str("1_000"),
+            ScalarValue::Str(_)
+        ));
+        assert!(matches!(
+            ScalarValue::from_str("1_000_000"),
+            ScalarValue::Str(_)
+        ));
+    }
+
+    #[test]
+    fn from_str_partial_bool_lookalike_is_str() {
+        // Mixed-case forms that don't match the recognised list
+        assert!(matches!(ScalarValue::from_str("TrUe"), ScalarValue::Str(_)));
+        assert!(matches!(
+            ScalarValue::from_str("fAlSe"),
+            ScalarValue::Str(_)
+        ));
+        assert!(matches!(ScalarValue::from_str("YeS"), ScalarValue::Str(_)));
+        assert!(matches!(ScalarValue::from_str("nUlL"), ScalarValue::Str(_)));
+    }
+
+    #[test]
+    fn from_str_partial_null_lookalike_is_str() {
+        assert!(matches!(
+            ScalarValue::from_str("nulll"),
+            ScalarValue::Str(_)
+        ));
+        assert!(matches!(ScalarValue::from_str("Nul"), ScalarValue::Str(_)));
+        assert!(matches!(ScalarValue::from_str("~~"), ScalarValue::Str(_)));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct YamlMapping {
     pub entries: IndexMap<String, YamlEntry>,

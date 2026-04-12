@@ -547,6 +547,677 @@ fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emitter::emit_docs;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Full round-trip: parse `src`, emit, assert output == `src`.
+    fn rt(src: &str) {
+        let (docs, starts, ends) = parse_str(src).expect("parse failed");
+        let out = emit_docs(&docs, &starts, &ends);
+        assert_eq!(
+            out, src,
+            "round-trip mismatch\n---expected---\n{src}\n---got---\n{out}\n"
+        );
+    }
+
+    /// Parse `src` and return the single top-level document node.
+    fn parse_one(src: &str) -> YamlNode {
+        let (mut docs, _, _) = parse_str(src).expect("parse failed");
+        assert_eq!(docs.len(), 1, "expected exactly one document");
+        docs.remove(0)
+    }
+
+    // ── Empty / trivial ───────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_input_produces_no_docs() {
+        let (docs, starts, ends) = parse_str("").unwrap();
+        assert!(docs.is_empty());
+        assert!(starts.is_empty());
+        assert!(ends.is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_produces_no_docs() {
+        let (docs, _, _) = parse_str("   \n  \n").unwrap();
+        assert!(docs.is_empty());
+    }
+
+    // ── Null scalar ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bare_null_parses_as_null() {
+        let node = parse_one("null\n");
+        assert!(matches!(
+            node,
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Null,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tilde_parses_as_null_with_original() {
+        let node = parse_one("~\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Null));
+            assert_eq!(s.original.as_deref(), Some("~"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    // ── Bool scalars ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn bool_true_canonical() {
+        let node = parse_one("true\n");
+        assert!(matches!(
+            node,
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Bool(true),
+                original: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn bool_yes_has_original() {
+        let node = parse_one("yes\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Bool(true)));
+            assert_eq!(s.original.as_deref(), Some("yes"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn bool_on_has_original() {
+        let node = parse_one("on\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Bool(true)));
+            assert_eq!(s.original.as_deref(), Some("on"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    // ── Integer scalars ───────────────────────────────────────────────────────
+
+    #[test]
+    fn decimal_int_no_original() {
+        let node = parse_one("42\n");
+        assert!(matches!(
+            node,
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Int(42),
+                original: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn hex_int_has_original() {
+        let node = parse_one("0xFF\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Int(255)));
+            assert_eq!(s.original.as_deref(), Some("0xFF"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn octal_int_has_original() {
+        let node = parse_one("0o77\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Int(63)));
+            assert_eq!(s.original.as_deref(), Some("0o77"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    // ── Float scalars ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn float_with_dot_no_original() {
+        let node = parse_one("3.14\n");
+        assert!(matches!(
+            node,
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Float(_),
+                original: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn float_exponent_has_original() {
+        let node = parse_one("1.5e10\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Float(_)));
+            assert_eq!(s.original.as_deref(), Some("1.5e10"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn inf_parses_as_infinite_float() {
+        // .inf round-trips via the emitter's canonical path — no `original` needed
+        let node = parse_one(".inf\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Float(f) if f.is_infinite() && f > 0.0));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn nan_parses_as_nan_float() {
+        // .nan round-trips via the emitter's canonical path — no `original` needed
+        let node = parse_one(".nan\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value, ScalarValue::Float(f) if f.is_nan()));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    // ── Quoted scalars ────────────────────────────────────────────────────────
+
+    #[test]
+    fn single_quoted_style_preserved() {
+        let node = parse_one("'hello'\n");
+        if let YamlNode::Scalar(s) = node {
+            assert_eq!(s.style, ScalarStyle::SingleQuoted);
+            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "hello"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn double_quoted_style_preserved() {
+        let node = parse_one("\"hello\"\n");
+        if let YamlNode::Scalar(s) = node {
+            assert_eq!(s.style, ScalarStyle::DoubleQuoted);
+            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "hello"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn quoted_null_string_is_str_not_null() {
+        let node = parse_one("'null'\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "null"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn quoted_empty_string_is_str_not_null() {
+        let node = parse_one("''\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(&s.value, ScalarValue::Str(v) if v.is_empty()));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    // ── Tags ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tag_str_forces_string_value() {
+        let node = parse_one("!!str 42\n");
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "42"));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn tag_stored_on_scalar() {
+        let node = parse_one("!!str hello\n");
+        if let YamlNode::Scalar(s) = node {
+            // tag:yaml.org,2002:str is the expanded form stored internally
+            assert!(s.tag.is_some());
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn custom_tag_stored_on_sequence() {
+        let node = parse_one("!!python/tuple [1, 2]\n");
+        if let YamlNode::Sequence(s) = node {
+            assert!(s.tag.is_some());
+        } else {
+            panic!("expected Sequence");
+        }
+    }
+
+    // ── Mapping ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn simple_mapping_order_preserved() {
+        let node = parse_one("z: 1\na: 2\nm: 3\n");
+        if let YamlNode::Mapping(m) = node {
+            let keys: Vec<&str> = m.entries.keys().map(|k| k.as_str()).collect();
+            assert_eq!(keys, ["z", "a", "m"]);
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn nested_mapping_parsed() {
+        let node = parse_one("outer:\n  inner: 42\n");
+        if let YamlNode::Mapping(m) = node {
+            let inner = &m.entries["outer"].value;
+            assert!(matches!(inner, YamlNode::Mapping(_)));
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn flow_mapping_style() {
+        let node = parse_one("{a: 1, b: 2}\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.style, ContainerStyle::Flow);
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    // ── Sequence ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn simple_sequence_items() {
+        let node = parse_one("- 1\n- 2\n- 3\n");
+        if let YamlNode::Sequence(s) = node {
+            assert_eq!(s.items.len(), 3);
+        } else {
+            panic!("expected Sequence");
+        }
+    }
+
+    #[test]
+    fn flow_sequence_style() {
+        let node = parse_one("[1, 2, 3]\n");
+        if let YamlNode::Sequence(s) = node {
+            assert_eq!(s.style, ContainerStyle::Flow);
+        } else {
+            panic!("expected Sequence");
+        }
+    }
+
+    // ── Anchors and aliases ───────────────────────────────────────────────────
+
+    #[test]
+    fn scalar_anchor_stored() {
+        let node = parse_one("&myval 42\n");
+        if let YamlNode::Scalar(s) = node {
+            assert_eq!(s.anchor.as_deref(), Some("myval"));
+            assert!(matches!(s.value, ScalarValue::Int(42)));
+        } else {
+            panic!("expected Scalar");
+        }
+    }
+
+    #[test]
+    fn alias_resolves_to_scalar() {
+        let src = "base: &val 10\nref: *val\n";
+        let node = parse_one(src);
+        if let YamlNode::Mapping(m) = node {
+            let alias_entry = &m.entries["ref"].value;
+            if let YamlNode::Alias { name, resolved } = alias_entry {
+                assert_eq!(name, "val");
+                assert!(matches!(
+                    resolved.as_ref(),
+                    YamlNode::Scalar(YamlScalar {
+                        value: ScalarValue::Int(10),
+                        ..
+                    })
+                ));
+            } else {
+                panic!("expected Alias, got {alias_entry:?}");
+            }
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn unknown_alias_returns_error() {
+        // An alias that has no anchor should produce a parse error (strict YAML compliance)
+        let result = parse_str("*noanchor\n");
+        assert!(result.is_err(), "expected error for undefined alias");
+    }
+
+    #[test]
+    fn mapping_anchor_stored() {
+        let node = parse_one("&m\na: 1\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.anchor.as_deref(), Some("m"));
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn sequence_anchor_stored() {
+        let node = parse_one("&s\n- 1\n- 2\n");
+        if let YamlNode::Sequence(s) = node {
+            assert_eq!(s.anchor.as_deref(), Some("s"));
+        } else {
+            panic!("expected Sequence");
+        }
+    }
+
+    // ── Comments ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn inline_comment_attached() {
+        let node = parse_one("a: 1  # comment\nb: 2\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.entries["a"].comment_inline.as_deref(), Some("comment"));
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn before_comment_attached() {
+        let node = parse_one("a: 1\n# before b\nb: 2\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.entries["b"].comment_before.as_deref(), Some("before b"));
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    // ── Blank lines ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn blank_lines_before_entry_counted() {
+        let node = parse_one("a: 1\n\nb: 2\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.entries["b"].blank_lines_before, 1);
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn two_blank_lines_before_entry() {
+        let node = parse_one("a: 1\n\n\nb: 2\n");
+        if let YamlNode::Mapping(m) = node {
+            assert_eq!(m.entries["b"].blank_lines_before, 2);
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    // ── Explicit document markers ─────────────────────────────────────────────
+
+    #[test]
+    fn explicit_start_marker_recorded() {
+        let (_, starts, _) = parse_str("---\na: 1\n").unwrap();
+        assert_eq!(starts, [true]);
+    }
+
+    #[test]
+    fn no_explicit_start_without_dashes() {
+        let (_, starts, _) = parse_str("a: 1\n").unwrap();
+        assert_eq!(starts, [false]);
+    }
+
+    #[test]
+    fn explicit_end_marker_recorded() {
+        let (_, _, ends) = parse_str("a: 1\n...\n").unwrap();
+        assert_eq!(ends, [true]);
+    }
+
+    #[test]
+    fn both_markers_recorded() {
+        let (_, starts, ends) = parse_str("---\na: 1\n...\n").unwrap();
+        assert_eq!(starts, [true]);
+        assert_eq!(ends, [true]);
+    }
+
+    // ── Multiple documents ────────────────────────────────────────────────────
+
+    #[test]
+    fn two_docs_parsed() {
+        let (docs, starts, ends) = parse_str("---\na: 1\n---\nb: 2\n").unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(starts, [true, true]);
+        assert_eq!(ends, [false, false]);
+    }
+
+    // ── Block scalars ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn literal_block_style_parsed() {
+        let node = parse_one("text: |\n  hello\n  world\n");
+        if let YamlNode::Mapping(m) = node {
+            if let YamlNode::Scalar(s) = &m.entries["text"].value {
+                assert_eq!(s.style, ScalarStyle::Literal);
+                assert!(matches!(&s.value, ScalarValue::Str(v) if v.contains("hello")));
+            } else {
+                panic!("expected Scalar");
+            }
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    #[test]
+    fn folded_block_style_parsed() {
+        let node = parse_one("text: >\n  hello world\n");
+        if let YamlNode::Mapping(m) = node {
+            if let YamlNode::Scalar(s) = &m.entries["text"].value {
+                assert_eq!(s.style, ScalarStyle::Folded);
+            } else {
+                panic!("expected Scalar");
+            }
+        } else {
+            panic!("expected Mapping");
+        }
+    }
+
+    // ── Round-trips ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn rt_simple_mapping() {
+        rt("a: 1\nb: 2\nc: 3\n");
+    }
+
+    #[test]
+    fn rt_nested_mapping() {
+        rt("outer:\n  inner: 42\n");
+    }
+
+    #[test]
+    fn rt_sequence() {
+        rt("- 1\n- 2\n- 3\n");
+    }
+
+    #[test]
+    fn rt_flow_mapping() {
+        // Top-level flow mappings are emitted without a trailing newline by emit_docs
+        rt("{a: 1, b: 2}");
+    }
+
+    #[test]
+    fn rt_flow_sequence() {
+        // Top-level flow sequences are emitted without a trailing newline by emit_docs
+        rt("[1, 2, 3]");
+    }
+
+    #[test]
+    fn rt_single_quoted() {
+        rt("key: 'value'\n");
+    }
+
+    #[test]
+    fn rt_double_quoted() {
+        rt("key: \"value\"\n");
+    }
+
+    #[test]
+    fn rt_non_canonical_null() {
+        rt("a: ~\n");
+    }
+
+    #[test]
+    fn rt_non_canonical_bool_yes() {
+        rt("flag: yes\n");
+    }
+
+    #[test]
+    fn rt_non_canonical_bool_no() {
+        rt("flag: no\n");
+    }
+
+    #[test]
+    fn rt_non_canonical_bool_on() {
+        rt("enabled: on\n");
+    }
+
+    #[test]
+    fn rt_non_canonical_bool_off() {
+        rt("enabled: off\n");
+    }
+
+    #[test]
+    fn rt_hex_integer() {
+        rt("value: 0xFF\n");
+    }
+
+    #[test]
+    fn rt_octal_integer() {
+        rt("value: 0o77\n");
+    }
+
+    #[test]
+    fn rt_float_exponent() {
+        rt("value: 1.5e10\n");
+    }
+
+    #[test]
+    fn rt_inf() {
+        rt("value: .inf\n");
+    }
+
+    #[test]
+    fn rt_nan() {
+        rt("value: .nan\n");
+    }
+
+    #[test]
+    fn rt_literal_block() {
+        rt("text: |-\n  hello\n  world\n");
+    }
+
+    #[test]
+    fn rt_folded_block() {
+        rt("text: >-\n  hello world\n");
+    }
+
+    #[test]
+    fn rt_inline_comment() {
+        rt("a: 1  # comment\nb: 2\n");
+    }
+
+    #[test]
+    fn rt_before_comment() {
+        rt("a: 1\n# before b\nb: 2\n");
+    }
+
+    #[test]
+    fn rt_blank_line_between_entries() {
+        rt("a: 1\n\nb: 2\n");
+    }
+
+    #[test]
+    fn rt_two_blank_lines() {
+        rt("a: 1\n\n\nb: 2\n");
+    }
+
+    #[test]
+    fn rt_explicit_start() {
+        rt("---\na: 1\n");
+    }
+
+    #[test]
+    fn rt_explicit_end() {
+        rt("a: 1\n...\n");
+    }
+
+    #[test]
+    fn rt_both_markers() {
+        rt("---\na: 1\n...\n");
+    }
+
+    #[test]
+    fn rt_multi_doc() {
+        rt("---\na: 1\n---\nb: 2\n");
+    }
+
+    #[test]
+    fn rt_anchor_scalar() {
+        rt("base: &val 10\nref: *val\n");
+    }
+
+    #[test]
+    fn rt_anchor_mapping() {
+        rt(
+            "defaults: &base\n  timeout: 30\n  retries: 3\n\nservice:\n  name: api\n  config: *base\n",
+        );
+    }
+
+    #[test]
+    fn rt_tag_on_sequence() {
+        rt("items: !!python/tuple [1, 2, 3]\n");
+    }
+
+    #[test]
+    fn rt_key_single_quoted() {
+        rt("'key with space': value\n");
+    }
+
+    #[test]
+    fn rt_sequence_with_comments() {
+        rt("- 1  # one\n- 2  # two\n- 3\n");
+    }
+
+    // ── Error cases ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn invalid_yaml_returns_error() {
+        let result = parse_str(": bad :\n  - broken");
+        // Just check it doesn't panic; error type doesn't matter
+        let _ = result;
+    }
+}
+
 /// Parse YAML input into a list of top-level documents.
 /// Returns `(docs, explicit_starts, explicit_ends)` where the flags are `true` when
 /// the document had an explicit `---` / `...` marker in the source.

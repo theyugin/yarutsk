@@ -693,6 +693,723 @@ fn single_quote(s: &str) -> String {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn plain_str(s: &str) -> YamlNode {
+        YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Str(s.to_owned()),
+            style: ScalarStyle::Plain,
+            tag: None,
+            original: None,
+            anchor: None,
+        })
+    }
+
+    fn plain_int(n: i64) -> YamlNode {
+        YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Int(n),
+            style: ScalarStyle::Plain,
+            tag: None,
+            original: None,
+            anchor: None,
+        })
+    }
+
+    fn scalar_emit(s: &YamlScalar) -> String {
+        let mut out = String::new();
+        emit_scalar(s, &mut out);
+        out
+    }
+
+    fn node_emit(node: &YamlNode) -> String {
+        let mut out = String::new();
+        emit_node(node, 0, &mut out);
+        out
+    }
+
+    fn make_scalar_node(
+        value: ScalarValue,
+        style: ScalarStyle,
+        tag: Option<&str>,
+        original: Option<&str>,
+        anchor: Option<&str>,
+    ) -> YamlScalar {
+        YamlScalar {
+            value,
+            style,
+            tag: tag.map(|s| s.to_owned()),
+            original: original.map(|s| s.to_owned()),
+            anchor: anchor.map(|s| s.to_owned()),
+        }
+    }
+
+    fn make_entry(value: YamlNode) -> YamlEntry {
+        YamlEntry {
+            value,
+            comment_before: None,
+            comment_inline: None,
+            blank_lines_before: 0,
+            key_style: ScalarStyle::Plain,
+        }
+    }
+
+    fn make_mapping(pairs: &[(&str, YamlNode)]) -> YamlMapping {
+        let mut m = YamlMapping::new();
+        for (k, v) in pairs {
+            m.entries.insert(k.to_string(), make_entry(v.clone()));
+        }
+        m
+    }
+
+    fn make_seq(items: &[YamlNode]) -> YamlSequence {
+        let mut s = YamlSequence::new();
+        for item in items {
+            s.items.push(YamlItem {
+                value: item.clone(),
+                comment_before: None,
+                comment_inline: None,
+                blank_lines_before: 0,
+            });
+        }
+        s
+    }
+
+    // ── emit_scalar: value types ──────────────────────────────────────────────
+
+    #[test]
+    fn emit_null_value() {
+        let s = make_scalar_node(ScalarValue::Null, ScalarStyle::Plain, None, None, None);
+        assert_eq!(scalar_emit(&s), "null");
+    }
+
+    #[test]
+    fn emit_bool_true() {
+        let s = make_scalar_node(
+            ScalarValue::Bool(true),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "true");
+    }
+
+    #[test]
+    fn emit_bool_false() {
+        let s = make_scalar_node(
+            ScalarValue::Bool(false),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "false");
+    }
+
+    #[test]
+    fn emit_int() {
+        let s = make_scalar_node(ScalarValue::Int(42), ScalarStyle::Plain, None, None, None);
+        assert_eq!(scalar_emit(&s), "42");
+    }
+
+    #[test]
+    fn emit_negative_int() {
+        let s = make_scalar_node(ScalarValue::Int(-1), ScalarStyle::Plain, None, None, None);
+        assert_eq!(scalar_emit(&s), "-1");
+    }
+
+    #[test]
+    fn emit_float() {
+        let s = make_scalar_node(
+            ScalarValue::Float(3.14),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        let out = scalar_emit(&s);
+        assert!(out.contains('.'), "float must have decimal point: {out}");
+    }
+
+    #[test]
+    fn emit_float_infinity() {
+        let s = make_scalar_node(
+            ScalarValue::Float(f64::INFINITY),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), ".inf");
+    }
+
+    #[test]
+    fn emit_float_neg_infinity() {
+        let s = make_scalar_node(
+            ScalarValue::Float(f64::NEG_INFINITY),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "-.inf");
+    }
+
+    #[test]
+    fn emit_float_nan() {
+        let s = make_scalar_node(
+            ScalarValue::Float(f64::NAN),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), ".nan");
+    }
+
+    // ── emit_scalar: styles ───────────────────────────────────────────────────
+
+    #[test]
+    fn emit_single_quoted_str() {
+        let s = make_scalar_node(
+            ScalarValue::Str("hello".to_owned()),
+            ScalarStyle::SingleQuoted,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "'hello'");
+    }
+
+    #[test]
+    fn emit_double_quoted_str() {
+        let s = make_scalar_node(
+            ScalarValue::Str("hello".to_owned()),
+            ScalarStyle::DoubleQuoted,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "\"hello\"");
+    }
+
+    #[test]
+    fn emit_single_quoted_with_embedded_quote() {
+        let s = make_scalar_node(
+            ScalarValue::Str("it's".to_owned()),
+            ScalarStyle::SingleQuoted,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "'it''s'");
+    }
+
+    #[test]
+    fn emit_double_quoted_escapes_newline() {
+        let s = make_scalar_node(
+            ScalarValue::Str("a\nb".to_owned()),
+            ScalarStyle::DoubleQuoted,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn emit_plain_safe_str_unquoted() {
+        let s = make_scalar_node(
+            ScalarValue::Str("hello".to_owned()),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "hello");
+    }
+
+    #[test]
+    fn emit_plain_null_str_gets_quoted() {
+        // "null" as a Str value in Plain style must be quoted to avoid being parsed as null
+        let s = make_scalar_node(
+            ScalarValue::Str("null".to_owned()),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        let out = scalar_emit(&s);
+        assert!(
+            out.starts_with('\'') || out.starts_with('"'),
+            "expected quotes: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_plain_empty_str_gets_quoted() {
+        let s = make_scalar_node(
+            ScalarValue::Str(String::new()),
+            ScalarStyle::Plain,
+            None,
+            None,
+            None,
+        );
+        let out = scalar_emit(&s);
+        assert!(!out.is_empty(), "empty string must not emit empty");
+    }
+
+    // ── emit_scalar: original preservation ───────────────────────────────────
+
+    #[test]
+    fn emit_original_preserved_over_value() {
+        // When original is set, it should be emitted verbatim
+        let s = make_scalar_node(
+            ScalarValue::Bool(true),
+            ScalarStyle::Plain,
+            None,
+            Some("yes"),
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "yes");
+    }
+
+    #[test]
+    fn emit_hex_original_preserved() {
+        let s = make_scalar_node(
+            ScalarValue::Int(255),
+            ScalarStyle::Plain,
+            None,
+            Some("0xFF"),
+            None,
+        );
+        assert_eq!(scalar_emit(&s), "0xFF");
+    }
+
+    #[test]
+    fn emit_tilde_null_preserved() {
+        let s = make_scalar_node(ScalarValue::Null, ScalarStyle::Plain, None, Some("~"), None);
+        assert_eq!(scalar_emit(&s), "~");
+    }
+
+    // ── emit_scalar: tags ────────────────────────────────────────────────────
+
+    #[test]
+    fn emit_tag_prefix_before_value() {
+        let s = make_scalar_node(
+            ScalarValue::Str("42".to_owned()),
+            ScalarStyle::Plain,
+            Some("tag:yaml.org,2002:str"),
+            Some("42"),
+            None,
+        );
+        let out = scalar_emit(&s);
+        assert!(out.starts_with("!!str "), "expected '!!str ' prefix: {out}");
+        assert!(out.ends_with("42"), "expected '42' value: {out}");
+    }
+
+    #[test]
+    fn emit_custom_tag_unchanged() {
+        let s = make_scalar_node(
+            ScalarValue::Str("val".to_owned()),
+            ScalarStyle::Plain,
+            Some("!custom"),
+            Some("val"),
+            None,
+        );
+        let out = scalar_emit(&s);
+        assert!(
+            out.starts_with("!custom "),
+            "expected '!custom ' prefix: {out}"
+        );
+    }
+
+    // ── emit_scalar: anchors ─────────────────────────────────────────────────
+
+    #[test]
+    fn emit_anchor_prefix_before_value() {
+        let s = make_scalar_node(
+            ScalarValue::Int(10),
+            ScalarStyle::Plain,
+            None,
+            None,
+            Some("myanchor"),
+        );
+        let out = scalar_emit(&s);
+        assert_eq!(out, "&myanchor 10");
+    }
+
+    #[test]
+    fn emit_anchor_before_tag_before_value() {
+        let s = make_scalar_node(
+            ScalarValue::Str("42".to_owned()),
+            ScalarStyle::Plain,
+            Some("tag:yaml.org,2002:str"),
+            Some("42"),
+            Some("a"),
+        );
+        let out = scalar_emit(&s);
+        assert!(
+            out.starts_with("&a !!str "),
+            "expected '&a !!str ' prefix: {out}"
+        );
+    }
+
+    // ── emit_node: Null / Alias ───────────────────────────────────────────────
+
+    #[test]
+    fn emit_null_node() {
+        assert_eq!(node_emit(&YamlNode::Null), "null");
+    }
+
+    #[test]
+    fn emit_alias_node() {
+        let node = YamlNode::Alias {
+            name: "myref".to_owned(),
+            resolved: Box::new(YamlNode::Null),
+        };
+        assert_eq!(node_emit(&node), "*myref");
+    }
+
+    // ── emit_docs: single doc ─────────────────────────────────────────────────
+
+    #[test]
+    fn emit_single_doc_no_markers() {
+        let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
+        let out = emit_docs(&[m], &[false], &[false]);
+        assert_eq!(out, "a: 1\n");
+    }
+
+    #[test]
+    fn emit_single_doc_with_start_marker() {
+        let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
+        let out = emit_docs(&[m], &[true], &[false]);
+        assert_eq!(out, "---\na: 1\n");
+    }
+
+    #[test]
+    fn emit_single_doc_with_end_marker() {
+        let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
+        let out = emit_docs(&[m], &[false], &[true]);
+        assert_eq!(out, "a: 1\n...\n");
+    }
+
+    #[test]
+    fn emit_single_doc_with_both_markers() {
+        let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
+        let out = emit_docs(&[m], &[true], &[true]);
+        assert_eq!(out, "---\na: 1\n...\n");
+    }
+
+    // ── emit_docs: multiple docs ──────────────────────────────────────────────
+
+    #[test]
+    fn emit_two_docs_adds_start_markers() {
+        let d1 = plain_str("hello");
+        let d2 = plain_str("world");
+        let out = emit_docs(&[d1, d2], &[false, false], &[false, false]);
+        assert!(
+            out.starts_with("---\n"),
+            "expected --- before first doc: {out}"
+        );
+        assert!(
+            out.contains("\n---\n"),
+            "expected --- before second doc: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_empty_docs_slice() {
+        let out = emit_docs(&[], &[], &[]);
+        assert_eq!(out, "");
+    }
+
+    // ── emit mapping ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn emit_mapping_preserves_order() {
+        let m = make_mapping(&[
+            ("z", plain_int(1)),
+            ("a", plain_int(2)),
+            ("m", plain_int(3)),
+        ]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "z: 1");
+        assert_eq!(lines[1], "a: 2");
+        assert_eq!(lines[2], "m: 3");
+    }
+
+    #[test]
+    fn emit_empty_mapping() {
+        let m = make_mapping(&[]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "{}\n");
+    }
+
+    #[test]
+    fn emit_flow_mapping() {
+        let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
+        m.style = ContainerStyle::Flow;
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "{a: 1, b: 2}");
+    }
+
+    #[test]
+    fn emit_mapping_with_inline_comment() {
+        let mut m = YamlMapping::new();
+        let mut entry = make_entry(plain_int(1));
+        entry.comment_inline = Some("a comment".to_owned());
+        m.entries.insert("key".to_owned(), entry);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "key: 1  # a comment\n");
+    }
+
+    #[test]
+    fn emit_mapping_with_before_comment() {
+        let mut m = YamlMapping::new();
+        let mut entry = make_entry(plain_int(1));
+        entry.comment_before = Some("header".to_owned());
+        m.entries.insert("key".to_owned(), entry);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "# header\nkey: 1\n");
+    }
+
+    #[test]
+    fn emit_mapping_with_blank_line_before_entry() {
+        let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
+        m.entries.get_mut("b").unwrap().blank_lines_before = 1;
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "a: 1\n\nb: 2\n");
+    }
+
+    #[test]
+    fn emit_mapping_with_empty_nested_mapping() {
+        let empty = YamlNode::Mapping(make_mapping(&[]));
+        let m = make_mapping(&[("key", empty)]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "key: {}\n");
+    }
+
+    #[test]
+    fn emit_mapping_with_empty_nested_sequence() {
+        let empty = YamlNode::Sequence(make_seq(&[]));
+        let m = make_mapping(&[("key", empty)]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert_eq!(out, "key: []\n");
+    }
+
+    // ── emit sequence ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn emit_sequence_items() {
+        let s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        assert_eq!(out, "- 1\n- 2\n- 3\n");
+    }
+
+    #[test]
+    fn emit_empty_sequence() {
+        let s = make_seq(&[]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        assert_eq!(out, "[]\n");
+    }
+
+    #[test]
+    fn emit_flow_sequence() {
+        let mut s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
+        s.style = ContainerStyle::Flow;
+        let mut out = String::new();
+        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        assert_eq!(out, "[1, 2, 3]");
+    }
+
+    #[test]
+    fn emit_sequence_with_inline_comment() {
+        let mut s = YamlSequence::new();
+        s.items.push(YamlItem {
+            value: plain_int(1),
+            comment_before: None,
+            comment_inline: Some("one".to_owned()),
+            blank_lines_before: 0,
+        });
+        let mut out = String::new();
+        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        assert_eq!(out, "- 1  # one\n");
+    }
+
+    // ── block scalars ────────────────────────────────────────────────────────
+
+    #[test]
+    fn emit_literal_block_scalar() {
+        let m = make_mapping(&[(
+            "text",
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str("hello\nworld\n".to_owned()),
+                style: ScalarStyle::Literal,
+                tag: None,
+                original: None,
+                anchor: None,
+            }),
+        )]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert!(
+            out.starts_with("text: |\n"),
+            "expected block indicator: {out}"
+        );
+        assert!(
+            out.contains("  hello\n"),
+            "expected indented content: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_folded_block_scalar() {
+        let m = make_mapping(&[(
+            "text",
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str("hello world\n".to_owned()),
+                style: ScalarStyle::Folded,
+                tag: None,
+                original: None,
+                anchor: None,
+            }),
+        )]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert!(
+            out.starts_with("text: >\n"),
+            "expected folded indicator: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_literal_strip_chomping() {
+        // Content with no trailing newline gets strip chomping (`|-`)
+        let m = make_mapping(&[(
+            "text",
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str("no trailing newline".to_owned()),
+                style: ScalarStyle::Literal,
+                tag: None,
+                original: None,
+                anchor: None,
+            }),
+        )]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert!(
+            out.starts_with("text: |-\n"),
+            "expected strip chomping: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_literal_keep_chomping() {
+        // Content with two trailing newlines gets keep chomping (`|+`)
+        let m = make_mapping(&[(
+            "text",
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str("two newlines\n\n".to_owned()),
+                style: ScalarStyle::Literal,
+                tag: None,
+                original: None,
+                anchor: None,
+            }),
+        )]);
+        let mut out = String::new();
+        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        assert!(
+            out.starts_with("text: |+\n"),
+            "expected keep chomping: {out}"
+        );
+    }
+
+    // ── format_tag helper ────────────────────────────────────────────────────
+
+    #[test]
+    fn format_tag_yaml_org_maps_to_bang_bang() {
+        assert_eq!(format_tag("tag:yaml.org,2002:str").as_ref(), "!!str");
+        assert_eq!(format_tag("tag:yaml.org,2002:int").as_ref(), "!!int");
+        assert_eq!(format_tag("tag:yaml.org,2002:float").as_ref(), "!!float");
+    }
+
+    #[test]
+    fn format_tag_custom_tag_unchanged() {
+        assert_eq!(format_tag("!custom").as_ref(), "!custom");
+        assert_eq!(format_tag("!!python/tuple").as_ref(), "!!python/tuple");
+    }
+
+    // ── needs_quoting ────────────────────────────────────────────────────────
+
+    #[test]
+    fn needs_quoting_empty_str() {
+        assert!(needs_quoting(""));
+    }
+
+    #[test]
+    fn needs_quoting_null_keyword() {
+        assert!(needs_quoting("null"));
+        assert!(needs_quoting("~"));
+        assert!(needs_quoting("Null"));
+    }
+
+    #[test]
+    fn needs_quoting_bool_keywords() {
+        for s in &["true", "false", "yes", "no", "on", "off", "True", "False"] {
+            assert!(needs_quoting(s), "should need quoting: {s}");
+        }
+    }
+
+    #[test]
+    fn needs_quoting_integer_str() {
+        assert!(needs_quoting("42"));
+        assert!(needs_quoting("-1"));
+        assert!(needs_quoting("0xFF"));
+        assert!(needs_quoting("0o77"));
+    }
+
+    #[test]
+    fn needs_quoting_float_str() {
+        assert!(needs_quoting("3.14"));
+        assert!(needs_quoting("1e5"));
+        assert!(needs_quoting(".inf"));
+        assert!(needs_quoting(".nan"));
+    }
+
+    #[test]
+    fn needs_quoting_regular_string_safe() {
+        assert!(!needs_quoting("hello"));
+        assert!(!needs_quoting("world"));
+        assert!(!needs_quoting("some-value"));
+    }
+
+    #[test]
+    fn needs_quoting_inline_comment_trigger() {
+        assert!(needs_quoting("value # comment"));
+    }
+
+    #[test]
+    fn needs_quoting_colon_space() {
+        assert!(needs_quoting("key: val"));
+    }
+}
+
 /// Return true if the string needs to be quoted in YAML plain style.
 fn needs_quoting(s: &str) -> bool {
     if s.is_empty() {
