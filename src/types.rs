@@ -148,6 +148,8 @@ pub struct YamlEntry {
     pub value: YamlNode,
     pub comment_before: Option<String>,
     pub comment_inline: Option<String>,
+    /// Blank lines in the source before this entry (capped at 255).
+    pub blank_lines_before: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -188,4 +190,6 @@ pub struct YamlItem {
     pub value: YamlNode,
     pub comment_before: Option<String>,
     pub comment_inline: Option<String>,
+    /// Blank lines in the source before this item (capped at 255).
+    pub blank_lines_before: u8,
 }

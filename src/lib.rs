@@ -107,6 +107,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                     value: node,
                     comment_before: None,
                     comment_inline: None,
+                    blank_lines_before: 0,
                 },
             );
         }
@@ -119,6 +120,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                 value: py_to_node(&item)?,
                 comment_before: None,
                 comment_inline: None,
+                blank_lines_before: 0,
             });
         }
         return Ok(YamlNode::Sequence(seq));
@@ -176,6 +178,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                     value: node,
                     comment_before: e.comment_before.clone(),
                     comment_inline: e.comment_inline.clone(),
+                    blank_lines_before: e.blank_lines_before,
                 },
             );
         }
@@ -201,6 +204,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                 value: node,
                 comment_before: borrow.inner.items[i].comment_before.clone(),
                 comment_inline: borrow.inner.items[i].comment_inline.clone(),
+                blank_lines_before: borrow.inner.items[i].blank_lines_before,
             });
         }
         return Ok(YamlNode::Sequence(seq));
@@ -609,6 +613,7 @@ impl PyYamlMapping {
                         value: node.clone(),
                         comment_before: None,
                         comment_inline: None,
+                        blank_lines_before: 0,
                     },
                 );
             }
@@ -695,6 +700,7 @@ impl PyYamlMapping {
                             value: node,
                             comment_before: None,
                             comment_inline: None,
+                            blank_lines_before: 0,
                         },
                     );
                 }
@@ -715,6 +721,7 @@ impl PyYamlMapping {
                         value: node,
                         comment_before: None,
                         comment_inline: None,
+                        blank_lines_before: 0,
                     },
                 );
             }
@@ -743,6 +750,7 @@ impl PyYamlMapping {
                         value: node,
                         comment_before: None,
                         comment_inline: None,
+                        blank_lines_before: 0,
                     },
                 );
             }
@@ -961,6 +969,7 @@ impl PyYamlSequence {
                 value: node.clone(),
                 comment_before: None,
                 comment_inline: None,
+                blank_lines_before: 0,
             });
         }
         let py_val = node_to_py(py, &node)?;
@@ -988,6 +997,7 @@ impl PyYamlSequence {
                     value: node.clone(),
                     comment_before: None,
                     comment_inline: None,
+                    blank_lines_before: 0,
                 },
             );
         }
@@ -1056,6 +1066,7 @@ impl PyYamlSequence {
                         value: item.value.clone(),
                         comment_before: None,
                         comment_inline: None,
+                        blank_lines_before: 0,
                     },
                     py_val,
                 ));
@@ -1070,6 +1081,7 @@ impl PyYamlSequence {
                         value: node,
                         comment_before: None,
                         comment_inline: None,
+                        blank_lines_before: 0,
                     },
                     py_val,
                 ));

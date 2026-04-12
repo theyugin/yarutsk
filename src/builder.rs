@@ -32,6 +32,8 @@ struct MappingFrame {
     current_key: Option<String>,
     current_comment_before: Option<String>,
     current_comment_inline: Option<String>,
+    /// Blank lines before the current entry (computed when the key scalar is seen).
+    current_blank_lines: u8,
     /// Anchor ID declared on the MappingStart event (0 = no anchor).
     anchor_id: usize,
 }
@@ -40,6 +42,8 @@ struct SequenceFrame {
     seq: YamlSequence,
     /// Comment before the current complex item (saved before pushing nested frame).
     current_comment_before: Option<String>,
+    /// Blank lines before the current complex item.
+    current_blank_lines: u8,
     /// Anchor ID declared on the SequenceStart event (0 = no anchor).
     anchor_id: usize,
 }
@@ -110,6 +114,25 @@ impl Builder {
         }
     }
 
+    /// Count blank lines between the last scalar content and `node_line`.
+    /// Must be called BEFORE `take_before` drains `pending_before`.
+    fn count_blank_lines(&self, node_line: usize) -> u8 {
+        let last_line = match self.last_content_line {
+            None => return 0,
+            Some(l) => l,
+        };
+        if node_line <= last_line + 1 {
+            return 0;
+        }
+        let comment_count = self
+            .pending_before
+            .iter()
+            .filter(|(l, _)| *l < node_line)
+            .count();
+        let total_between = node_line - last_line - 1;
+        total_between.saturating_sub(comment_count).min(255) as u8
+    }
+
     /// Take all pending before-comments with line < node_line, join with newline.
     fn take_before(&mut self, node_line: usize) -> Option<String> {
         let mut result: Option<String> = None;
@@ -134,22 +157,28 @@ impl Builder {
                 if let Some(key) = mf.current_key.take() {
                     let comment_before = mf.current_comment_before.take();
                     let comment_inline = mf.current_comment_inline.take();
+                    let blank_lines_before = mf.current_blank_lines;
+                    mf.current_blank_lines = 0;
                     mf.mapping.entries.insert(
                         key,
                         YamlEntry {
                             value: node,
                             comment_before,
                             comment_inline,
+                            blank_lines_before,
                         },
                     );
                 }
             }
             Some(Frame::Sequence(sf)) => {
                 let comment_before = sf.current_comment_before.take();
+                let blank_lines_before = sf.current_blank_lines;
+                sf.current_blank_lines = 0;
                 sf.seq.items.push(YamlItem {
                     value: node,
                     comment_before,
                     comment_inline: None,
+                    blank_lines_before,
                 });
             }
         }
@@ -179,9 +208,11 @@ impl Builder {
                     // Only drain before-comments when our parent is a sequence item;
                     // for mapping/root parents, leave comments in pending_before so the
                     // first key scalar can pick them up.
+                    let blank_lines = self.count_blank_lines(mark.line());
                     let before = self.take_before(mark.line());
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
                         sf.current_comment_before = before;
+                        sf.current_blank_lines = blank_lines;
                     }
                 }
                 let mut mapping = YamlMapping::new();
@@ -196,6 +227,7 @@ impl Builder {
                     current_key: None,
                     current_comment_before: None,
                     current_comment_inline: None,
+                    current_blank_lines: 0,
                     anchor_id,
                 }));
             }
@@ -212,9 +244,11 @@ impl Builder {
             Event::SequenceStart(anchor_id, tag, is_flow) => {
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
+                    let blank_lines = self.count_blank_lines(mark.line());
                     let before = self.take_before(mark.line());
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
                         sf.current_comment_before = before;
+                        sf.current_blank_lines = blank_lines;
                     }
                 }
                 let mut seq = YamlSequence::new();
@@ -227,6 +261,7 @@ impl Builder {
                 self.stack.push(Frame::Sequence(SequenceFrame {
                     seq,
                     current_comment_before: None,
+                    current_blank_lines: 0,
                     anchor_id,
                 }));
             }
@@ -279,6 +314,13 @@ impl Builder {
                     Some(Frame::Mapping(mf)) => {
                         if mf.current_key.is_none() {
                             let node_line = mark.line();
+                            let blank_lines = match self.last_content_line {
+                                Some(last) if node_line > last + 1 => {
+                                    let nc = self.pending_before.iter().filter(|(l, _)| *l < node_line).count();
+                                    (node_line - last - 1).saturating_sub(nc).min(255) as u8
+                                }
+                                _ => 0,
+                            };
                             let comment_before = {
                                 let mut result: Option<String> = None;
                                 for (_, text) in self.pending_before.drain(..).filter(|(l, _)| *l < node_line) {
@@ -292,6 +334,7 @@ impl Builder {
                             mf.current_key = Some(value);
                             mf.current_comment_before = comment_before;
                             mf.current_comment_inline = None;
+                            mf.current_blank_lines = blank_lines;
                             self.last_content_line = Some(mark.line());
                             // Register anchor for key scalars so they can later be aliased as values.
                             if anchor_id != 0 {
@@ -313,12 +356,15 @@ impl Builder {
                             if let Some(key) = mf.current_key.take() {
                                 let comment_before = mf.current_comment_before.take();
                                 let comment_inline = mf.current_comment_inline.take();
+                                let blank_lines_before = mf.current_blank_lines;
+                                mf.current_blank_lines = 0;
                                 mf.mapping.entries.insert(
                                     key,
                                     YamlEntry {
                                         value: node,
                                         comment_before,
                                         comment_inline,
+                                        blank_lines_before,
                                     },
                                 );
                             }
@@ -327,6 +373,13 @@ impl Builder {
                     }
                     Some(Frame::Sequence(sf)) => {
                         let node_line = mark.line();
+                        let blank_lines = match self.last_content_line {
+                            Some(last) if node_line > last + 1 => {
+                                let nc = self.pending_before.iter().filter(|(l, _)| *l < node_line).count();
+                                (node_line - last - 1).saturating_sub(nc).min(255) as u8
+                            }
+                            _ => 0,
+                        };
                         let comment_before = {
                             let mut result: Option<String> = None;
                             for (_, text) in self.pending_before.drain(..).filter(|(l, _)| *l < node_line) {
@@ -349,6 +402,7 @@ impl Builder {
                             value: node,
                             comment_before,
                             comment_inline: None,
+                            blank_lines_before: blank_lines,
                         });
                         self.last_content_line = Some(mark.line());
                     }

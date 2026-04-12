@@ -64,6 +64,9 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
         return;
     }
     for (key, entry) in &m.entries {
+        for _ in 0..entry.blank_lines_before {
+            out.push('\n');
+        }
         // comment_before: each line prefixed with indent + "# "
         if let Some(cb) = &entry.comment_before {
             for line in cb.lines() {
@@ -180,6 +183,9 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
         return;
     }
     for item in &s.items {
+        for _ in 0..item.blank_lines_before {
+            out.push('\n');
+        }
         if let Some(cb) = &item.comment_before {
             for line in cb.lines() {
                 out.push_str(&indent_str(indent));

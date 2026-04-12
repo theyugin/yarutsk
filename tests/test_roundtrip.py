@@ -333,3 +333,47 @@ class TestExplicitDocumentMarker:
         assert out.startswith("---\n")
         doc2 = yarutsk.loads(out)
         assert doc2["text"] == "line one\nline two\n"
+
+
+class TestBlankLinePreservation:
+    """Blank lines between mapping entries and sequence items are preserved."""
+
+    def test_single_blank_line_between_keys(self):
+        src = "a: 1\n\nb: 2\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_multiple_blank_lines_between_keys(self):
+        src = "a: 1\n\n\nb: 2\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_no_blank_lines_unaffected(self):
+        src = "a: 1\nb: 2\nc: 3\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_blank_lines_between_some_keys(self):
+        src = "a: 1\nb: 2\n\nc: 3\nd: 4\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_blank_line_with_comment(self):
+        src = "x: 1\n\n# note\ny: 2\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_blank_lines_in_sequence(self):
+        src = "- a\n\n- b\n\n\n- c\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_blank_lines_in_nested_mapping(self):
+        src = "outer:\n  a: 1\n\n  b: 2\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
+
+    def test_blank_lines_between_top_and_nested(self):
+        src = "section1:\n  x: 1\n\nsection2:\n  y: 2\n"
+        doc = yarutsk.loads(src)
+        assert yarutsk.dumps(doc) == src
