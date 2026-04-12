@@ -361,7 +361,6 @@ impl<T: Iterator<Item = char>> Parser<T> {
     /// Skip the next token from the scanner.
     fn skip(&mut self) {
         self.token = None;
-        //self.peek_token();
     }
     /// Pops the top-most state and make it the current state.
     fn pop_state(&mut self) {
@@ -377,7 +376,6 @@ impl<T: Iterator<Item = char>> Parser<T> {
             return Ok((Event::StreamEnd, self.scanner.mark()));
         }
         let (ev, mark) = self.state_machine()?;
-        // println!("EV {:?}", ev);
         Ok((ev, mark))
     }
 
@@ -472,8 +470,7 @@ impl<T: Iterator<Item = char>> Parser<T> {
                 self.load_mapping(recv)
             }
             _ => {
-                println!("UNREACHABLE EVENT: {first_ev:?}");
-                unreachable!();
+                unreachable!("unexpected event in load_node: {first_ev:?}");
             }
         }
     }
@@ -512,8 +509,6 @@ impl<T: Iterator<Item = char>> Parser<T> {
     }
 
     fn state_machine(&mut self) -> ParseResult {
-        // let next_tok = self.peek_token().cloned()?;
-        // println!("cur_state {:?}, next tok: {:?}", self.state, next_tok);
         debug_print!("\n\x1B[;33mParser state: {:?} \x1B[;0m", self.state);
 
         match self.state {

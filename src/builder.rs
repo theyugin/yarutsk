@@ -52,6 +52,23 @@ struct SequenceFrame {
     anchor_name: Option<String>,
 }
 
+/// Construct a `YamlNode::Scalar` from already-resolved components.
+fn make_scalar(
+    value: ScalarValue,
+    style: ScalarStyle,
+    tag: Option<String>,
+    original: Option<String>,
+    anchor: Option<String>,
+) -> YamlNode {
+    YamlNode::Scalar(YamlScalar {
+        value,
+        style,
+        tag,
+        original,
+        anchor,
+    })
+}
+
 /// Convert a parser `Tag` to the compact string we store (e.g. `"!!str"`, `"!custom"`).
 fn tag_to_string(tag: Option<Tag>) -> Option<String> {
     tag.map(|t| format!("{}{}", t.handle, t.suffix))
@@ -255,23 +272,7 @@ impl Builder {
 
             Event::MappingEnd => {
                 if let Some(Frame::Mapping(mut mf)) = self.stack.pop() {
-                    // Count blank lines trailing after the last entry.
-                    let trailing = if let Some(last_line) = self.last_content_line {
-                        let end_line = mark.line();
-                        if end_line > last_line + 1 {
-                            let nc = self
-                                .pending_before
-                                .iter()
-                                .filter(|(l, _)| *l < end_line)
-                                .count();
-                            (end_line - last_line - 1).saturating_sub(nc).min(255) as u8
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    mf.mapping.trailing_blank_lines = trailing;
+                    mf.mapping.trailing_blank_lines = self.count_blank_lines(mark.line());
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
                     let anchor_name = mf.anchor_name.as_deref();
@@ -309,23 +310,7 @@ impl Builder {
 
             Event::SequenceEnd => {
                 if let Some(Frame::Sequence(mut sf)) = self.stack.pop() {
-                    // Count blank lines trailing after the last item.
-                    let trailing = if let Some(last_line) = self.last_content_line {
-                        let end_line = mark.line();
-                        if end_line > last_line + 1 {
-                            let nc = self
-                                .pending_before
-                                .iter()
-                                .filter(|(l, _)| *l < end_line)
-                                .count();
-                            (end_line - last_line - 1).saturating_sub(nc).min(255) as u8
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    sf.seq.trailing_blank_lines = trailing;
+                    sf.seq.trailing_blank_lines = self.count_blank_lines(mark.line());
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
                     let anchor_name = sf.anchor_name.as_deref();
@@ -354,14 +339,14 @@ impl Builder {
                     _ => typed,
                 };
 
-                // For block scalars, the content spans multiple source lines.
-                // Advance last_content_line past all those lines so outer containers
-                // don't double-count the trailing blank lines embedded in the value.
+                let node_line = mark.line();
+                // For block scalars the content spans multiple source lines; advance
+                // last_content_line past them so outer containers don't double-count.
                 let effective_scalar_end_line =
                     if matches!(scalar_style, ScalarStyle::Literal | ScalarStyle::Folded) {
-                        mark.line() + value.bytes().filter(|&b| b == b'\n').count()
+                        node_line + value.bytes().filter(|&b| b == b'\n').count()
                     } else {
-                        mark.line()
+                        node_line
                     };
 
                 // Preserve the original source text when the plain-scalar representation
@@ -391,18 +376,36 @@ impl Builder {
                     None
                 };
 
+                // Peek at the stack to determine whether this scalar arrives as a
+                // mapping key or sequence item — both need blank-line / before-comment
+                // context.  We peek immutably here so we can call self methods freely
+                // before taking the mutable borrow needed for insertion below.
+                let needs_context = match self.stack.last() {
+                    Some(Frame::Mapping(mf)) => mf.current_key.is_none(),
+                    Some(Frame::Sequence(_)) => true,
+                    None => false,
+                };
+                let (blank_lines, comment_before) = if needs_context {
+                    (
+                        self.count_blank_lines(node_line),
+                        self.take_before(node_line),
+                    )
+                } else {
+                    (0, None)
+                };
+
                 // Collect a clone for anchor registration AFTER the borrow-checking match below.
                 let mut anchor_node: Option<YamlNode> = None;
 
                 match self.stack.last_mut() {
                     None => {
-                        let node = YamlNode::Scalar(YamlScalar {
-                            value: typed,
-                            style: scalar_style,
-                            tag: scalar_tag,
-                            original: scalar_original,
-                            anchor: anchor_name.clone(),
-                        });
+                        let node = make_scalar(
+                            typed,
+                            scalar_style,
+                            scalar_tag,
+                            scalar_original,
+                            anchor_name.clone(),
+                        );
                         if anchor_name.is_some() {
                             anchor_node = Some(node.clone());
                         }
@@ -412,59 +415,32 @@ impl Builder {
                     }
                     Some(Frame::Mapping(mf)) => {
                         if mf.current_key.is_none() {
-                            let node_line = mark.line();
-                            let blank_lines = match self.last_content_line {
-                                Some(last) if node_line > last + 1 => {
-                                    let nc = self
-                                        .pending_before
-                                        .iter()
-                                        .filter(|(l, _)| *l < node_line)
-                                        .count();
-                                    (node_line - last - 1).saturating_sub(nc).min(255) as u8
-                                }
-                                _ => 0,
-                            };
-                            let comment_before = {
-                                let mut result: Option<String> = None;
-                                for (_, text) in self
-                                    .pending_before
-                                    .drain(..)
-                                    .filter(|(l, _)| *l < node_line)
-                                {
-                                    match result.as_mut() {
-                                        None => result = Some(text),
-                                        Some(r) => {
-                                            r.push('\n');
-                                            r.push_str(&text);
-                                        }
-                                    }
-                                }
-                                result
-                            };
+                            // Mapping key — store key string and positioning metadata.
+                            // Register anchor for key scalars so they can be aliased as values.
+                            if anchor_name.is_some() {
+                                anchor_node = Some(make_scalar(
+                                    typed,
+                                    scalar_style,
+                                    scalar_tag,
+                                    scalar_original.clone(),
+                                    anchor_name.clone(),
+                                ));
+                            }
                             mf.current_key = Some(value);
                             mf.current_comment_before = comment_before;
                             mf.current_comment_inline = None;
                             mf.current_blank_lines = blank_lines;
                             mf.current_key_style = scalar_style;
                             self.last_content_line = Some(effective_scalar_end_line);
-                            // Register anchor for key scalars so they can later be aliased as values.
-                            if anchor_name.is_some() {
-                                anchor_node = Some(YamlNode::Scalar(YamlScalar {
-                                    value: typed,
-                                    style: scalar_style,
-                                    tag: scalar_tag,
-                                    original: scalar_original.clone(),
-                                    anchor: anchor_name.clone(),
-                                }));
-                            }
                         } else {
-                            let node = YamlNode::Scalar(YamlScalar {
-                                value: typed,
-                                style: scalar_style,
-                                tag: scalar_tag,
-                                original: scalar_original,
-                                anchor: anchor_name.clone(),
-                            });
+                            // Mapping value — insert entry under the pending key.
+                            let node = make_scalar(
+                                typed,
+                                scalar_style,
+                                scalar_tag,
+                                scalar_original,
+                                anchor_name.clone(),
+                            );
                             if anchor_name.is_some() {
                                 anchor_node = Some(node.clone());
                             }
@@ -489,42 +465,13 @@ impl Builder {
                         }
                     }
                     Some(Frame::Sequence(sf)) => {
-                        let node_line = mark.line();
-                        let blank_lines = match self.last_content_line {
-                            Some(last) if node_line > last + 1 => {
-                                let nc = self
-                                    .pending_before
-                                    .iter()
-                                    .filter(|(l, _)| *l < node_line)
-                                    .count();
-                                (node_line - last - 1).saturating_sub(nc).min(255) as u8
-                            }
-                            _ => 0,
-                        };
-                        let comment_before = {
-                            let mut result: Option<String> = None;
-                            for (_, text) in self
-                                .pending_before
-                                .drain(..)
-                                .filter(|(l, _)| *l < node_line)
-                            {
-                                match result.as_mut() {
-                                    None => result = Some(text),
-                                    Some(r) => {
-                                        r.push('\n');
-                                        r.push_str(&text);
-                                    }
-                                }
-                            }
-                            result
-                        };
-                        let node = YamlNode::Scalar(YamlScalar {
-                            value: typed,
-                            style: scalar_style,
-                            tag: scalar_tag,
-                            original: scalar_original,
-                            anchor: anchor_name.clone(),
-                        });
+                        let node = make_scalar(
+                            typed,
+                            scalar_style,
+                            scalar_tag,
+                            scalar_original,
+                            anchor_name.clone(),
+                        );
                         if anchor_name.is_some() {
                             anchor_node = Some(node.clone());
                         }

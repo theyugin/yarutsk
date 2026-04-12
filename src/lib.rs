@@ -35,6 +35,18 @@ fn scalar_to_py(py: Python<'_>, v: &ScalarValue) -> PyResult<Py<PyAny>> {
 /// Convert a YamlNode to its Python representation.
 /// Mapping → PyYamlMapping (dict subclass), Sequence → PyYamlSequence (list subclass),
 /// scalar/null → Python primitive.
+/// Construct a plain (unquoted, untagged) `YamlNode::Scalar` from a typed value.
+/// Used when converting Python primitives to YAML nodes during dump.
+fn plain_scalar(value: ScalarValue) -> YamlNode {
+    YamlNode::Scalar(YamlScalar {
+        value,
+        style: ScalarStyle::Plain,
+        tag: None,
+        original: None,
+        anchor: None,
+    })
+}
+
 fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
@@ -48,13 +60,7 @@ fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
 /// Convert a Python object to a YamlNode.
 fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if obj.is_none() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Null,
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Null));
     }
     // Check our custom types before primitives (PyYamlMapping extends PyDict,
     // so the PyDict check below would also match — order matters here).
@@ -69,40 +75,16 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     }
     // Primitives — bool must come before i64 (bool is a subtype of int in Python)
     if let Ok(b) = obj.extract::<bool>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Bool(b),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Bool(b)));
     }
     if let Ok(n) = obj.extract::<i64>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Int(n),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Int(n)));
     }
     if let Ok(f) = obj.extract::<f64>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Float(f),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Float(f)));
     }
     if let Ok(s) = obj.extract::<String>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Str(s),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Str(s)));
     }
     // Plain dict/list fallback (for users passing native Python dicts/lists).
     // Note: PyYamlMapping extends PyDict so it would match cast::<PyDict>() too,
@@ -242,49 +224,19 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     }
     // Scalars passed directly (int, str, etc.)
     if obj.is_none() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Null,
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Null));
     }
     if let Ok(b) = obj.extract::<bool>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Bool(b),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Bool(b)));
     }
     if let Ok(n) = obj.extract::<i64>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Int(n),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Int(n)));
     }
     if let Ok(f) = obj.extract::<f64>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Float(f),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Float(f)));
     }
     if let Ok(s) = obj.extract::<String>() {
-        return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Str(s),
-            style: ScalarStyle::Plain,
-            tag: None,
-            original: None,
-            anchor: None,
-        }));
+        return Ok(plain_scalar(ScalarValue::Str(s)));
     }
     // Plain dict fallback — no comment/style metadata, but values are correct.
     // Uses extract_yaml_node recursively so nested YamlMapping/YamlSequence

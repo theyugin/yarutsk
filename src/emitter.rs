@@ -54,6 +54,14 @@ pub fn emit_docs(docs: &[YamlNode], explicit_starts: &[bool], explicit_ends: &[b
     out
 }
 
+/// Append `"  # "` and the comment text to `out`, if the comment is present.
+fn push_inline_comment(comment: Option<&str>, out: &mut String) {
+    if let Some(ci) = comment {
+        out.push_str("  # ");
+        out.push_str(ci);
+    }
+}
+
 // 128 spaces covers any realistic YAML indentation depth.
 // For pathological depths beyond 128, we fall back to an owned allocation.
 const SPACES: &str = "                                                                                                                                ";
@@ -111,10 +119,7 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                 // Flow mapping value: emit inline on same line
                 out.push(' ');
                 emit_mapping_flow(nested, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
@@ -123,10 +128,7 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                     out.push_str(" &");
                     out.push_str(anchor);
                 }
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
                 emit_mapping(nested, indent + 2, out);
             }
@@ -136,10 +138,7 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                 // Flow sequence value: emit inline on same line
                 out.push(' ');
                 emit_sequence_flow(nested, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
@@ -148,45 +147,30 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                     out.push_str(" &");
                     out.push_str(anchor);
                 }
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
                 emit_sequence(nested, indent + 2, out);
             }
             YamlNode::Mapping(_) => {
                 // empty mapping — always inline
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push_str(" {}\n");
             }
             YamlNode::Sequence(_) => {
                 // empty sequence — always inline
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push_str(" []\n");
             }
             YamlNode::Scalar(s) if is_block_scalar(s) => {
                 // Block scalar: `|` or `>` goes on the key line, content indented below
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push(' ');
                 emit_block_scalar(s, indent + 2, out);
             }
             node => {
                 out.push(' ');
                 emit_node_inline(node, indent + 2, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
         }
@@ -249,10 +233,7 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
             {
                 // Flow mapping in sequence: emit inline
                 emit_mapping_flow(nested, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
@@ -272,10 +253,7 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
             {
                 // Flow sequence in sequence: emit inline
                 emit_sequence_flow(nested, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
@@ -295,10 +273,7 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
             }
             node => {
                 emit_node_inline(node, indent + 2, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
         }
@@ -360,10 +335,7 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                 if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
             {
                 emit_mapping_flow(nested, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
@@ -380,10 +352,7 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                 if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
             {
                 emit_sequence_flow(nested, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
@@ -401,10 +370,7 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
             }
             node => {
                 emit_node_inline(node, indent + 2, out);
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
         }
@@ -449,17 +415,11 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
             {
                 out.push(' ');
                 emit_mapping_flow(nested, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
                 emit_mapping(nested, indent + 2, out);
             }
@@ -468,35 +428,23 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
             {
                 out.push(' ');
                 emit_sequence_flow(nested, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
                 emit_sequence(nested, indent + 2, out);
             }
             YamlNode::Scalar(s) if is_block_scalar(s) => {
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push(' ');
                 emit_block_scalar(s, indent + 2, out);
             }
             node => {
                 out.push(' ');
                 emit_node_inline(node, indent + 2, out);
-                if let Some(ci) = &entry.comment_inline {
-                    out.push_str("  # ");
-                    out.push_str(ci);
-                }
+                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push('\n');
             }
         }
