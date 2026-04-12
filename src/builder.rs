@@ -136,10 +136,17 @@ impl Builder {
     /// Take all pending before-comments with line < node_line, join with newline.
     fn take_before(&mut self, node_line: usize) -> Option<String> {
         let mut result: Option<String> = None;
-        for (_, text) in self.pending_before.drain(..).filter(|(l, _)| *l < node_line) {
+        for (_, text) in self
+            .pending_before
+            .drain(..)
+            .filter(|(l, _)| *l < node_line)
+        {
             match result.as_mut() {
                 None => result = Some(text),
-                Some(r) => { r.push('\n'); r.push_str(&text); }
+                Some(r) => {
+                    r.push('\n');
+                    r.push_str(&text);
+                }
             }
         }
         result
@@ -316,17 +323,28 @@ impl Builder {
                             let node_line = mark.line();
                             let blank_lines = match self.last_content_line {
                                 Some(last) if node_line > last + 1 => {
-                                    let nc = self.pending_before.iter().filter(|(l, _)| *l < node_line).count();
+                                    let nc = self
+                                        .pending_before
+                                        .iter()
+                                        .filter(|(l, _)| *l < node_line)
+                                        .count();
                                     (node_line - last - 1).saturating_sub(nc).min(255) as u8
                                 }
                                 _ => 0,
                             };
                             let comment_before = {
                                 let mut result: Option<String> = None;
-                                for (_, text) in self.pending_before.drain(..).filter(|(l, _)| *l < node_line) {
+                                for (_, text) in self
+                                    .pending_before
+                                    .drain(..)
+                                    .filter(|(l, _)| *l < node_line)
+                                {
                                     match result.as_mut() {
-                                        None    => result = Some(text),
-                                        Some(r) => { r.push('\n'); r.push_str(&text); }
+                                        None => result = Some(text),
+                                        Some(r) => {
+                                            r.push('\n');
+                                            r.push_str(&text);
+                                        }
                                     }
                                 }
                                 result
@@ -375,17 +393,28 @@ impl Builder {
                         let node_line = mark.line();
                         let blank_lines = match self.last_content_line {
                             Some(last) if node_line > last + 1 => {
-                                let nc = self.pending_before.iter().filter(|(l, _)| *l < node_line).count();
+                                let nc = self
+                                    .pending_before
+                                    .iter()
+                                    .filter(|(l, _)| *l < node_line)
+                                    .count();
                                 (node_line - last - 1).saturating_sub(nc).min(255) as u8
                             }
                             _ => 0,
                         };
                         let comment_before = {
                             let mut result: Option<String> = None;
-                            for (_, text) in self.pending_before.drain(..).filter(|(l, _)| *l < node_line) {
+                            for (_, text) in self
+                                .pending_before
+                                .drain(..)
+                                .filter(|(l, _)| *l < node_line)
+                            {
                                 match result.as_mut() {
-                                    None    => result = Some(text),
-                                    Some(r) => { r.push('\n'); r.push_str(&text); }
+                                    None => result = Some(text),
+                                    Some(r) => {
+                                        r.push('\n');
+                                        r.push_str(&text);
+                                    }
                                 }
                             }
                             result
@@ -417,7 +446,11 @@ impl Builder {
             Event::Alias(id) => {
                 // Expand the alias in-place: clone the anchored node and push it.
                 // If the anchor is unknown (invalid YAML), fall back to Null.
-                let node = self.anchor_table.get(&id).cloned().unwrap_or(YamlNode::Null);
+                let node = self
+                    .anchor_table
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or(YamlNode::Null);
                 // If the alias is in mapping key position, use its scalar value as the key string.
                 if let Some(Frame::Mapping(mf)) = self.stack.last_mut()
                     && mf.current_key.is_none()

@@ -103,10 +103,13 @@ jobs:
       - name: Install Rust (nightly)
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+
+      - name: rustfmt
+        run: cargo fmt --check
 
   # ── Build release wheels ───────────────────────────────────────────────────
   build-wheels:

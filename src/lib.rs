@@ -136,10 +136,13 @@ fn node_to_doc(py: Python<'_>, node: YamlNode, explicit_start: bool) -> PyResult
     match node {
         YamlNode::Mapping(m) => mapping_to_py_obj(py, m, explicit_start),
         YamlNode::Sequence(s) => sequence_to_py_obj(py, s, explicit_start),
-        other => Ok(PyYamlScalar { inner: other, explicit_start }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
+        other => Ok(PyYamlScalar {
+            inner: other,
+            explicit_start,
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
     }
 }
 
@@ -289,7 +292,11 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
 
 /// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
 /// The parent dict is populated with the mapping's entries.
-fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, explicit_start: bool) -> PyResult<Py<PyAny>> {
+fn mapping_to_py_obj(
+    py: Python<'_>,
+    m: types::YamlMapping,
+    explicit_start: bool,
+) -> PyResult<Py<PyAny>> {
     // Build Python values before moving m into the struct.
     let py_pairs: Vec<(String, Py<PyAny>)> = m
         .entries
@@ -300,7 +307,13 @@ fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, explicit_start: bool
         })
         .collect::<PyResult<_>>()?;
 
-    let obj: Py<PyYamlMapping> = Py::new(py, PyYamlMapping { inner: m, explicit_start })?;
+    let obj: Py<PyYamlMapping> = Py::new(
+        py,
+        PyYamlMapping {
+            inner: m,
+            explicit_start,
+        },
+    )?;
 
     // Populate the underlying dict with Python-visible values.
     {
@@ -316,7 +329,11 @@ fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, explicit_start: bool
 
 /// Create a PyYamlSequence (list subclass) from a Rust YamlSequence.
 /// The parent list is populated with the sequence's items.
-fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence, explicit_start: bool) -> PyResult<Py<PyAny>> {
+fn sequence_to_py_obj(
+    py: Python<'_>,
+    s: types::YamlSequence,
+    explicit_start: bool,
+) -> PyResult<Py<PyAny>> {
     // Build Python values before moving s into the struct.
     let py_items: Vec<Py<PyAny>> = s
         .items
@@ -324,7 +341,13 @@ fn sequence_to_py_obj(py: Python<'_>, s: types::YamlSequence, explicit_start: bo
         .map(|item| node_to_py(py, &item.value))
         .collect::<PyResult<_>>()?;
 
-    let obj: Py<PyYamlSequence> = Py::new(py, PyYamlSequence { inner: s, explicit_start })?;
+    let obj: Py<PyYamlSequence> = Py::new(
+        py,
+        PyYamlSequence {
+            inner: s,
+            explicit_start,
+        },
+    )?;
 
     // Populate the underlying list with Python-visible values.
     {
@@ -572,7 +595,7 @@ impl PyYamlScalar {
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown style {other:?}; expected plain/single/double/literal/folded"
-                )))
+                )));
             }
         };
         if let YamlNode::Scalar(s) = &mut self.inner {
@@ -912,7 +935,7 @@ impl PyYamlMapping {
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown style {other:?}; expected plain/single/double/literal/folded"
-                )))
+                )));
             }
         };
         match self.inner.entries.get_mut(key) {
@@ -961,14 +984,17 @@ impl PyYamlSequence {
         let len = slf.borrow().inner.items.len() as isize;
         let real_idx = if key < 0 { len + key } else { key };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         {
             let mut borrow = slf.borrow_mut();
             borrow.inner.items[real_idx as usize].value = node.clone();
         }
         let py_val = node_to_py(py, &node)?;
-        slf.as_super().set_item(real_idx as usize, py_val.bind(py))?;
+        slf.as_super()
+            .set_item(real_idx as usize, py_val.bind(py))?;
         Ok(())
     }
 
@@ -976,7 +1002,9 @@ impl PyYamlSequence {
         let len = slf.borrow().inner.items.len() as isize;
         let real_idx = if key < 0 { len + key } else { key };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         {
             let mut borrow = slf.borrow_mut();
@@ -1164,7 +1192,12 @@ impl PyYamlSequence {
         let pairs: Vec<(YamlItem, Py<PyAny>)> = {
             let borrow = slf.borrow();
             (0..n)
-                .map(|i| Ok((borrow.inner.items[i].clone(), list_part.get_item(i)?.unbind())))
+                .map(|i| {
+                    Ok((
+                        borrow.inner.items[i].clone(),
+                        list_part.get_item(i)?.unbind(),
+                    ))
+                })
                 .collect::<PyResult<_>>()?
         };
         // Compute sort keys from existing Python objects (apply key fn if given).
@@ -1172,7 +1205,10 @@ impl PyYamlSequence {
             .iter()
             .map(|(_, py_obj)| {
                 if let Some(key_fn) = &key {
-                    key_fn.bind(py).call1((py_obj.bind(py),)).map(|r| r.unbind())
+                    key_fn
+                        .bind(py)
+                        .call1((py_obj.bind(py),))
+                        .map(|r| r.unbind())
                 } else {
                     Ok(py_obj.clone_ref(py))
                 }
@@ -1217,7 +1253,9 @@ impl PyYamlSequence {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         Ok(self.inner.items[real_idx as usize].comment_inline.clone())
     }
@@ -1226,7 +1264,9 @@ impl PyYamlSequence {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         Ok(self.inner.items[real_idx as usize].comment_before.clone())
     }
@@ -1235,7 +1275,9 @@ impl PyYamlSequence {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         self.inner.items[real_idx as usize].comment_inline = comment.map(str::to_owned);
         Ok(())
@@ -1245,7 +1287,9 @@ impl PyYamlSequence {
         let len = self.inner.items.len() as isize;
         let real_idx = if idx < 0 { len + idx } else { idx };
         if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err("index out of range"));
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
         }
         self.inner.items[real_idx as usize].comment_before = comment.map(str::to_owned);
         Ok(())

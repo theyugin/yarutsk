@@ -82,7 +82,9 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
         out.push(':');
 
         match &entry.value {
-            YamlNode::Mapping(nested) if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Mapping(nested)
+                if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 // Flow mapping value: emit inline on same line
                 out.push(' ');
                 emit_mapping_flow(nested, out);
@@ -101,7 +103,9 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                 out.push('\n');
                 emit_mapping(nested, indent + 2, out);
             }
-            YamlNode::Sequence(nested) if !nested.items.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Sequence(nested)
+                if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 // Flow sequence value: emit inline on same line
                 out.push(' ');
                 emit_sequence_flow(nested, out);
@@ -197,7 +201,9 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
         out.push_str(&indent_str(indent));
         out.push_str("- ");
         match &item.value {
-            YamlNode::Mapping(nested) if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Mapping(nested)
+                if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 // Flow mapping in sequence: emit inline
                 emit_mapping_flow(nested, out);
                 if let Some(ci) = &item.comment_inline {
@@ -218,7 +224,9 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                     emit_mapping_inline_first(nested, indent + 2, out);
                 }
             }
-            YamlNode::Sequence(nested) if !nested.items.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Sequence(nested)
+                if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 // Flow sequence in sequence: emit inline
                 emit_sequence_flow(nested, out);
                 if let Some(ci) = &item.comment_inline {
@@ -293,7 +301,9 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
         }
         out.push_str("- ");
         match &item.value {
-            YamlNode::Mapping(nested) if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Mapping(nested)
+                if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 emit_mapping_flow(nested, out);
                 if let Some(ci) = &item.comment_inline {
                     out.push_str("  # ");
@@ -311,7 +321,9 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                     emit_mapping_inline_first(nested, indent + 2, out);
                 }
             }
-            YamlNode::Sequence(nested) if !nested.items.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Sequence(nested)
+                if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 emit_sequence_flow(nested, out);
                 if let Some(ci) = &item.comment_inline {
                     out.push_str("  # ");
@@ -377,7 +389,9 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
         out.push(':');
 
         match &entry.value {
-            YamlNode::Mapping(nested) if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Mapping(nested)
+                if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 out.push(' ');
                 emit_mapping_flow(nested, out);
                 if let Some(ci) = &entry.comment_inline {
@@ -394,7 +408,9 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
                 out.push('\n');
                 emit_mapping(nested, indent + 2, out);
             }
-            YamlNode::Sequence(nested) if !nested.items.is_empty() && nested.style == ContainerStyle::Flow => {
+            YamlNode::Sequence(nested)
+                if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
+            {
                 out.push(' ');
                 emit_sequence_flow(nested, out);
                 if let Some(ci) = &entry.comment_inline {
@@ -517,7 +533,11 @@ fn emit_string_with_style(s: &str, style: ScalarStyle) -> String {
             let mut out = String::with_capacity(s.len() + 2);
             out.push('\'');
             for c in s.chars() {
-                if c == '\'' { out.push_str("''"); } else { out.push(c); }
+                if c == '\'' {
+                    out.push_str("''");
+                } else {
+                    out.push(c);
+                }
             }
             out.push('\'');
             out
@@ -528,11 +548,11 @@ fn emit_string_with_style(s: &str, style: ScalarStyle) -> String {
             for c in s.chars() {
                 match c {
                     '\\' => out.push_str("\\\\"),
-                    '"'  => out.push_str("\\\""),
+                    '"' => out.push_str("\\\""),
                     '\n' => out.push_str("\\n"),
                     '\r' => out.push_str("\\r"),
                     '\t' => out.push_str("\\t"),
-                    c    => out.push(c),
+                    c => out.push(c),
                 }
             }
             out.push('"');
@@ -562,7 +582,11 @@ fn single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {
-        if c == '\'' { out.push_str("''"); } else { out.push(c); }
+        if c == '\'' {
+            out.push_str("''");
+        } else {
+            out.push(c);
+        }
     }
     out.push('\'');
     out
@@ -576,11 +600,10 @@ fn needs_quoting(s: &str) -> bool {
     // Check if it would be parsed as a non-string type.
     // Mirrors ScalarValue::from_str but avoids allocating a String.
     match s {
-        "null" | "Null" | "NULL" | "~"
-        | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON"
-        | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF"
-        | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF"
-        | ".nan" | ".NaN" | ".NAN" => return true,
+        "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
+        | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
+        | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
+        | ".NAN" => return true,
         _ => {}
     }
     // Numeric: hex/octal prefix → int; decimal int; float with . or e

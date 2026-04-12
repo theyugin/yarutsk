@@ -14,3 +14,10 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: rustfmt
+        name: rustfmt
+        entry: cargo fmt --check
+        language: system
+        pass_filenames: false
+        always_run: true
