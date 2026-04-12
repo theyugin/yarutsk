@@ -50,7 +50,7 @@ pub struct YamlScalar {
     pub anchor: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScalarValue {
     Int(i64),
     Float(f64),

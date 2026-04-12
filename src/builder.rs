@@ -1142,6 +1142,14 @@ mod tests {
     }
 
     #[test]
+    fn rt_folded_block_multiline() {
+        // Single blank-line separator between two paragraphs
+        rt("text: >\n  ab cd\n\n  ef\n");
+        // Double blank-line separator (two \n between paragraphs)
+        rt("text: >\n  ab cd\n\n\n  gh\n");
+    }
+
+    #[test]
     fn rt_inline_comment() {
         rt("a: 1  # comment\nb: 2\n");
     }

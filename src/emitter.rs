@@ -21,6 +21,10 @@ pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
     match node {
         YamlNode::Mapping(m) => emit_mapping(m, indent, out),
         YamlNode::Sequence(s) => emit_sequence(s, indent, out),
+        // Block scalars (`|` / `>`) are routed to `emit_block_scalar` so that
+        // the indicator and indented content are always emitted correctly,
+        // whether the scalar is a top-level document or a nested value.
+        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, None, out),
         YamlNode::Scalar(s) => emit_scalar(s, out),
         YamlNode::Null => {
             out.push_str("null");
@@ -44,7 +48,8 @@ pub fn emit_docs(docs: &[YamlNode], explicit_starts: &[bool], explicit_ends: &[b
             out.push_str("---\n");
         }
         emit_node(doc, 0, &mut out);
-        if i + 1 < docs.len() && !out.ends_with('\n') {
+        // Ensure a newline separates the document body from the next `---` or `...`.
+        if (i + 1 < docs.len() || want_end) && !out.ends_with('\n') {
             out.push('\n');
         }
         if want_end {
@@ -162,10 +167,10 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
                 out.push_str(" []\n");
             }
             YamlNode::Scalar(s) if is_block_scalar(s) => {
-                // Block scalar: `|` or `>` goes on the key line, content indented below
-                push_inline_comment(entry.comment_inline.as_deref(), out);
+                // Block scalar: indicator goes on the key line, then the inline comment
+                // (YAML allows `key: |  # comment` — comment follows the indicator).
                 out.push(' ');
-                emit_block_scalar(s, indent + 2, out);
+                emit_block_scalar(s, indent + 2, entry.comment_inline.as_deref(), out);
             }
             node => {
                 out.push(' ');
@@ -269,7 +274,7 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
                 // Block scalar directly in sequence
-                emit_block_scalar(scalar, indent + 2, out);
+                emit_block_scalar(scalar, indent + 2, None, out);
             }
             node => {
                 emit_node_inline(node, indent + 2, out);
@@ -366,7 +371,7 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                 }
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
-                emit_block_scalar(scalar, indent + 2, out);
+                emit_block_scalar(scalar, indent + 2, None, out);
             }
             node => {
                 emit_node_inline(node, indent + 2, out);
@@ -437,9 +442,8 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
                 emit_sequence(nested, indent + 2, out);
             }
             YamlNode::Scalar(s) if is_block_scalar(s) => {
-                push_inline_comment(entry.comment_inline.as_deref(), out);
                 out.push(' ');
-                emit_block_scalar(s, indent + 2, out);
+                emit_block_scalar(s, indent + 2, entry.comment_inline.as_deref(), out);
             }
             node => {
                 out.push(' ');
@@ -459,7 +463,21 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
 
 /// Emit a block scalar (`|` or `>`), writing the indicator on the current line
 /// and the content on subsequent indented lines.
-fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
+///
+/// `inline_comment` is appended after the indicator on the header line (before
+/// the trailing newline), matching the YAML syntax `key: |  # comment\n  content`.
+///
+/// For folded (`>`) scalars the scanner has already joined consecutive source lines
+/// with spaces and turned blank-line separators into `\n` characters in the stored
+/// value.  To prevent the YAML parser from re-folding those `\n` separators into
+/// spaces again on re-parse, this function emits a blank "paragraph separator" line
+/// after every non-empty content line that has more content following it.
+fn emit_block_scalar(
+    s: &YamlScalar,
+    indent: usize,
+    inline_comment: Option<&str>,
+    out: &mut String,
+) {
     let indicator = if s.style == ScalarStyle::Literal {
         '|'
     } else {
@@ -481,6 +499,7 @@ fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
     };
     out.push(indicator);
     out.push_str(chomping);
+    push_inline_comment(inline_comment, out);
     out.push('\n');
     let prefix = indent_str(indent);
     // Emit all lines except the artifact empty string produced by a trailing '\n'.
@@ -490,13 +509,32 @@ fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
     } else {
         lines.len()
     };
-    for line in &lines[..emit_count] {
-        if line.is_empty() {
-            out.push('\n'); // blank line inside block scalar — no indent
-        } else {
-            out.push_str(&prefix);
-            out.push_str(line);
-            out.push('\n');
+    if indicator == '>' {
+        // Folded: after every non-empty content line that has more content following
+        // it, emit a blank paragraph-separator line.  This prevents the YAML parser
+        // from re-folding the stored `\n` separators back into spaces.
+        for (i, line) in lines[..emit_count].iter().enumerate() {
+            if line.is_empty() {
+                out.push('\n'); // extra \n beyond the paragraph separation
+            } else {
+                out.push_str(&prefix);
+                out.push_str(line);
+                out.push('\n');
+                if i + 1 < emit_count {
+                    out.push('\n'); // paragraph separator
+                }
+            }
+        }
+    } else {
+        // Literal: emit lines verbatim.
+        for line in &lines[..emit_count] {
+            if line.is_empty() {
+                out.push('\n'); // blank line inside block scalar — no indent
+            } else {
+                out.push_str(&prefix);
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
 }
@@ -631,6 +669,12 @@ fn needs_quoting_for_key(s: &str) -> bool {
 fn emit_string_with_style(s: &str, style: ScalarStyle) -> String {
     match style {
         ScalarStyle::SingleQuoted => {
+            // Single-quoted strings emit literal newlines, which YAML folds back to
+            // spaces on re-parse.  Switch to double-quoted (with \n escapes) when the
+            // string contains newlines so the value is preserved on round-trip.
+            if s.contains('\n') {
+                return double_quote(s);
+            }
             let mut out = String::with_capacity(s.len() + 2);
             out.push('\'');
             for c in s.chars() {
@@ -661,16 +705,27 @@ fn emit_string_with_style(s: &str, style: ScalarStyle) -> String {
         }
         ScalarStyle::Literal | ScalarStyle::Folded => {
             // Should have been handled by emit_block_scalar; if we reach here the node
-            // isn't in a key position, fall back to single-quoted.
+            // is in a context where block scalars are not valid (e.g. flow or key
+            // position).  Use double-quoted if the string contains newlines so that
+            // `\n` escape sequences are emitted rather than literal newlines, which
+            // would cause indentation errors on re-parse.
             if needs_quoting(s) {
-                single_quote(s)
+                if s.contains('\n') {
+                    double_quote(s)
+                } else {
+                    single_quote(s)
+                }
             } else {
                 s.to_owned()
             }
         }
         ScalarStyle::Plain => {
             if needs_quoting(s) {
-                single_quote(s)
+                if s.contains('\n') {
+                    double_quote(s)
+                } else {
+                    single_quote(s)
+                }
             } else {
                 s.to_owned()
             }
@@ -690,6 +745,24 @@ fn single_quote(s: &str) -> String {
         }
     }
     out.push('\'');
+    out
+}
+
+#[inline]
+fn double_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -1296,6 +1369,41 @@ mod tests {
             out.starts_with("text: >\n"),
             "expected folded indicator: {out}"
         );
+    }
+
+    #[test]
+    fn emit_folded_block_multiline() {
+        // Multi-paragraph folded content must survive a full emit → re-parse cycle.
+        let cases: &[(&str, &str)] = &[
+            // Two paragraphs, one blank-line separator
+            ("ab cd\nef\n", "ab cd\nef\n"),
+            // Three paragraphs, double blank-line separator between 2nd and 3rd
+            ("ab cd\nef\n\ngh\n", "ab cd\nef\n\ngh\n"),
+        ];
+        for (content, expected_value) in cases {
+            let m = make_mapping(&[(
+                "text",
+                YamlNode::Scalar(YamlScalar {
+                    value: ScalarValue::Str((*content).to_owned()),
+                    style: ScalarStyle::Folded,
+                    tag: None,
+                    original: None,
+                    anchor: None,
+                }),
+            )]);
+            let mut out = String::new();
+            emit_node(&YamlNode::Mapping(m), 0, &mut out);
+            let (re_docs, _, _) = crate::builder::parse_str(&out).expect("re-parse failed");
+            if let YamlNode::Mapping(m2) = &re_docs[0] {
+                if let YamlNode::Scalar(s) = &m2.entries["text"].value {
+                    assert_eq!(
+                        s.value,
+                        ScalarValue::Str((*expected_value).to_owned()),
+                        "value mismatch for content={content:?}\nemitted:\n{out}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
