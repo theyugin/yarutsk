@@ -23,6 +23,51 @@ class YamlScalar:
         """The Python primitive value of this scalar."""
         ...
 
+    @property
+    def style(self) -> str:
+        """The scalar quoting style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``."""
+        ...
+
+    @style.setter
+    def style(self, value: str) -> None: ...
+    @property
+    def explicit_start(self) -> bool:
+        """Whether the source document had an explicit ``---`` marker."""
+        ...
+
+    @explicit_start.setter
+    def explicit_start(self, value: bool) -> None: ...
+    @property
+    def explicit_end(self) -> bool:
+        """Whether the source document had an explicit ``...`` marker."""
+        ...
+
+    @explicit_end.setter
+    def explicit_end(self, value: bool) -> None: ...
+    def get_tag(self) -> str | None:
+        """Return the YAML tag on this scalar (e.g. ``"!!str"``), or ``None``."""
+        ...
+
+    def set_tag(self, tag: str | None) -> None:
+        """Set or clear the YAML tag on this scalar."""
+        ...
+
+    def get_yaml_version(self) -> str | None:
+        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+        ...
+
+    def set_yaml_version(self, version: str | None) -> None:
+        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
+        ...
+
+    def get_tag_directives(self) -> list[tuple[str, str]]:
+        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
+        ...
+
+    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
+        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
+        ...
+
     def to_dict(self) -> "_Scalar":
         """Return the Python primitive value."""
         ...
@@ -38,6 +83,57 @@ class YamlMapping(dict[str, Any]):
     - ``sort_keys()`` for in-place key sorting
     - ``to_dict()`` for deep conversion to a plain Python dict
     """
+
+    @property
+    def explicit_start(self) -> bool:
+        """Whether the source document had an explicit ``---`` marker."""
+        ...
+
+    @explicit_start.setter
+    def explicit_start(self, value: bool) -> None: ...
+    @property
+    def explicit_end(self) -> bool:
+        """Whether the source document had an explicit ``...`` marker."""
+        ...
+
+    @explicit_end.setter
+    def explicit_end(self, value: bool) -> None: ...
+    def get_tag(self) -> str | None:
+        """Return the YAML tag on this mapping (e.g. ``"!!map"``), or ``None``."""
+        ...
+
+    def set_tag(self, tag: str | None) -> None:
+        """Set or clear the YAML tag on this mapping."""
+        ...
+
+    def get_yaml_version(self) -> str | None:
+        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+        ...
+
+    def set_yaml_version(self, version: str | None) -> None:
+        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
+        ...
+
+    def get_tag_directives(self) -> list[tuple[str, str]]:
+        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
+        ...
+
+    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
+        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
+        ...
+
+    def get_node(self, key: str) -> "YamlMapping | YamlSequence | YamlScalar":
+        """Return the underlying YAML node for *key*, preserving style/tag metadata.
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def set_scalar_style(self, key: str, style: str) -> None:
+        """Set the scalar quoting style for the value at *key*.
+        *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+        """
+        ...
 
     def __repr__(self) -> str: ...
     def sort_keys(
@@ -77,6 +173,44 @@ class YamlSequence(list[Any]):
     - ``sort()`` override that preserves comment metadata
     - ``to_dict()`` for deep conversion to a plain Python list
     """
+
+    @property
+    def explicit_start(self) -> bool:
+        """Whether the source document had an explicit ``---`` marker."""
+        ...
+
+    @explicit_start.setter
+    def explicit_start(self, value: bool) -> None: ...
+    @property
+    def explicit_end(self) -> bool:
+        """Whether the source document had an explicit ``...`` marker."""
+        ...
+
+    @explicit_end.setter
+    def explicit_end(self, value: bool) -> None: ...
+    def get_tag(self) -> str | None:
+        """Return the YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``."""
+        ...
+
+    def set_tag(self, tag: str | None) -> None:
+        """Set or clear the YAML tag on this sequence."""
+        ...
+
+    def get_yaml_version(self) -> str | None:
+        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+        ...
+
+    def set_yaml_version(self, version: str | None) -> None:
+        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
+        ...
+
+    def get_tag_directives(self) -> list[tuple[str, str]]:
+        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
+        ...
+
+    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
+        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
+        ...
 
     def __repr__(self) -> str: ...
     def sort(

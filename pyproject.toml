@@ -46,5 +46,5 @@ dev = [
 benchmark = [
     "pyyaml>=6.0",
     "ruamel.yaml>=0.18",
-    "pytest-benchmark>=5.0",
+    "pytest-benchmark[histogram]>=5.0",
 ]

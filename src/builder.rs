@@ -13,8 +13,15 @@ pub struct Builder {
     pub doc_explicit: Vec<bool>,
     /// Whether each doc in `docs` had an explicit `...` end marker.
     pub doc_explicit_end: Vec<bool>,
+    /// `%YAML major.minor` directive for each doc, if present.
+    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
+    /// `%TAG handle prefix` pairs for each doc (empty vec if none).
+    pub doc_tag_directives: Vec<Vec<(String, String)>>,
     /// Whether the next document to be pushed had an explicit `---` marker.
     next_explicit: bool,
+    /// Directives captured from the current `DocumentStart` event.
+    next_yaml_version: Option<(u8, u8)>,
+    next_tag_directives: Vec<(String, String)>,
     /// Line of the last SCALAR content token (key or value), for inline comment detection.
     /// Only scalars update this; MappingEnd/SequenceEnd do not.
     last_content_line: Option<usize>,
@@ -101,7 +108,11 @@ impl Builder {
             docs: Vec::new(),
             doc_explicit: Vec::new(),
             doc_explicit_end: Vec::new(),
+            doc_yaml_version: Vec::new(),
+            doc_tag_directives: Vec::new(),
             next_explicit: false,
+            next_yaml_version: None,
+            next_tag_directives: Vec::new(),
             last_content_line: None,
             pending_before: Vec::new(),
             anchor_table: HashMap::new(),
@@ -189,6 +200,9 @@ impl Builder {
         match self.stack.last_mut() {
             None => {
                 self.doc_explicit.push(self.next_explicit);
+                self.doc_yaml_version.push(self.next_yaml_version.take());
+                self.doc_tag_directives
+                    .push(std::mem::take(&mut self.next_tag_directives));
                 self.docs.push(node);
             }
             Some(Frame::Mapping(mf)) => {
@@ -273,8 +287,10 @@ impl Builder {
         match ev {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
 
-            Event::DocumentStart(explicit) => {
+            Event::DocumentStart(explicit, version, tag_dirs) => {
                 self.next_explicit = explicit;
+                self.next_yaml_version = version;
+                self.next_tag_directives = tag_dirs;
                 // Record the document-start line so blank lines between `---` and
                 // the first key are counted correctly by count_blank_lines.
                 self.last_content_line = Some(mark.line());
@@ -463,6 +479,9 @@ impl Builder {
                             anchor_node = Some(node.clone());
                         }
                         self.doc_explicit.push(self.next_explicit);
+                        self.doc_yaml_version.push(self.next_yaml_version.take());
+                        self.doc_tag_directives
+                            .push(std::mem::take(&mut self.next_tag_directives));
                         self.docs.push(node);
                         self.last_content_line = Some(effective_scalar_end_line);
                     }
@@ -649,8 +668,14 @@ mod tests {
 
     /// Full round-trip: parse `src`, emit, assert output == `src`.
     fn rt(src: &str) {
-        let (docs, starts, ends) = parse_str(src).expect("parse failed");
-        let out = emit_docs(&docs, &starts, &ends);
+        let out_data = parse_str(src).expect("parse failed");
+        let out = emit_docs(
+            &out_data.docs,
+            &out_data.doc_explicit,
+            &out_data.doc_explicit_end,
+            &out_data.doc_yaml_version,
+            &out_data.doc_tag_directives,
+        );
         assert_eq!(
             out, src,
             "round-trip mismatch\n---expected---\n{src}\n---got---\n{out}\n"
@@ -659,25 +684,25 @@ mod tests {
 
     /// Parse `src` and return the single top-level document node.
     fn parse_one(src: &str) -> YamlNode {
-        let (mut docs, _, _) = parse_str(src).expect("parse failed");
-        assert_eq!(docs.len(), 1, "expected exactly one document");
-        docs.remove(0)
+        let mut out = parse_str(src).expect("parse failed");
+        assert_eq!(out.docs.len(), 1, "expected exactly one document");
+        out.docs.remove(0)
     }
 
     // ── Empty / trivial ───────────────────────────────────────────────────────
 
     #[test]
     fn empty_input_produces_no_docs() {
-        let (docs, starts, ends) = parse_str("").unwrap();
-        assert!(docs.is_empty());
-        assert!(starts.is_empty());
-        assert!(ends.is_empty());
+        let out = parse_str("").unwrap();
+        assert!(out.docs.is_empty());
+        assert!(out.doc_explicit.is_empty());
+        assert!(out.doc_explicit_end.is_empty());
     }
 
     #[test]
     fn whitespace_only_produces_no_docs() {
-        let (docs, _, _) = parse_str("   \n  \n").unwrap();
-        assert!(docs.is_empty());
+        let out = parse_str("   \n  \n").unwrap();
+        assert!(out.docs.is_empty());
     }
 
     // ── Null scalar ───────────────────────────────────────────────────────────
@@ -1071,37 +1096,37 @@ mod tests {
 
     #[test]
     fn explicit_start_marker_recorded() {
-        let (_, starts, _) = parse_str("---\na: 1\n").unwrap();
-        assert_eq!(starts, [true]);
+        let out = parse_str("---\na: 1\n").unwrap();
+        assert_eq!(out.doc_explicit, [true]);
     }
 
     #[test]
     fn no_explicit_start_without_dashes() {
-        let (_, starts, _) = parse_str("a: 1\n").unwrap();
-        assert_eq!(starts, [false]);
+        let out = parse_str("a: 1\n").unwrap();
+        assert_eq!(out.doc_explicit, [false]);
     }
 
     #[test]
     fn explicit_end_marker_recorded() {
-        let (_, _, ends) = parse_str("a: 1\n...\n").unwrap();
-        assert_eq!(ends, [true]);
+        let out = parse_str("a: 1\n...\n").unwrap();
+        assert_eq!(out.doc_explicit_end, [true]);
     }
 
     #[test]
     fn both_markers_recorded() {
-        let (_, starts, ends) = parse_str("---\na: 1\n...\n").unwrap();
-        assert_eq!(starts, [true]);
-        assert_eq!(ends, [true]);
+        let out = parse_str("---\na: 1\n...\n").unwrap();
+        assert_eq!(out.doc_explicit, [true]);
+        assert_eq!(out.doc_explicit_end, [true]);
     }
 
     // ── Multiple documents ────────────────────────────────────────────────────
 
     #[test]
     fn two_docs_parsed() {
-        let (docs, starts, ends) = parse_str("---\na: 1\n---\nb: 2\n").unwrap();
-        assert_eq!(docs.len(), 2);
-        assert_eq!(starts, [true, true]);
-        assert_eq!(ends, [false, false]);
+        let out = parse_str("---\na: 1\n---\nb: 2\n").unwrap();
+        assert_eq!(out.docs.len(), 2);
+        assert_eq!(out.doc_explicit, [true, true]);
+        assert_eq!(out.doc_explicit_end, [false, false]);
     }
 
     // ── Block scalars ─────────────────────────────────────────────────────────
@@ -1154,14 +1179,12 @@ mod tests {
 
     #[test]
     fn rt_flow_mapping() {
-        // Top-level flow mappings are emitted without a trailing newline by emit_docs
-        rt("{a: 1, b: 2}");
+        rt("{a: 1, b: 2}\n");
     }
 
     #[test]
     fn rt_flow_sequence() {
-        // Top-level flow sequences are emitted without a trailing newline by emit_docs
-        rt("[1, 2, 3]");
+        rt("[1, 2, 3]\n");
     }
 
     #[test]
@@ -1319,11 +1342,16 @@ mod tests {
     }
 }
 
-/// Parse YAML input into a list of top-level documents.
-/// Returns `(docs, explicit_starts, explicit_ends)` where the flags are `true` when
-/// the document had an explicit `---` / `...` marker in the source.
-#[allow(clippy::type_complexity)]
-pub fn parse_str(input: &str) -> Result<(Vec<YamlNode>, Vec<bool>, Vec<bool>), String> {
+/// Parsed output from a YAML input string.
+pub struct ParseOutput {
+    pub docs: Vec<YamlNode>,
+    pub doc_explicit: Vec<bool>,
+    pub doc_explicit_end: Vec<bool>,
+    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
+    pub doc_tag_directives: Vec<Vec<(String, String)>>,
+}
+
+pub fn parse_str(input: &str) -> Result<ParseOutput, String> {
     let mut parser = Parser::new_from_str(input);
     let mut builder = Builder::new();
 
@@ -1348,5 +1376,11 @@ pub fn parse_str(input: &str) -> Result<(Vec<YamlNode>, Vec<bool>, Vec<bool>), S
         }
     }
 
-    Ok((builder.docs, builder.doc_explicit, builder.doc_explicit_end))
+    Ok(ParseOutput {
+        docs: builder.docs,
+        doc_explicit: builder.doc_explicit,
+        doc_explicit_end: builder.doc_explicit_end,
+        doc_yaml_version: builder.doc_yaml_version,
+        doc_tag_directives: builder.doc_tag_directives,
+    })
 }

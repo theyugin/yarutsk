@@ -7,8 +7,8 @@ mod parser;
 mod scanner;
 mod types;
 
-use builder::parse_str;
-use emitter::{emit_docs, emit_node};
+use builder::{ParseOutput, parse_str};
+use emitter::emit_docs;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -80,9 +80,9 @@ fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
     let len_i = len as isize;
     let real = if idx < 0 { len_i + idx } else { idx };
     if real < 0 || real >= len_i {
-        return Err(pyo3::exceptions::PyIndexError::new_err(
-            "index out of range",
-        ));
+        return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+            "index {idx} is out of range for sequence of length {len}"
+        )));
     }
     Ok(real as usize)
 }
@@ -91,8 +91,8 @@ fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), false, false),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), false, false),
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), DocMeta::none()),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), DocMeta::none()),
         YamlNode::Alias { resolved, .. } => node_to_py(py, resolved),
     }
 }
@@ -145,25 +145,42 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         return Ok(YamlNode::Sequence(seq));
     }
     Err(PyRuntimeError::new_err(format!(
-        "Cannot convert {obj} to YAML node"
+        "Cannot convert {obj} to a YAML node; \
+         expected None, bool, int, float, str, dict, list, \
+         YamlMapping, YamlSequence, or YamlScalar"
     )))
 }
 
-/// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
-/// `explicit_start`/`explicit_end` are true when the source had `---`/`...` markers.
-fn node_to_doc(
-    py: Python<'_>,
-    node: YamlNode,
+/// Document-level metadata attached to every top-level YAML node.
+struct DocMeta {
     explicit_start: bool,
     explicit_end: bool,
-) -> PyResult<Py<PyAny>> {
+    yaml_version: Option<(u8, u8)>,
+    tag_directives: Vec<(String, String)>,
+}
+
+impl DocMeta {
+    fn none() -> Self {
+        DocMeta {
+            explicit_start: false,
+            explicit_end: false,
+            yaml_version: None,
+            tag_directives: vec![],
+        }
+    }
+}
+
+/// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
+fn node_to_doc(py: Python<'_>, node: YamlNode, meta: DocMeta) -> PyResult<Py<PyAny>> {
     match node {
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, explicit_start, explicit_end),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, explicit_start, explicit_end),
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, meta),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, meta),
         other => Ok(PyYamlScalar {
             inner: other,
-            explicit_start,
-            explicit_end,
+            explicit_start: meta.explicit_start,
+            explicit_end: meta.explicit_end,
+            yaml_version: meta.yaml_version,
+            tag_directives: meta.tag_directives,
         }
         .into_pyobject(py)?
         .into_any()
@@ -288,7 +305,9 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         return Ok(YamlNode::Sequence(seq));
     }
     Err(PyRuntimeError::new_err(format!(
-        "Cannot convert {obj} to YAML node"
+        "Cannot convert {obj} to a YAML node; \
+         expected None, bool, int, float, str, dict, list, \
+         YamlMapping, YamlSequence, or YamlScalar"
     )))
 }
 
@@ -296,12 +315,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
 
 /// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
 /// The parent dict is populated with the mapping's entries.
-fn mapping_to_py_obj(
-    py: Python<'_>,
-    m: types::YamlMapping,
-    explicit_start: bool,
-    explicit_end: bool,
-) -> PyResult<Py<PyAny>> {
+fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, meta: DocMeta) -> PyResult<Py<PyAny>> {
     // Build Python values before moving m into the struct.
     let py_pairs: Vec<(String, Py<PyAny>)> = m
         .entries
@@ -316,8 +330,10 @@ fn mapping_to_py_obj(
         py,
         PyYamlMapping {
             inner: m,
-            explicit_start,
-            explicit_end,
+            explicit_start: meta.explicit_start,
+            explicit_end: meta.explicit_end,
+            yaml_version: meta.yaml_version,
+            tag_directives: meta.tag_directives,
         },
     )?;
 
@@ -338,8 +354,7 @@ fn mapping_to_py_obj(
 fn sequence_to_py_obj(
     py: Python<'_>,
     s: types::YamlSequence,
-    explicit_start: bool,
-    explicit_end: bool,
+    meta: DocMeta,
 ) -> PyResult<Py<PyAny>> {
     // Build Python values before moving s into the struct.
     let py_items: Vec<Py<PyAny>> = s
@@ -352,8 +367,10 @@ fn sequence_to_py_obj(
         py,
         PyYamlSequence {
             inner: s,
-            explicit_start,
-            explicit_end,
+            explicit_start: meta.explicit_start,
+            explicit_end: meta.explicit_end,
+            yaml_version: meta.yaml_version,
+            tag_directives: meta.tag_directives,
         },
     )?;
 
@@ -459,7 +476,7 @@ fn write_to_stream(stream: &Bound<'_, PyAny>, text: &str) -> PyResult<()> {
 
 // ─── Parse / emit helpers ─────────────────────────────────────────────────────
 
-fn parse_text(text: &str) -> PyResult<(Vec<YamlNode>, Vec<bool>, Vec<bool>)> {
+fn parse_text(text: &str) -> PyResult<ParseOutput> {
     parse_str(text).map_err(|e| PyRuntimeError::new_err(format!("Parse error: {e}")))
 }
 
@@ -548,6 +565,10 @@ pub struct PyYamlScalar {
     pub explicit_start: bool,
     /// True when the document this node belongs to had an explicit `...` marker.
     pub explicit_end: bool,
+    /// `%YAML major.minor` directive for this document, if any.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs for this document.
+    pub tag_directives: Vec<(String, String)>,
 }
 
 #[pymethods]
@@ -651,6 +672,25 @@ impl PyYamlScalar {
     fn set_explicit_end(&mut self, value: bool) {
         self.explicit_end = value;
     }
+
+    /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    fn get_yaml_version(&self) -> Option<String> {
+        self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
+    }
+
+    fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
+        self.yaml_version = parse_yaml_version(version)?;
+        Ok(())
+    }
+
+    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    fn get_tag_directives(&self) -> Vec<(String, String)> {
+        self.tag_directives.clone()
+    }
+
+    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
+        self.tag_directives = directives;
+    }
 }
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
@@ -665,6 +705,10 @@ pub struct PyYamlMapping {
     pub explicit_start: bool,
     /// True when the document this mapping belongs to had an explicit `...` marker.
     pub explicit_end: bool,
+    /// `%YAML major.minor` directive for this document, if any.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs for this document.
+    pub tag_directives: Vec<(String, String)>,
 }
 
 #[pymethods]
@@ -675,6 +719,8 @@ impl PyYamlMapping {
             inner: types::YamlMapping::new(),
             explicit_start: false,
             explicit_end: false,
+            yaml_version: None,
+            tag_directives: vec![],
         }
     }
 
@@ -920,12 +966,31 @@ impl PyYamlMapping {
         self.explicit_end = value;
     }
 
+    /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    fn get_yaml_version(&self) -> Option<String> {
+        self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
+    }
+
+    fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
+        self.yaml_version = parse_yaml_version(version)?;
+        Ok(())
+    }
+
+    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    fn get_tag_directives(&self) -> Vec<(String, String)> {
+        self.tag_directives.clone()
+    }
+
+    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
+        self.tag_directives = directives;
+    }
+
     /// Return the underlying YAML node for a key as a YamlScalar, YamlMapping,
     /// or YamlSequence object, preserving style/tag metadata.
     /// Raises KeyError if the key is absent.
     fn get_node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.inner.entries.get(key) {
-            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), false, false)?),
+            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none())?),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
         }
     }
@@ -974,6 +1039,10 @@ pub struct PyYamlSequence {
     pub explicit_start: bool,
     /// True when the document this sequence belongs to had an explicit `...` marker.
     pub explicit_end: bool,
+    /// `%YAML major.minor` directive for this document, if any.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs for this document.
+    pub tag_directives: Vec<(String, String)>,
 }
 
 #[pymethods]
@@ -984,6 +1053,8 @@ impl PyYamlSequence {
             inner: types::YamlSequence::new(),
             explicit_start: false,
             explicit_end: false,
+            yaml_version: None,
+            tag_directives: vec![],
         }
     }
 
@@ -1275,6 +1346,25 @@ impl PyYamlSequence {
         self.explicit_end = value;
     }
 
+    /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    fn get_yaml_version(&self) -> Option<String> {
+        self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
+    }
+
+    fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
+        self.yaml_version = parse_yaml_version(version)?;
+        Ok(())
+    }
+
+    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    fn get_tag_directives(&self) -> Vec<(String, String)> {
+        self.tag_directives.clone()
+    }
+
+    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
+        self.tag_directives = directives;
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         sequence_repr(py, &self.inner)
     }
@@ -1282,56 +1372,90 @@ impl PyYamlSequence {
 
 // ─── Module-level functions ───────────────────────────────────────────────────
 
+/// Parse a YAML version string like `"1.2"` into `(major, minor)`.
+fn parse_yaml_version(s: Option<&str>) -> PyResult<Option<(u8, u8)>> {
+    match s {
+        None => Ok(None),
+        Some(v) => v
+            .split_once('.')
+            .and_then(|(maj, min)| Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?)))
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid YAML version {v:?}; expected \"major.minor\" (e.g. \"1.2\")"
+                ))
+            })
+            .map(Some),
+    }
+}
+
+/// Build a `DocMeta` for document index `i` from a `ParseOutput`.
+fn doc_meta(out: &mut ParseOutput, i: usize) -> DocMeta {
+    DocMeta {
+        explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
+        explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
+        yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
+        tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
+    }
+}
+
 #[pyfunction]
 fn load(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let text = read_stream(stream)?;
-    let (mut docs, mut explicit_starts, mut explicit_ends) = parse_text(&text)?;
-    if docs.is_empty() {
+    let mut out = parse_text(&text)?;
+    if out.docs.is_empty() {
         return Ok(py.None());
     }
-    node_to_doc(
-        py,
-        docs.swap_remove(0),
-        explicit_starts.swap_remove(0),
-        explicit_ends.swap_remove(0),
-    )
+    let meta = doc_meta(&mut out, 0);
+    node_to_doc(py, out.docs.swap_remove(0), meta)
 }
 
 #[pyfunction]
 fn loads(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let (mut docs, mut explicit_starts, mut explicit_ends) = parse_text(text)?;
-    if docs.is_empty() {
+    let mut out = parse_text(text)?;
+    if out.docs.is_empty() {
         return Ok(py.None());
     }
-    node_to_doc(
-        py,
-        docs.swap_remove(0),
-        explicit_starts.swap_remove(0),
-        explicit_ends.swap_remove(0),
-    )
+    let meta = doc_meta(&mut out, 0);
+    node_to_doc(py, out.docs.swap_remove(0), meta)
 }
 
 #[pyfunction]
 fn load_all(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let text = read_stream(stream)?;
-    let (docs, explicit_starts, explicit_ends) = parse_text(&text)?;
-    let pydocs: Vec<Py<PyAny>> = docs
-        .into_iter()
-        .zip(explicit_starts)
-        .zip(explicit_ends)
-        .map(|((d, es), ee)| node_to_doc(py, d, es, ee))
+    let mut out = parse_text(&text)?;
+    let pydocs: Vec<Py<PyAny>> = out
+        .docs
+        .drain(..)
+        .enumerate()
+        .map(|(i, d)| {
+            let meta = DocMeta {
+                explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
+                explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
+                yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
+                tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
+            };
+            node_to_doc(py, d, meta)
+        })
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
 
 #[pyfunction]
 fn loads_all(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let (docs, explicit_starts, explicit_ends) = parse_text(text)?;
-    let pydocs: Vec<Py<PyAny>> = docs
-        .into_iter()
-        .zip(explicit_starts)
-        .zip(explicit_ends)
-        .map(|((d, es), ee)| node_to_doc(py, d, es, ee))
+    let mut out = parse_text(text)?;
+    let pydocs: Vec<Py<PyAny>> = out
+        .docs
+        .drain(..)
+        .enumerate()
+        .map(|(i, d)| {
+            let meta = DocMeta {
+                explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
+                explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
+                yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
+                tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
+            };
+            node_to_doc(py, d, meta)
+        })
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
@@ -1364,22 +1488,41 @@ fn get_explicit_end_flag(obj: &Bound<'_, PyAny>) -> bool {
     false
 }
 
+fn get_yaml_version_flag(obj: &Bound<'_, PyAny>) -> Option<(u8, u8)> {
+    if let Ok(m) = obj.cast::<PyYamlMapping>() {
+        return m.borrow().yaml_version;
+    }
+    if let Ok(s) = obj.cast::<PyYamlSequence>() {
+        return s.borrow().yaml_version;
+    }
+    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+        return sc.yaml_version;
+    }
+    None
+}
+
+fn get_tag_directives_flag(obj: &Bound<'_, PyAny>) -> Vec<(String, String)> {
+    if let Ok(m) = obj.cast::<PyYamlMapping>() {
+        return m.borrow().tag_directives.clone();
+    }
+    if let Ok(s) = obj.cast::<PyYamlSequence>() {
+        return s.borrow().tag_directives.clone();
+    }
+    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+        return sc.tag_directives.clone();
+    }
+    vec![]
+}
+
 fn emit_doc_to_string(doc: &Bound<'_, PyAny>) -> PyResult<String> {
-    let explicit_start = get_explicit_start_flag(doc);
-    let explicit_end = get_explicit_end_flag(doc);
     let node = extract_yaml_node(doc)?;
-    let mut out = String::new();
-    if explicit_start {
-        out.push_str("---\n");
-    }
-    emit_node(&node, 0, &mut out);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    if explicit_end {
-        out.push_str("...\n");
-    }
-    Ok(out)
+    Ok(emit_docs(
+        std::slice::from_ref(&node),
+        &[get_explicit_start_flag(doc)],
+        &[get_explicit_end_flag(doc)],
+        &[get_yaml_version_flag(doc)],
+        &[get_tag_directives_flag(doc)],
+    ))
 }
 
 #[pyfunction]
@@ -1401,7 +1544,10 @@ fn dump_all(_py: Python<'_>, docs: &Bound<'_, PyAny>, stream: &Bound<'_, PyAny>)
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
-    write_to_stream(stream, &emit_docs(&nodes, &starts, &ends))
+    let versions: Vec<Option<(u8, u8)>> = items.iter().map(|i| get_yaml_version_flag(i)).collect();
+    let tags: Vec<Vec<(String, String)>> =
+        items.iter().map(|i| get_tag_directives_flag(i)).collect();
+    write_to_stream(stream, &emit_docs(&nodes, &starts, &ends, &versions, &tags))
 }
 
 #[pyfunction]
@@ -1413,7 +1559,10 @@ fn dumps_all(_py: Python<'_>, docs: &Bound<'_, PyAny>) -> PyResult<String> {
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
-    Ok(emit_docs(&nodes, &starts, &ends))
+    let versions: Vec<Option<(u8, u8)>> = items.iter().map(|i| get_yaml_version_flag(i)).collect();
+    let tags: Vec<Vec<(String, String)>> =
+        items.iter().map(|i| get_tag_directives_flag(i)).collect();
+    Ok(emit_docs(&nodes, &starts, &ends, &versions, &tags))
 }
 
 /// The yarutsk module.
