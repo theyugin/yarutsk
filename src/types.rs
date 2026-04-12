@@ -8,6 +8,13 @@ pub enum YamlNode {
     Sequence(YamlSequence),
     Scalar(YamlScalar),
     Null,
+    /// An alias node (`*name`).  `resolved` holds the expanded value so the
+    /// Python-visible layer can return a normal value; `name` is preserved for
+    /// round-trip emission as `*name`.
+    Alias {
+        name: String,
+        resolved: Box<YamlNode>,
+    },
 }
 
 /// How a scalar value was written in the source.
@@ -39,6 +46,8 @@ pub struct YamlScalar {
     /// Original source text preserved for scalars where formatting matters
     /// (e.g. floats written in exponent form: `1.5e10`).
     pub original: Option<String>,
+    /// Anchor name declared on this scalar (`&name`), if any.
+    pub anchor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +131,8 @@ pub struct YamlMapping {
     pub tag: Option<String>,
     /// Blank lines at the end of this mapping before the closing context (capped at 255).
     pub trailing_blank_lines: u8,
+    /// Anchor name declared on this mapping (`&name`), if any.
+    pub anchor: Option<String>,
 }
 
 impl YamlMapping {
@@ -131,6 +142,7 @@ impl YamlMapping {
             style: ContainerStyle::Block,
             tag: None,
             trailing_blank_lines: 0,
+            anchor: None,
         }
     }
 
@@ -140,6 +152,7 @@ impl YamlMapping {
             style: ContainerStyle::Block,
             tag: None,
             trailing_blank_lines: 0,
+            anchor: None,
         }
     }
 }
@@ -170,6 +183,8 @@ pub struct YamlSequence {
     pub tag: Option<String>,
     /// Blank lines at the end of this sequence before the closing context (capped at 255).
     pub trailing_blank_lines: u8,
+    /// Anchor name declared on this sequence (`&name`), if any.
+    pub anchor: Option<String>,
 }
 
 impl YamlSequence {
@@ -179,6 +194,7 @@ impl YamlSequence {
             style: ContainerStyle::Block,
             tag: None,
             trailing_blank_lines: 0,
+            anchor: None,
         }
     }
 
@@ -188,6 +204,7 @@ impl YamlSequence {
             style: ContainerStyle::Block,
             tag: None,
             trailing_blank_lines: 0,
+            anchor: None,
         }
     }
 }

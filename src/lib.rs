@@ -41,6 +41,7 @@ fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
         YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), false, false),
         YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), false, false),
+        YamlNode::Alias { resolved, .. } => node_to_py(py, resolved),
     }
 }
 
@@ -52,6 +53,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     // Check our custom types before primitives (PyYamlMapping extends PyDict,
@@ -72,6 +74,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(n) = obj.extract::<i64>() {
@@ -80,6 +83,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(f) = obj.extract::<f64>() {
@@ -88,6 +92,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(s) = obj.extract::<String>() {
@@ -96,6 +101,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     // Plain dict/list fallback (for users passing native Python dicts/lists).
@@ -168,9 +174,10 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let borrow = bound_m.borrow();
         let dict_part = bound_m.as_super();
         let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
-        // Preserve container style and tag from inner.
+        // Preserve container style, tag, anchor, and trailing blank lines from inner.
         mapping.style = borrow.inner.style;
         mapping.tag = borrow.inner.tag.clone();
+        mapping.anchor = borrow.inner.anchor.clone();
         mapping.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         // Walk inner.entries for key order and comment data.
         // For scalar/null values, inner.entries[k].value is always current and has
@@ -179,7 +186,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         // returned child objects (which don't propagate back to inner) are visible.
         for (k, e) in &borrow.inner.entries {
             let node = match &e.value {
-                YamlNode::Scalar(_) | YamlNode::Null => e.value.clone(),
+                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => e.value.clone(),
                 _ => {
                     let py_val = match dict_part.get_item(k)? {
                         Some(v) => v,
@@ -206,13 +213,16 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let list_part = bound_s.as_super();
         let inner_len = borrow.inner.items.len();
         let mut seq = YamlSequence::with_capacity(inner_len);
-        // Preserve container style and tag from inner.
+        // Preserve container style, tag, anchor, and trailing blank lines from inner.
         seq.style = borrow.inner.style;
         seq.tag = borrow.inner.tag.clone();
+        seq.anchor = borrow.inner.anchor.clone();
         seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         for i in 0..inner_len {
             let node = match &borrow.inner.items[i].value {
-                YamlNode::Scalar(_) | YamlNode::Null => borrow.inner.items[i].value.clone(),
+                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => {
+                    borrow.inner.items[i].value.clone()
+                }
                 _ => {
                     let py_val = list_part.get_item(i)?;
                     extract_yaml_node(&py_val)?
@@ -237,6 +247,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(b) = obj.extract::<bool>() {
@@ -245,6 +256,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(n) = obj.extract::<i64>() {
@@ -253,6 +265,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(f) = obj.extract::<f64>() {
@@ -261,6 +274,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     if let Ok(s) = obj.extract::<String>() {
@@ -269,6 +283,7 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            anchor: None,
         }));
     }
     // Plain dict fallback — no comment/style metadata, but values are correct.
@@ -400,6 +415,7 @@ fn node_repr(py: Python<'_>, node: &YamlNode) -> String {
             ScalarValue::Str(s) => format!("{s:?}"),
         },
         YamlNode::Null => "None".to_string(),
+        YamlNode::Alias { resolved, .. } => node_repr(py, resolved),
     }
 }
 
@@ -425,6 +441,7 @@ fn node_to_dict(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
         YamlNode::Mapping(m) => mapping_to_dict(py, m),
         YamlNode::Sequence(s) => sequence_to_dict(py, s),
+        YamlNode::Alias { resolved, .. } => node_to_dict(py, resolved),
     }
 }
 

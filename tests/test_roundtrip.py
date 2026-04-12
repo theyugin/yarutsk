@@ -196,11 +196,11 @@ class TestRoundTripAliasExpansion:
         assert doc["a"]["x"] == 1
 
     def test_alias_roundtrips_as_value(self):
-        """After expansion, dumps produces the full values (no *alias syntax)."""
+        """Aliases are preserved in output: *name round-trips faithfully."""
         src = "base: &b hello\ncopy: *b\n"
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
-        assert "*" not in out
+        assert out == src
         doc2 = yarutsk.loads(out)
         assert doc2["copy"] == "hello"
 
@@ -254,14 +254,13 @@ class TestRoundTripTagAccess:
         node.set_tag(None)
         assert node.get_tag() is None
 
-    def test_tags_not_emitted_in_dump(self):
-        """Tags do not appear in the emitted YAML text.
-        !!str forces the scalar to be a string, so !!str 42 loads as "42" (str)."""
+    def test_tags_emitted_in_dump(self):
+        """Tags are preserved in emitted YAML for round-trip fidelity."""
         doc = yarutsk.loads("value: !!str 42")
         assert doc["value"] == "42"
         assert isinstance(doc["value"], str)
         out = yarutsk.dumps(doc)
-        assert "!!" not in out
+        assert out == "value: !!str 42\n"
         doc2 = yarutsk.loads(out)
         assert doc2["value"] == "42"
         assert isinstance(doc2["value"], str)
@@ -377,3 +376,215 @@ class TestBlankLinePreservation:
         src = "section1:\n  x: 1\n\nsection2:\n  y: 2\n"
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
+
+
+class TestNonCanonicalScalarForms:
+    """Non-canonical plain scalars round-trip as their original source text."""
+
+    def test_null_tilde(self):
+        src = "x: ~\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_null_capitalized(self):
+        src = "x: Null\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_null_uppercase(self):
+        src = "x: NULL\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_bool_yes(self):
+        src = "x: yes\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is True
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_no(self):
+        src = "x: no\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is False
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_on(self):
+        src = "x: on\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is True
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_off(self):
+        src = "x: off\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is False
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_capitalized_true(self):
+        src = "x: True\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is True
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_capitalized_false(self):
+        src = "x: False\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is False
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_uppercase_true(self):
+        src = "x: TRUE\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is True
+        assert yarutsk.dumps(doc) == src
+
+    def test_bool_uppercase_false(self):
+        src = "x: FALSE\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] is False
+        assert yarutsk.dumps(doc) == src
+
+    def test_hex_integer(self):
+        src = "x: 0xFF\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] == 255
+        assert yarutsk.dumps(doc) == src
+
+    def test_hex_uppercase_prefix(self):
+        src = "x: 0XFF\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] == 255
+        assert yarutsk.dumps(doc) == src
+
+    def test_octal_integer(self):
+        src = "x: 0o77\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] == 63
+        assert yarutsk.dumps(doc) == src
+
+    def test_underscore_integer(self):
+        # Underscore-separated integers are not parsed by Rust's i64::parse, so the
+        # value is stored as a string — but the source form is preserved in the output.
+        src = "x: 1_000_000\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_float_exponent_form(self):
+        src = "x: 1.5e10\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] == 1.5e10
+        assert yarutsk.dumps(doc) == src
+
+    def test_canonical_null_unchanged(self):
+        """Plain 'null' is canonical and should round-trip as 'null'."""
+        src = "x: null\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_canonical_bool_unchanged(self):
+        """Plain 'true'/'false' are canonical and should round-trip unchanged."""
+        assert yarutsk.dumps(yarutsk.loads("x: true\n")) == "x: true\n"
+        assert yarutsk.dumps(yarutsk.loads("x: false\n")) == "x: false\n"
+
+    def test_non_canonical_in_sequence(self):
+        """Non-canonical scalars inside a sequence are preserved."""
+        src = "- yes\n- no\n- ~\n- 0xFF\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+
+class TestTagRoundTrip:
+    """Tags are preserved through load → dump → load."""
+
+    def test_str_tag_on_integer_looking_scalar(self):
+        src = "x: !!str 42\n"
+        doc = yarutsk.loads(src)
+        assert doc["x"] == "42"
+        assert isinstance(doc["x"], str)
+        assert yarutsk.dumps(doc) == src
+
+    def test_str_tag_roundtrips_value(self):
+        src = "x: !!str 42\n"
+        doc2 = yarutsk.loads(yarutsk.dumps(yarutsk.loads(src)))
+        assert doc2["x"] == "42"
+        assert isinstance(doc2["x"], str)
+
+    def test_str_tag_on_bool_looking_scalar(self):
+        src = "flag: !!str true\n"
+        doc = yarutsk.loads(src)
+        assert doc["flag"] == "true"
+        assert isinstance(doc["flag"], str)
+        assert yarutsk.dumps(doc) == src
+
+    def test_tag_on_top_level_scalar(self):
+        src = "!!str 42\n"
+        doc = yarutsk.loads(src)
+        assert doc == "42"
+        assert yarutsk.dumps(doc) == src
+
+    def test_custom_tag_on_flow_sequence(self):
+        src = "x: !!python/tuple [1, 2]\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_tag_accessible_after_load(self):
+        """get_node returns a snapshot; set_tag on it does not mutate the mapping."""
+        doc = yarutsk.loads("value: !!str 42")
+        node = doc.get_node("value")
+        assert node.get_tag() is not None
+        node.set_tag(None)
+        # The change is local to the snapshot — the mapping still emits the tag.
+        assert "!!" in yarutsk.dumps(doc)
+
+    def test_tag_on_multiple_keys(self):
+        src = "a: !!str 1\nb: !!str 2\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+
+class TestAnchorAliasRoundTrip:
+    """Anchors (&name) and aliases (*name) are preserved through load → dump."""
+
+    def test_scalar_anchor_and_alias(self):
+        src = "x: &anchor value\ny: *anchor\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_alias_value_is_accessible(self):
+        src = "x: &anchor value\ny: *anchor\n"
+        doc = yarutsk.loads(src)
+        assert doc["y"] == "value"
+
+    def test_integer_anchor_and_alias(self):
+        src = "base: &n 42\ncopy: *n\n"
+        doc = yarutsk.loads(src)
+        assert doc["copy"] == 42
+        assert yarutsk.dumps(doc) == src
+
+    def test_multiple_aliases_same_anchor(self):
+        src = "x: &v 100\ny: *v\nz: *v\n"
+        doc = yarutsk.loads(src)
+        assert doc["y"] == 100
+        assert doc["z"] == 100
+        assert yarutsk.dumps(doc) == src
+
+    def test_flow_sequence_anchor(self):
+        src = "items: &mylist [1, 2, 3]\nref: *mylist\n"
+        doc = yarutsk.loads(src)
+        assert list(doc["ref"]) == [1, 2, 3]
+        assert yarutsk.dumps(doc) == src
+
+    def test_block_mapping_anchor(self):
+        src = "base: &base\n  a: 1\n  b: 2\nchild: *base\n"
+        doc = yarutsk.loads(src)
+        assert doc["child"]["a"] == 1
+        assert yarutsk.dumps(doc) == src
+
+    def test_block_sequence_anchor(self):
+        src = "orig: &items\n  - a\n  - b\ncopy: *items\n"
+        doc = yarutsk.loads(src)
+        assert list(doc["copy"]) == ["a", "b"]
+        assert yarutsk.dumps(doc) == src
+
+    def test_anchor_mutation_does_not_affect_alias(self):
+        """Mutations to the anchor site do not affect the alias (they are independent)."""
+        src = "a: &anchor {x: 1}\nb: *anchor\n"
+        doc = yarutsk.loads(src)
+        doc["b"]["x"] = 99
+        assert doc["a"]["x"] == 1
+
+    def test_alias_dump_is_reloadable(self):
+        src = "x: &anchor value\ny: *anchor\n"
+        doc2 = yarutsk.loads(yarutsk.dumps(yarutsk.loads(src)))
+        assert doc2["y"] == "value"

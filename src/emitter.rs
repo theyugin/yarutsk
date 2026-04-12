@@ -4,6 +4,18 @@ use std::borrow::Cow;
 
 use crate::types::*;
 
+/// Format a stored tag for emission.  The scanner resolves `!!str` to the full
+/// URI `tag:yaml.org,2002:str`; we map it back to the compact `!!` form so the
+/// output matches the source.  Single-exclamation tags (e.g. `!custom`) are
+/// returned unchanged.
+fn format_tag(tag: &str) -> Cow<'_, str> {
+    if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
+        Cow::Owned(format!("!!{suffix}"))
+    } else {
+        Cow::Borrowed(tag)
+    }
+}
+
 /// Emit a YAML node to a string, with the given indentation level.
 pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
     match node {
@@ -12,6 +24,10 @@ pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
         YamlNode::Scalar(s) => emit_scalar(s, out),
         YamlNode::Null => {
             out.push_str("null");
+        }
+        YamlNode::Alias { name, .. } => {
+            out.push('*');
+            out.push_str(name);
         }
     }
 }
@@ -103,6 +119,10 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 // Block mapping value: emit on next line, indented
+                if let Some(anchor) = &nested.anchor {
+                    out.push_str(" &");
+                    out.push_str(anchor);
+                }
                 if let Some(ci) = &entry.comment_inline {
                     out.push_str("  # ");
                     out.push_str(ci);
@@ -124,6 +144,10 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 // Block sequence value: emit on next line, indented
+                if let Some(anchor) = &nested.anchor {
+                    out.push_str(" &");
+                    out.push_str(anchor);
+                }
                 if let Some(ci) = &entry.comment_inline {
                     out.push_str("  # ");
                     out.push_str(ci);
@@ -173,6 +197,15 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
 }
 
 fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
+    if let Some(anchor) = &m.anchor {
+        out.push('&');
+        out.push_str(anchor);
+        out.push(' ');
+    }
+    if let Some(tag) = &m.tag {
+        out.push_str(&format_tag(tag));
+        out.push(' ');
+    }
     out.push('{');
     let mut first = true;
     for (key, entry) in &m.entries {
@@ -276,6 +309,15 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
 }
 
 fn emit_sequence_flow(s: &YamlSequence, out: &mut String) {
+    if let Some(anchor) = &s.anchor {
+        out.push('&');
+        out.push_str(anchor);
+        out.push(' ');
+    }
+    if let Some(tag) = &s.tag {
+        out.push_str(&format_tag(tag));
+        out.push(' ');
+    }
     out.push('[');
     let mut first = true;
     for item in &s.items {
@@ -513,7 +555,17 @@ fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
 
 /// Emit a scalar value in the appropriate style.
 pub fn emit_scalar(s: &YamlScalar, out: &mut String) {
-    // Use preserved source text when available (e.g. float exponent form `1.5e10`).
+    if let Some(anchor) = &s.anchor {
+        out.push('&');
+        out.push_str(anchor);
+        out.push(' ');
+    }
+    if let Some(tag) = &s.tag {
+        out.push_str(&format_tag(tag));
+        out.push(' ');
+    }
+    // Use preserved source text when available (e.g. float exponent form `1.5e10`,
+    // non-canonical null/bool/int forms, tagged plain scalars).
     if let Some(orig) = &s.original {
         out.push_str(orig);
         return;

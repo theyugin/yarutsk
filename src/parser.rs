@@ -68,17 +68,14 @@ pub enum Event {
     /// The YAML end document directive (`...`).
     /// The bool is `true` when the source contained an explicit `...` marker.
     DocumentEnd(bool),
-    /// A YAML Alias.
-    Alias(
-        /// The anchor ID the alias refers to.
-        usize,
-    ),
-    /// Value, style, anchor id, tag
-    Scalar(String, TScalarStyle, usize, Option<Tag>),
+    /// A YAML Alias — carries the anchor name so the builder can reconstruct `*name`.
+    Alias(String),
+    /// Value, style, anchor name (None if no anchor), tag.
+    Scalar(String, TScalarStyle, Option<String>, Option<Tag>),
     /// The start of a YAML sequence (array).
     SequenceStart(
-        /// The anchor ID of the start of the sequence.
-        usize,
+        /// The anchor name of the sequence, if any.
+        Option<String>,
         /// An optional tag
         Option<Tag>,
         /// Whether the sequence uses flow style (`[…]`).
@@ -88,8 +85,8 @@ pub enum Event {
     SequenceEnd,
     /// The start of a YAML mapping (object, hash).
     MappingStart(
-        /// The anchor ID of the start of the mapping.
-        usize,
+        /// The anchor name of the mapping, if any.
+        Option<String>,
         /// An optional tag
         Option<Tag>,
         /// Whether the mapping uses flow style (`{…}`).
@@ -112,11 +109,11 @@ impl Event {
     /// Create an empty scalar.
     fn empty_scalar() -> Event {
         // a null scalar
-        Event::Scalar(String::new(), TScalarStyle::Plain, 0, None)
+        Event::Scalar(String::new(), TScalarStyle::Plain, None, None)
     }
 
-    /// Create an empty scalar with the given anchor.
-    fn empty_scalar_with_anchor(anchor: usize, tag: Option<Tag>) -> Event {
+    /// Create an empty scalar with the given anchor name.
+    fn empty_scalar_with_anchor(anchor: Option<String>, tag: Option<Tag>) -> Event {
         Event::Scalar(String::new(), TScalarStyle::Plain, anchor, tag)
     }
 }
@@ -130,6 +127,8 @@ pub struct Parser<T> {
     token: Option<Token>,
     current: Option<(Event, Marker)>,
     anchors: HashMap<String, usize>,
+    /// Reverse map: anchor ID → anchor name, so we can reconstruct `&name` in events.
+    anchor_names: HashMap<usize, String>,
     anchor_id: usize,
     /// The tag directives (`%TAG`) the parser has encountered.
     ///
@@ -251,6 +250,7 @@ impl<T: Iterator<Item = char>> Parser<T> {
             current: None,
 
             anchors: HashMap::new(),
+            anchor_names: HashMap::new(),
             // valid anchor_id starts from 1
             anchor_id: 1,
             tags: HashMap::new(),
@@ -703,32 +703,37 @@ impl<T: Iterator<Item = char>> Parser<T> {
         // }
         let new_id = self.anchor_id;
         self.anchor_id += 1;
+        self.anchor_names.insert(new_id, name.clone());
         self.anchors.insert(name, new_id);
         new_id
     }
 
+    /// Look up the anchor name for a given integer ID.
+    fn anchor_name(&self, id: usize) -> Option<String> {
+        self.anchor_names.get(&id).cloned()
+    }
+
     fn parse_node(&mut self, block: bool, indentless_sequence: bool) -> ParseResult {
-        let mut anchor_id = 0;
+        let mut anchor_name: Option<String> = None;
         let mut tag = None;
         match *self.peek_token()? {
             Token(_, TokenType::Alias(_)) => {
                 self.pop_state();
                 if let Token(mark, TokenType::Alias(name)) = self.fetch_token() {
-                    match self.anchors.get(&name) {
-                        None => {
-                            return Err(ScanError::new(
-                                mark,
-                                "while parsing node, found unknown anchor",
-                            ));
-                        }
-                        Some(id) => return Ok((Event::Alias(*id), mark)),
+                    if !self.anchors.contains_key(&name) {
+                        return Err(ScanError::new(
+                            mark,
+                            "while parsing node, found unknown anchor",
+                        ));
                     }
+                    return Ok((Event::Alias(name), mark));
                 }
                 unreachable!()
             }
             Token(_, TokenType::Anchor(_)) => {
                 if let Token(mark, TokenType::Anchor(name)) = self.fetch_token() {
-                    anchor_id = self.register_anchor(name, &mark);
+                    self.register_anchor(name.clone(), &mark);
+                    anchor_name = Some(name);
                     if let TokenType::Tag(..) = self.peek_token()?.1 {
                         if let TokenType::Tag(handle, suffix) = self.fetch_token().1 {
                             tag = Some(self.resolve_tag(mark, &handle, suffix)?);
@@ -745,7 +750,8 @@ impl<T: Iterator<Item = char>> Parser<T> {
                     tag = Some(self.resolve_tag(mark, &handle, suffix)?);
                     if let TokenType::Anchor(_) = &self.peek_token()?.1 {
                         if let Token(mark, TokenType::Anchor(name)) = self.fetch_token() {
-                            anchor_id = self.register_anchor(name, &mark);
+                            self.register_anchor(name.clone(), &mark);
+                            anchor_name = Some(name);
                         } else {
                             unreachable!()
                         }
@@ -756,39 +762,40 @@ impl<T: Iterator<Item = char>> Parser<T> {
             }
             _ => {}
         }
+        let has_anchor = anchor_name.is_some();
         match *self.peek_token()? {
             Token(mark, TokenType::BlockEntry) if indentless_sequence => {
                 self.state = State::IndentlessSequenceEntry;
-                Ok((Event::SequenceStart(anchor_id, tag, false), mark))
+                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
             }
             Token(_, TokenType::Scalar(..)) => {
                 self.pop_state();
                 if let Token(mark, TokenType::Scalar(style, v)) = self.fetch_token() {
-                    Ok((Event::Scalar(v, style, anchor_id, tag), mark))
+                    Ok((Event::Scalar(v, style, anchor_name, tag), mark))
                 } else {
                     unreachable!()
                 }
             }
             Token(mark, TokenType::FlowSequenceStart) => {
                 self.state = State::FlowSequenceFirstEntry;
-                Ok((Event::SequenceStart(anchor_id, tag, true), mark))
+                Ok((Event::SequenceStart(anchor_name, tag, true), mark))
             }
             Token(mark, TokenType::FlowMappingStart) => {
                 self.state = State::FlowMappingFirstKey;
-                Ok((Event::MappingStart(anchor_id, tag, true), mark))
+                Ok((Event::MappingStart(anchor_name, tag, true), mark))
             }
             Token(mark, TokenType::BlockSequenceStart) if block => {
                 self.state = State::BlockSequenceFirstEntry;
-                Ok((Event::SequenceStart(anchor_id, tag, false), mark))
+                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
             }
             Token(mark, TokenType::BlockMappingStart) if block => {
                 self.state = State::BlockMappingFirstKey;
-                Ok((Event::MappingStart(anchor_id, tag, false), mark))
+                Ok((Event::MappingStart(anchor_name, tag, false), mark))
             }
             // ex 7.2, an empty scalar can follow a secondary tag
-            Token(mark, _) if tag.is_some() || anchor_id > 0 => {
+            Token(mark, _) if tag.is_some() || has_anchor => {
                 self.pop_state();
-                Ok((Event::empty_scalar_with_anchor(anchor_id, tag), mark))
+                Ok((Event::empty_scalar_with_anchor(anchor_name, tag), mark))
             }
             Token(mark, _) => Err(ScanError::new(
                 mark,
@@ -974,7 +981,7 @@ impl<T: Iterator<Item = char>> Parser<T> {
             Token(mark, TokenType::Key) => {
                 self.state = State::FlowSequenceEntryMappingKey;
                 self.skip();
-                Ok((Event::MappingStart(0, None, true), mark))
+                Ok((Event::MappingStart(None, None, true), mark))
             }
             _ => {
                 self.push_state(State::FlowSequenceEntry);

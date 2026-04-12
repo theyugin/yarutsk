@@ -1,6 +1,6 @@
 # yarutsk
 
-A Python YAML library that round-trips documents while preserving **comments** and **insertion order**.
+A Python YAML library that round-trips documents while preserving **comments**, **insertion order**, **scalar styles**, **tags**, **anchors and aliases**, **blank lines**, and **explicit document markers**.
 
 ## What it does
 
@@ -37,6 +37,32 @@ isinstance(doc, dict)           # True
 isinstance(doc["scores"], list) # True
 json.dumps(doc)                 # '{"name": "Alice", "scores": [10, 20, 30]}'
 ```
+
+## Round-trip fidelity
+
+yarutsk reproduces the source text exactly for everything it understands. A `loads` followed by `dumps` gives back the original string byte-for-byte in the common case:
+
+```python
+src = """\
+defaults: &base
+  timeout: 30
+  retries: 3
+
+service:
+  name: api
+  config: *base
+"""
+assert yarutsk.dumps(yarutsk.loads(src)) == src
+```
+
+Specifically preserved:
+
+- **Scalar styles** — plain, `'single-quoted'`, `"double-quoted"`, literal block `|`, folded block `>`
+- **Non-canonical scalars** — `yes`/`no`/`on`/`off`, `~`, `Null`, `True`/`False`, `0xFF`, `0o77` — reproduced as written, not re-canonicalised to `true`/`false`/`null`/`255`
+- **YAML tags** — `!!str`, `!!python/tuple`, and any custom tag are emitted back verbatim
+- **Anchors and aliases** — `&name` on the anchor node and `*name` for references are preserved; the Python layer returns the resolved value transparently
+- **Blank lines** between mapping entries and sequence items
+- **Explicit document markers** — `---` and `...`
 
 ## Installation
 
@@ -79,6 +105,23 @@ Top-level scalar documents are wrapped in a `YamlScalar` node:
 doc = yarutsk.loads("42")
 doc.value                              # 42 (Python int)
 doc.to_dict()                          # same as .value
+
+# Scalar style
+doc = yarutsk.loads("---\n'hello'\n")
+doc.style                              # 'single'
+doc.style = "double"                   # 'plain'|'single'|'double'|'literal'|'folded'
+
+# YAML tag
+doc = yarutsk.loads("!!str 42")
+doc.get_tag()                          # '!!str'
+doc.set_tag(None)                      # clear tag
+
+# Explicit document markers
+doc = yarutsk.loads("---\n42\n...")
+doc.explicit_start                     # True
+doc.explicit_end                       # True
+doc.explicit_start = False
+doc.explicit_end   = False
 ```
 
 ### YamlMapping
@@ -116,6 +159,22 @@ doc.get_comment_inline("key")          # -> str | None
 doc.get_comment_before("key")          # -> str | None
 doc.set_comment_inline("key", text)
 doc.set_comment_before("key", text)
+
+# YAML tag
+doc.get_tag()                          # -> str | None  (e.g. '!!python/object:Foo')
+doc.set_tag("!!map")
+
+# Explicit document markers
+doc.explicit_start                     # bool
+doc.explicit_end                       # bool
+doc.explicit_start = True
+doc.explicit_end   = True
+
+# Node access — returns YamlScalar/YamlMapping/YamlSequence preserving style/tag/anchor
+node = doc.get_node("key")            # KeyError if absent
+
+# Scalar style shortcut (equivalent to: doc.get_node("key").style = "single")
+doc.set_scalar_style("key", "single") # 'plain'|'single'|'double'|'literal'|'folded'
 
 # Sorting
 doc.sort_keys()                        # alphabetical, in-place
@@ -159,6 +218,16 @@ doc.get_comment_inline(idx)            # -> str | None
 doc.get_comment_before(idx)            # -> str | None
 doc.set_comment_inline(idx, text)
 doc.set_comment_before(idx, text)
+
+# YAML tag
+doc.get_tag()                          # -> str | None  (e.g. '!!python/tuple')
+doc.set_tag(None)
+
+# Explicit document markers
+doc.explicit_start                     # bool
+doc.explicit_end                       # bool
+doc.explicit_start = True
+doc.explicit_end   = True
 
 # Sorting (preserves comment metadata)
 doc.sort()                             # natural order, in-place

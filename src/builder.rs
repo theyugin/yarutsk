@@ -20,8 +20,8 @@ pub struct Builder {
     last_content_line: Option<usize>,
     /// Comments not yet associated with any node (before-key candidates).
     pending_before: Vec<(usize, String)>,
-    /// Anchor table: maps anchor_id → completed node, for alias expansion.
-    anchor_table: HashMap<usize, YamlNode>,
+    /// Anchor table: maps anchor name → completed node, for alias resolution.
+    anchor_table: HashMap<String, YamlNode>,
 }
 
 enum Frame {
@@ -38,8 +38,8 @@ struct MappingFrame {
     current_blank_lines: u8,
     /// The quoting style of the current key scalar.
     current_key_style: ScalarStyle,
-    /// Anchor ID declared on the MappingStart event (0 = no anchor).
-    anchor_id: usize,
+    /// Anchor name declared on the MappingStart event, if any.
+    anchor_name: Option<String>,
 }
 
 struct SequenceFrame {
@@ -48,8 +48,8 @@ struct SequenceFrame {
     current_comment_before: Option<String>,
     /// Blank lines before the current complex item.
     current_blank_lines: u8,
-    /// Anchor ID declared on the SequenceStart event (0 = no anchor).
-    anchor_id: usize,
+    /// Anchor name declared on the SequenceStart event, if any.
+    anchor_name: Option<String>,
 }
 
 /// Convert a parser `Tag` to the compact string we store (e.g. `"!!str"`, `"!custom"`).
@@ -198,10 +198,10 @@ impl Builder {
         }
     }
 
-    /// Register a node in the anchor table if anchor_id is non-zero.
-    fn register_anchor(&mut self, anchor_id: usize, node: &YamlNode) {
-        if anchor_id != 0 {
-            self.anchor_table.insert(anchor_id, node.clone());
+    /// Register a node in the anchor table by name (if anchor_name is Some).
+    fn register_anchor(&mut self, anchor_name: Option<&str>, node: &YamlNode) {
+        if let Some(name) = anchor_name {
+            self.anchor_table.insert(name.to_owned(), node.clone());
         }
     }
 
@@ -221,7 +221,7 @@ impl Builder {
                 self.doc_explicit_end.push(explicit_end);
             }
 
-            Event::MappingStart(anchor_id, tag, is_flow) => {
+            Event::MappingStart(anchor_name, tag, is_flow) => {
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
                     // Only drain before-comments when our parent is a sequence item;
@@ -241,6 +241,7 @@ impl Builder {
                     ContainerStyle::Block
                 };
                 mapping.tag = tag_to_string(tag);
+                mapping.anchor = anchor_name.clone();
                 self.stack.push(Frame::Mapping(MappingFrame {
                     mapping,
                     current_key: None,
@@ -248,7 +249,7 @@ impl Builder {
                     current_comment_inline: None,
                     current_blank_lines: 0,
                     current_key_style: ScalarStyle::Plain,
-                    anchor_id,
+                    anchor_name,
                 }));
             }
 
@@ -273,14 +274,14 @@ impl Builder {
                     mf.mapping.trailing_blank_lines = trailing;
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
-                    let anchor_id = mf.anchor_id;
+                    let anchor_name = mf.anchor_name.as_deref();
                     let node = YamlNode::Mapping(mf.mapping);
-                    self.register_anchor(anchor_id, &node);
+                    self.register_anchor(anchor_name, &node);
                     self.push_node(node);
                 }
             }
 
-            Event::SequenceStart(anchor_id, tag, is_flow) => {
+            Event::SequenceStart(anchor_name, tag, is_flow) => {
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
                     let blank_lines = self.count_blank_lines(mark.line());
@@ -297,11 +298,12 @@ impl Builder {
                     ContainerStyle::Block
                 };
                 seq.tag = tag_to_string(tag);
+                seq.anchor = anchor_name.clone();
                 self.stack.push(Frame::Sequence(SequenceFrame {
                     seq,
                     current_comment_before: None,
                     current_blank_lines: 0,
-                    anchor_id,
+                    anchor_name,
                 }));
             }
 
@@ -326,14 +328,14 @@ impl Builder {
                     sf.seq.trailing_blank_lines = trailing;
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
-                    let anchor_id = sf.anchor_id;
+                    let anchor_name = sf.anchor_name.as_deref();
                     let node = YamlNode::Sequence(sf.seq);
-                    self.register_anchor(anchor_id, &node);
+                    self.register_anchor(anchor_name, &node);
                     self.push_node(node);
                 }
             }
 
-            Event::Scalar(value, style, anchor_id, tag) => {
+            Event::Scalar(value, style, anchor_name, tag) => {
                 let scalar_style = map_scalar_style(style);
                 let scalar_tag = tag_to_string(tag);
                 // Compute the type-inferred value, then apply tag overrides.
@@ -362,12 +364,29 @@ impl Builder {
                         mark.line()
                     };
 
-                // Preserve the original source text for floats written in exponent form
-                // (e.g. `1.5e10`) so the emitter can reproduce the exact representation.
-                let scalar_original: Option<String> = if matches!(typed, ScalarValue::Float(_))
-                    && (value.contains('e') || value.contains('E'))
-                {
-                    Some(value.clone())
+                // Preserve the original source text when the plain-scalar representation
+                // differs from what the emitter would produce canonically.  This covers:
+                //   - float exponent form (`1.5e10` vs `15000000000.0`)
+                //   - non-canonical null/bool forms (`~`, `Null`, `yes`, `True`, …)
+                //   - hex/octal/underscore-separated integers (`0xFF`, `0o77`, `1_000_000`)
+                //   - tagged plain scalars (tag disambiguates type; keep unquoted source)
+                let scalar_original: Option<String> = if style == TScalarStyle::Plain {
+                    let would_differ = match &typed {
+                        ScalarValue::Float(_) => value.contains('e') || value.contains('E'),
+                        ScalarValue::Null => value != "null",
+                        ScalarValue::Bool(true) => value != "true",
+                        ScalarValue::Bool(false) => value != "false",
+                        // Hex (0x/0X), octal (0o/0O), or underscore-separated ints
+                        ScalarValue::Int(_) => {
+                            value.contains(|c: char| !c.is_ascii_digit() && c != '-')
+                        }
+                        ScalarValue::Str(_) => false,
+                    };
+                    if would_differ || scalar_tag.is_some() {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -382,8 +401,9 @@ impl Builder {
                             style: scalar_style,
                             tag: scalar_tag,
                             original: scalar_original,
+                            anchor: anchor_name.clone(),
                         });
-                        if anchor_id != 0 {
+                        if anchor_name.is_some() {
                             anchor_node = Some(node.clone());
                         }
                         self.doc_explicit.push(self.next_explicit);
@@ -428,12 +448,13 @@ impl Builder {
                             mf.current_key_style = scalar_style;
                             self.last_content_line = Some(effective_scalar_end_line);
                             // Register anchor for key scalars so they can later be aliased as values.
-                            if anchor_id != 0 {
+                            if anchor_name.is_some() {
                                 anchor_node = Some(YamlNode::Scalar(YamlScalar {
                                     value: typed,
                                     style: scalar_style,
                                     tag: scalar_tag,
                                     original: scalar_original.clone(),
+                                    anchor: anchor_name.clone(),
                                 }));
                             }
                         } else {
@@ -442,8 +463,9 @@ impl Builder {
                                 style: scalar_style,
                                 tag: scalar_tag,
                                 original: scalar_original,
+                                anchor: anchor_name.clone(),
                             });
-                            if anchor_id != 0 {
+                            if anchor_name.is_some() {
                                 anchor_node = Some(node.clone());
                             }
                             if let Some(key) = mf.current_key.take() {
@@ -501,8 +523,9 @@ impl Builder {
                             style: scalar_style,
                             tag: scalar_tag,
                             original: scalar_original,
+                            anchor: anchor_name.clone(),
                         });
-                        if anchor_id != 0 {
+                        if anchor_name.is_some() {
                             anchor_node = Some(node.clone());
                         }
                         sf.seq.items.push(YamlItem {
@@ -517,23 +540,23 @@ impl Builder {
 
                 // Register anchor after releasing the mutable borrow on self.stack.
                 if let Some(node) = anchor_node {
-                    self.anchor_table.insert(anchor_id, node);
+                    self.register_anchor(anchor_name.as_deref(), &node);
                 }
             }
 
-            Event::Alias(id) => {
-                // Expand the alias in-place: clone the anchored node and push it.
-                // If the anchor is unknown (invalid YAML), fall back to Null.
-                let node = self
+            Event::Alias(name) => {
+                // Resolve the alias and store YamlNode::Alias { name, resolved }.
+                // The resolved copy is used by the Python layer; the name is used by the emitter.
+                let resolved = self
                     .anchor_table
-                    .get(&id)
+                    .get(&name)
                     .cloned()
                     .unwrap_or(YamlNode::Null);
-                // If the alias is in mapping key position, use its scalar value as the key string.
+                // If the alias is in mapping key position, use its resolved scalar value as the key string.
                 if let Some(Frame::Mapping(mf)) = self.stack.last_mut()
                     && mf.current_key.is_none()
                 {
-                    mf.current_key = Some(match &node {
+                    mf.current_key = Some(match &resolved {
                         YamlNode::Scalar(s) => match &s.value {
                             ScalarValue::Null => String::new(),
                             ScalarValue::Bool(b) => b.to_string(),
@@ -545,7 +568,10 @@ impl Builder {
                     });
                     return;
                 }
-                self.push_node(node);
+                self.push_node(YamlNode::Alias {
+                    name,
+                    resolved: Box::new(resolved),
+                });
             }
         }
     }
