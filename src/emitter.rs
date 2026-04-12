@@ -232,8 +232,11 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                     out.push_str("# ");
                     out.push_str(ci);
                     out.push('\n');
+                    emit_sequence(nested, indent + 2, out);
+                } else {
+                    // First inner item inline with `-`, rest indented
+                    emit_sequence_inline_first(nested, indent + 2, out);
                 }
-                emit_sequence(nested, indent + 2, out);
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
                 // Block scalar directly in sequence
@@ -262,6 +265,84 @@ fn emit_sequence_flow(s: &YamlSequence, out: &mut String) {
         emit_node_inline(&item.value, 0, out);
     }
     out.push(']');
+}
+
+/// Emit a sequence where the first item shares the line with the parent `-`.
+fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String) {
+    let mut first = true;
+    for item in &s.items {
+        if !first {
+            for _ in 0..item.blank_lines_before {
+                out.push('\n');
+            }
+        }
+        if let Some(cb) = &item.comment_before {
+            if first {
+                // Can't put a before-comment on the same line as the parent `-`
+                out.push('\n');
+            }
+            for line in cb.lines() {
+                out.push_str(&indent_str(indent));
+                out.push_str("# ");
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str(&indent_str(indent));
+        } else if !first {
+            out.push_str(&indent_str(indent));
+        }
+        out.push_str("- ");
+        match &item.value {
+            YamlNode::Mapping(nested) if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow => {
+                emit_mapping_flow(nested, out);
+                if let Some(ci) = &item.comment_inline {
+                    out.push_str("  # ");
+                    out.push_str(ci);
+                }
+                out.push('\n');
+            }
+            YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
+                if let Some(ci) = &item.comment_inline {
+                    out.push_str("# ");
+                    out.push_str(ci);
+                    out.push('\n');
+                    emit_mapping(nested, indent + 2, out);
+                } else {
+                    emit_mapping_inline_first(nested, indent + 2, out);
+                }
+            }
+            YamlNode::Sequence(nested) if !nested.items.is_empty() && nested.style == ContainerStyle::Flow => {
+                emit_sequence_flow(nested, out);
+                if let Some(ci) = &item.comment_inline {
+                    out.push_str("  # ");
+                    out.push_str(ci);
+                }
+                out.push('\n');
+            }
+            YamlNode::Sequence(nested) if !nested.items.is_empty() => {
+                if let Some(ci) = &item.comment_inline {
+                    out.push_str("# ");
+                    out.push_str(ci);
+                    out.push('\n');
+                    emit_sequence(nested, indent + 2, out);
+                } else {
+                    emit_sequence_inline_first(nested, indent + 2, out);
+                }
+            }
+            YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
+                emit_block_scalar(scalar, indent + 2, out);
+            }
+            node => {
+                emit_node_inline(node, indent + 2, out);
+                if let Some(ci) = &item.comment_inline {
+                    out.push_str("  # ");
+                    out.push_str(ci);
+                }
+                out.push('\n');
+            }
+        }
+        first = false;
+    }
 }
 
 /// Emit a mapping where the first entry shares the line with the parent `-`.

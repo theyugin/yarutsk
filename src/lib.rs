@@ -248,9 +248,41 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             tag: None,
         }));
     }
-    Err(PyRuntimeError::new_err(
-        "expected YamlMapping, YamlSequence, or YamlScalar",
-    ))
+    // Plain dict fallback — no comment/style metadata, but values are correct.
+    // Uses extract_yaml_node recursively so nested YamlMapping/YamlSequence
+    // objects inside the dict still preserve their metadata.
+    if let Ok(d) = obj.cast::<PyDict>() {
+        let mut mapping = YamlMapping::new();
+        for (k, v) in d.iter() {
+            let key: String = k.extract()?;
+            let node = extract_yaml_node(&v)?;
+            mapping.entries.insert(
+                key,
+                YamlEntry {
+                    value: node,
+                    comment_before: None,
+                    comment_inline: None,
+                    blank_lines_before: 0,
+                },
+            );
+        }
+        return Ok(YamlNode::Mapping(mapping));
+    }
+    if let Ok(l) = obj.cast::<PyList>() {
+        let mut seq = YamlSequence::new();
+        for item in l.iter() {
+            seq.items.push(YamlItem {
+                value: extract_yaml_node(&item)?,
+                comment_before: None,
+                comment_inline: None,
+                blank_lines_before: 0,
+            });
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
+    Err(PyRuntimeError::new_err(format!(
+        "Cannot convert {obj} to YAML node"
+    )))
 }
 
 // ─── Python object creation helpers ──────────────────────────────────────────

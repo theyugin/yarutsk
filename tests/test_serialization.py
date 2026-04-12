@@ -232,3 +232,77 @@ class TestEmptyDocuments:
         doc2 = yarutsk.loads(out)
         assert isinstance(doc2, list)
         assert len(doc2) == 0
+
+
+class TestPlainDictListDumping:
+    """dumps/dump/dumps_all/dump_all accept plain Python dict and list."""
+
+    def test_dumps_plain_dict(self):
+        out = yarutsk.dumps({"a": 1, "b": 2})
+        doc = yarutsk.loads(out)
+        assert doc["a"] == 1
+        assert doc["b"] == 2
+
+    def test_dumps_plain_list(self):
+        out = yarutsk.dumps([1, "hello", None, True])
+        doc = yarutsk.loads(out)
+        assert doc[0] == 1
+        assert doc[1] == "hello"
+        assert doc[2] is None
+        assert doc[3] is True
+
+    def test_dump_plain_dict_to_stream(self):
+        out = io.StringIO()
+        yarutsk.dump({"key": "val"}, out)
+        doc = yarutsk.loads(out.getvalue())
+        assert doc["key"] == "val"
+
+    def test_dumps_nested_plain_dict(self):
+        out = yarutsk.dumps({"a": 1, "b": [1, 2, 3], "c": {"x": True}})
+        doc = yarutsk.loads(out)
+        assert doc["a"] == 1
+        assert list(doc["b"]) == [1, 2, 3]
+        assert doc["c"]["x"] is True
+
+    def test_dumps_nested_plain_list(self):
+        out = yarutsk.dumps([[1, 2], [3, 4]])
+        doc = yarutsk.loads(out)
+        assert list(doc[0]) == [1, 2]
+        assert list(doc[1]) == [3, 4]
+
+    def test_dumps_plain_list_with_dict_items(self):
+        out = yarutsk.dumps([{"a": 1}, {"b": 2}])
+        doc = yarutsk.loads(out)
+        assert doc[0]["a"] == 1
+        assert doc[1]["b"] == 2
+
+    def test_dumps_all_plain_dicts(self):
+        out = yarutsk.dumps_all([{"a": 1}, {"b": 2}])
+        docs = yarutsk.loads_all(out)
+        assert docs[0]["a"] == 1
+        assert docs[1]["b"] == 2
+
+    def test_dump_all_plain_dicts_to_stream(self):
+        stream = io.StringIO()
+        yarutsk.dump_all([{"x": 10}, {"y": 20}], stream)
+        docs = yarutsk.loads_all(stream.getvalue())
+        assert docs[0]["x"] == 10
+        assert docs[1]["y"] == 20
+
+    def test_plain_dict_wrapping_yaml_mapping_preserves_metadata(self):
+        """A plain dict wrapping a loaded YamlMapping keeps comments on dump."""
+        loaded = yarutsk.loads("foo: bar  # inline")
+        out = yarutsk.dumps({"outer": loaded})
+        doc = yarutsk.loads(out)
+        assert doc["outer"]["foo"] == "bar"
+        assert doc["outer"].get_comment_inline("foo") == "inline"
+
+    def test_plain_dict_all_scalar_types(self):
+        src = {"i": 42, "f": 3.14, "b": False, "s": "text", "n": None}
+        out = yarutsk.dumps(src)
+        doc = yarutsk.loads(out)
+        assert doc["i"] == 42
+        assert abs(doc["f"] - 3.14) < 1e-9
+        assert doc["b"] is False
+        assert doc["s"] == "text"
+        assert doc["n"] is None
