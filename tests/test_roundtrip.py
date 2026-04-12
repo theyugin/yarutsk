@@ -533,6 +533,20 @@ class TestTagRoundTrip:
         src = "a: !!str 1\nb: !!str 2\n"
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
+    def test_tag_on_top_level_sequence_accessible(self):
+        """Tag on a top-level block sequence is parsed and accessible via get_tag()."""
+        doc = yarutsk.loads("!!python/tuple\n- 1\n- 2\n")
+        assert doc.get_tag() is not None
+        assert list(doc) == [1, 2]
+
+    def test_tag_on_sequence_item_via_mapping(self):
+        """Tag on a value that is a sequence inside a mapping."""
+        src = "x: !!python/tuple [1, 2]\n"
+        doc = yarutsk.loads(src)
+        seq = doc["x"]
+        assert seq.get_tag() is not None
+        assert yarutsk.dumps(doc) == src
+
 
 class TestAnchorAliasRoundTrip:
     """Anchors (&name) and aliases (*name) are preserved through load → dump."""
@@ -588,3 +602,71 @@ class TestAnchorAliasRoundTrip:
         src = "x: &anchor value\ny: *anchor\n"
         doc2 = yarutsk.loads(yarutsk.dumps(yarutsk.loads(src)))
         assert doc2["y"] == "value"
+
+
+class TestExplicitEndMarker:
+    """The ... document-end marker is preserved and settable."""
+
+    def test_end_marker_not_present_by_default(self):
+        doc = yarutsk.loads("key: value")
+        assert not doc.explicit_end
+        assert "..." not in yarutsk.dumps(doc)
+
+    def test_end_marker_preserved_on_load(self):
+        doc = yarutsk.loads("key: value\n...")
+        assert doc.explicit_end
+        assert yarutsk.dumps(doc).endswith("...\n")
+
+    def test_end_marker_roundtrips(self):
+        src = "a: 1\n...\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_explicit_end_can_be_set(self):
+        doc = yarutsk.loads("key: value")
+        doc.explicit_end = True
+        assert yarutsk.dumps(doc) == "key: value\n...\n"
+
+    def test_explicit_end_can_be_cleared(self):
+        doc = yarutsk.loads("key: value\n...")
+        doc.explicit_end = False
+        assert "..." not in yarutsk.dumps(doc)
+
+    def test_both_markers_together(self):
+        src = "---\na: 1\n...\n"
+        doc = yarutsk.loads(src)
+        assert doc.explicit_start
+        assert doc.explicit_end
+        assert yarutsk.dumps(doc) == src
+
+    def test_explicit_end_multidoc(self):
+        src = "---\na: 1\n...\n---\nb: 2\n"
+        docs = yarutsk.loads_all(src)
+        assert docs[0].explicit_end
+        assert not docs[1].explicit_end
+        assert yarutsk.dumps_all(docs) == src
+
+
+class TestKeyMetadataRoundTrip:
+    """Key anchors and tags are preserved through load → dump → load."""
+
+    def test_key_anchor_preserved(self):
+        """Key anchor round-trips — the value is accessible after re-parse."""
+        src = "&ka key: value\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        doc2 = yarutsk.loads(out)
+        assert doc2["key"] == "value"
+
+    def test_key_tag_preserved(self):
+        """Key tag (!!str) is emitted and the key is still accessible."""
+        src = "!!str key: value\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        assert "!!str" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2["key"] == "value"
+
+    def test_alias_as_key_preserved(self):
+        """*alias used as a mapping key round-trips as an explicit-key form."""
+        src = "anchor: &ak value\n? *ak\n: other\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        doc2 = yarutsk.loads(out)
+        assert "anchor" in doc2

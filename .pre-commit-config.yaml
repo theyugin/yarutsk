@@ -21,3 +21,10 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: clippy
+        name: clippy
+        entry: cargo clippy
+        language: system
+        pass_filenames: false
+        always_run: true

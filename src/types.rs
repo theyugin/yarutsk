@@ -431,6 +431,15 @@ pub struct YamlEntry {
     pub blank_lines_before: u8,
     /// The quoting style the key was written with in the source.
     pub key_style: ScalarStyle,
+    /// Anchor declared on the key scalar (`&name`), if any.
+    pub key_anchor: Option<String>,
+    /// If the key was written as an alias (`*name:`), the alias name.
+    pub key_alias: Option<String>,
+    /// Tag on the key scalar (e.g. `!!str`), if any.
+    pub key_tag: Option<String>,
+    /// For complex (non-scalar) keys: the original key node.
+    /// When set, the string key in the IndexMap is a synthetic placeholder.
+    pub key_node: Option<Box<YamlNode>>,
 }
 
 #[derive(Debug, Clone)]
