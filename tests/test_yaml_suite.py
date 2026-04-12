@@ -182,3 +182,48 @@ class TestYamlSuite:
         assert actual == expected, (
             f"\nExpected: {expected}\nActual:   {actual}\nYAML:\n{test['yaml']}"
         )
+
+    def test_roundtrip(self, yaml_test_case):
+        """Round-trip value preservation: re-parsed values must match after emit.
+
+        The test verifies two hard properties:
+          1. The emitted YAML is re-parseable without errors.
+          2. Re-parsed values match the expected JSON representation.
+
+        Structural limitations that the emitter cannot faithfully reproduce are
+        classified as pytest.skip() so they are clearly excluded rather than
+        expected to fail.  Source-fidelity (byte-for-byte identity) is not
+        checked — only value preservation matters.
+        """
+        test = yaml_test_case
+
+        if test["fail"]:
+            pytest.skip("invalid YAML — no round-trip expected")
+
+        yaml_src = test["yaml"]
+        try:
+            docs = list(yarutsk.load_all(io.StringIO(yaml_src)))
+        except Exception as e:
+            pytest.skip(f"parse failed (covered by test_parse): {e}")
+
+        result = yarutsk.dumps_all(docs)
+
+        # ── Hard check: emitted YAML must be re-parseable ────────────────────
+        try:
+            re_docs = list(yarutsk.load_all(io.StringIO(result)))
+        except Exception as e:
+            pytest.fail(
+                f"Emitter produced invalid YAML: {e}\n"
+                f"Original:\n{yaml_src}\nEmitted:\n{result}"
+            )
+
+        # ── Hard check: re-parsed values must match original ─────────────────
+        if test["json"]:
+            expected = _parse_json_docs(test["json"])
+            actual = [d.to_dict() if hasattr(d, "to_dict") else d for d in re_docs]
+            if actual != expected:
+                pytest.fail(
+                    f"Re-parsed values changed after round-trip.\n"
+                    f"Expected: {expected}\nActual:   {actual}\n"
+                    f"Original YAML:\n{yaml_src}\nEmitted:\n{result}"
+                )

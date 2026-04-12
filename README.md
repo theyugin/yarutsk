@@ -237,9 +237,19 @@ doc.sort(key=lambda v: len(v))         # custom key function on item values
 
 Sorting preserves all comments — each entry or item carries its inline and before-key comments with it when reordered.
 
+## Benchmarks
+
+Compare load, dump, and round-trip performance against PyYAML and ruamel.yaml across small, medium, and large inputs:
+
+```bash
+uv sync --group benchmark
+uv run maturin develop --release
+uv run pytest benchmarks/ -v --benchmark-sort=name
+```
+
 ## Running tests
 
-You need Rust (nightly) and Python 3.12+ with [uv](https://github.com/astral-sh/uv). Python 3.12 is the minimum — `YamlSequence` subclasses `list`, which requires PyO3's `extends = PyList` support introduced in Python 3.12.
+You need Rust 1.85+ and Python 3.12+ with [uv](https://github.com/astral-sh/uv). Python 3.12 is the minimum — `YamlSequence` subclasses `list`, which requires PyO3's `extends = PyList` support introduced in Python 3.12.
 
 ```bash
 # 1. Clone with the yaml-test-suite submodule

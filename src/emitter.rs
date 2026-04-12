@@ -4,15 +4,19 @@ use std::borrow::Cow;
 
 use crate::types::*;
 
-/// Format a stored tag for emission.  The scanner resolves `!!str` to the full
-/// URI `tag:yaml.org,2002:str`; we map it back to the compact `!!` form so the
-/// output matches the source.  Single-exclamation tags (e.g. `!custom`) are
-/// returned unchanged.
+/// Format a stored tag for emission.
+///
+/// Three cases:
+/// - `tag:yaml.org,2002:T` → `!!T`  (built-in YAML secondary handle)
+/// - `!…` (already starts with `!`) → returned unchanged  (`!custom`, `!local`, …)
+/// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
 fn format_tag(tag: &str) -> Cow<'_, str> {
     if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
         Cow::Owned(format!("!!{suffix}"))
-    } else {
+    } else if tag.starts_with('!') {
         Cow::Borrowed(tag)
+    } else {
+        Cow::Owned(format!("!<{tag}>"))
     }
 }
 
@@ -67,6 +71,18 @@ fn push_inline_comment(comment: Option<&str>, out: &mut String) {
     }
 }
 
+/// Emit a block comment (lines prefixed with `# `) at the given indentation.
+fn emit_comment_before(comment: Option<&str>, indent: usize, out: &mut String) {
+    if let Some(cb) = comment {
+        for line in cb.lines() {
+            out.push_str(&indent_str(indent));
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+}
+
 // 128 spaces covers any realistic YAML indentation depth.
 // For pathological depths beyond 128, we fall back to an owned allocation.
 const SPACES: &str = "                                                                                                                                ";
@@ -103,19 +119,67 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
         for _ in 0..entry.blank_lines_before {
             out.push('\n');
         }
-        // comment_before: each line prefixed with indent + "# "
-        if let Some(cb) = &entry.comment_before {
-            for line in cb.lines() {
-                out.push_str(&indent_str(indent));
-                out.push_str("# ");
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
+        emit_comment_before(entry.comment_before.as_deref(), indent, out);
         // key:
-        out.push_str(&indent_str(indent));
-        out.push_str(&emit_key(key, entry.key_style));
-        out.push(':');
+        // Alias key: `? *name\n: value` (explicit form avoids yaml-rust2 ambiguity
+        // with `*alias:` being misinterpreted in block context).
+        if let Some(alias) = &entry.key_alias {
+            out.push_str(&indent_str(indent));
+            out.push_str("? *");
+            out.push_str(alias);
+            out.push('\n');
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else if let Some(key_node) = &entry.key_node {
+            // Complex (non-scalar) key: `? <key_node>\n: <value>`
+            out.push_str(&indent_str(indent));
+            out.push_str("? ");
+            // For block collections, add a newline after `? ` so the content starts
+            // on its own line at indent+2, avoiding `?   - item` ambiguity.
+            match key_node.as_ref() {
+                YamlNode::Sequence(s) if s.style == ContainerStyle::Block => {
+                    out.push('\n');
+                    emit_sequence(s, indent + 2, out);
+                }
+                YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
+                    out.push('\n');
+                    emit_mapping(m, indent + 2, out);
+                }
+                _ => {
+                    emit_node(key_node, indent + 2, out);
+                }
+            }
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else if matches!(entry.key_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+            // Block-scalar key: `? |\n  content\n: `
+            let key_scalar = YamlScalar {
+                value: ScalarValue::Str(key.to_owned()),
+                style: entry.key_style,
+                tag: entry.key_tag.clone(),
+                original: None,
+                anchor: entry.key_anchor.clone(),
+            };
+            out.push_str(&indent_str(indent));
+            out.push_str("? ");
+            emit_block_scalar(&key_scalar, indent + 2, None, out);
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else {
+            out.push_str(&indent_str(indent));
+            // Optional anchor + tag before the key text.
+            if let Some(anchor) = &entry.key_anchor {
+                out.push('&');
+                out.push_str(anchor);
+                out.push(' ');
+            }
+            if let Some(tag) = &entry.key_tag {
+                out.push_str(&format_tag(tag));
+                out.push(' ');
+            }
+            out.push_str(&emit_key(key, entry.key_style));
+            out.push(':');
+        }
 
         match &entry.value {
             YamlNode::Mapping(nested)
@@ -202,7 +266,28 @@ fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
             out.push_str(", ");
         }
         first = false;
-        out.push_str(&emit_key(key, entry.key_style));
+        // Emit key: complex key_node, alias key, or plain scalar key.
+        if let Some(key_node) = &entry.key_node {
+            // Flow context supports `? <node>: <value>` or plain `<node>: <value>` syntax.
+            emit_node_inline(key_node, 0, out);
+        } else if let Some(alias) = &entry.key_alias {
+            out.push('*');
+            out.push_str(alias);
+            // Space required: colon is a valid anchor-name character per YAML spec,
+            // so `*alias:` is parsed as alias `alias:` rather than alias `alias` + `:`.
+            out.push(' ');
+        } else {
+            if let Some(anchor) = &entry.key_anchor {
+                out.push('&');
+                out.push_str(anchor);
+                out.push(' ');
+            }
+            if let Some(tag) = &entry.key_tag {
+                out.push_str(&format_tag(tag));
+                out.push(' ');
+            }
+            out.push_str(&emit_key(key, entry.key_style));
+        }
         out.push_str(": ");
         emit_node_inline(&entry.value, 0, out);
     }
@@ -222,14 +307,7 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
         for _ in 0..item.blank_lines_before {
             out.push('\n');
         }
-        if let Some(cb) = &item.comment_before {
-            for line in cb.lines() {
-                out.push_str(&indent_str(indent));
-                out.push_str("# ");
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
+        emit_comment_before(item.comment_before.as_deref(), indent, out);
         out.push_str(&indent_str(indent));
         out.push_str("- ");
         match &item.value {
@@ -319,17 +397,12 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                 out.push('\n');
             }
         }
-        if let Some(cb) = &item.comment_before {
+        if item.comment_before.is_some() {
             if first {
                 // Can't put a before-comment on the same line as the parent `-`
                 out.push('\n');
             }
-            for line in cb.lines() {
-                out.push_str(&indent_str(indent));
-                out.push_str("# ");
-                out.push_str(line);
-                out.push('\n');
-            }
+            emit_comment_before(item.comment_before.as_deref(), indent, out);
             out.push_str(&indent_str(indent));
         } else if !first {
             out.push_str(&indent_str(indent));
@@ -387,32 +460,67 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
 fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
     let mut first = true;
     for (key, entry) in &m.entries {
-        if let Some(cb) = &entry.comment_before {
+        if entry.comment_before.is_some() {
             if first {
                 // Can't put before-comment on the same line as `-`; put it on a new line
                 out.push('\n');
-                for line in cb.lines() {
-                    out.push_str(&indent_str(indent));
-                    out.push_str("# ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                out.push_str(&indent_str(indent));
-            } else {
-                for line in cb.lines() {
-                    out.push_str(&indent_str(indent));
-                    out.push_str("# ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                out.push_str(&indent_str(indent));
             }
+            emit_comment_before(entry.comment_before.as_deref(), indent, out);
+            out.push_str(&indent_str(indent));
         } else if !first {
             out.push_str(&indent_str(indent));
         }
 
-        out.push_str(&emit_key(key, entry.key_style));
-        out.push(':');
+        // Key emission (same logic as emit_mapping)
+        if let Some(alias) = &entry.key_alias {
+            // Explicit key form to avoid ambiguity with `*alias:` in block context.
+            out.push_str("? *");
+            out.push_str(alias);
+            out.push('\n');
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else if let Some(key_node) = &entry.key_node {
+            out.push_str("? ");
+            match key_node.as_ref() {
+                YamlNode::Sequence(s) if s.style == ContainerStyle::Block => {
+                    out.push('\n');
+                    emit_sequence(s, indent + 2, out);
+                }
+                YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
+                    out.push('\n');
+                    emit_mapping(m, indent + 2, out);
+                }
+                _ => {
+                    emit_node(key_node, indent + 2, out);
+                }
+            }
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else if matches!(entry.key_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+            let key_scalar = YamlScalar {
+                value: ScalarValue::Str(key.to_owned()),
+                style: entry.key_style,
+                tag: entry.key_tag.clone(),
+                original: None,
+                anchor: entry.key_anchor.clone(),
+            };
+            out.push_str("? ");
+            emit_block_scalar(&key_scalar, indent + 2, None, out);
+            out.push_str(&indent_str(indent));
+            out.push(':');
+        } else {
+            if let Some(anchor) = &entry.key_anchor {
+                out.push('&');
+                out.push_str(anchor);
+                out.push(' ');
+            }
+            if let Some(tag) = &entry.key_tag {
+                out.push_str(&format_tag(tag));
+                out.push(' ');
+            }
+            out.push_str(&emit_key(key, entry.key_style));
+            out.push(':');
+        }
 
         match &entry.value {
             YamlNode::Mapping(nested)
@@ -497,30 +605,92 @@ fn emit_block_scalar(
         1 => "",
         _ => "+",
     };
+    // Emit all lines except the artifact empty string produced by a trailing '\n'.
+    let lines: Vec<&str> = content.split('\n').collect();
+    // Determine whether an explicit indentation indicator is needed:
+    //
+    // Case A — every non-empty line starts with at least `min_leading` spaces:
+    //   The original used `|N` / `>N` with N = min_leading.  Emit with
+    //   content_indent = indent - min_leading so that the parser (using
+    //   base = self.indent + N) strips exactly (indent - min_leading) + N = indent
+    //   spaces, leaving the stored leading spaces in the value.
+    //
+    // Case B — min_leading == 0 but the FIRST non-empty line starts with spaces:
+    //   Auto-detection would pick that line's indentation as the base, which is
+    //   larger than the emitter's content indent, causing lines at content_indent
+    //   to appear outside the scalar.  Force base = content_indent by emitting `>2`
+    //   (or `|2`).  The standard emitter increment is always 2, so
+    //   self.indent + 2 = content_indent in every nesting context.
+    //
+    // Case C — min_leading == 0 and first non-empty line has no leading spaces:
+    //   Auto-detection works correctly; no explicit indicator needed.
+    let non_empty_lines: Vec<&&str> = lines.iter().filter(|l| !l.is_empty()).collect();
+    let min_leading: usize = non_empty_lines
+        .iter()
+        .map(|l| l.bytes().take_while(|&b| b == b' ').count())
+        .min()
+        .unwrap_or(0);
+    let first_leading: usize = non_empty_lines
+        .first()
+        .map(|l| l.bytes().take_while(|&b| b == b' ').count())
+        .unwrap_or(0);
+
+    let (explicit_indicator, content_indent) = if min_leading > 0 {
+        // Case A
+        (min_leading, indent.saturating_sub(min_leading))
+    } else if first_leading > 0 {
+        // Case B — hard-code indicator = 2 (= standard emitter indent step)
+        (2, indent)
+    } else {
+        // Case C
+        (0, indent)
+    };
+
     out.push(indicator);
+    if explicit_indicator > 0 {
+        // Digit before chomping (YAML spec allows either order; digit-first is conventional).
+        out.push(char::from_digit(explicit_indicator as u32, 10).unwrap_or('1'));
+    }
     out.push_str(chomping);
     push_inline_comment(inline_comment, out);
     out.push('\n');
-    let prefix = indent_str(indent);
-    // Emit all lines except the artifact empty string produced by a trailing '\n'.
-    let lines: Vec<&str> = content.split('\n').collect();
+    let prefix = indent_str(content_indent);
     let emit_count = if content.ends_with('\n') {
         lines.len() - 1
     } else {
         lines.len()
     };
     if indicator == '>' {
-        // Folded: after every non-empty content line that has more content following
-        // it, emit a blank paragraph-separator line.  This prevents the YAML parser
-        // from re-folding the stored `\n` separators back into spaces.
+        // Folded: emit a blank paragraph-separator line after a base-level content
+        // line only when the NEXT non-empty content line is also base-level (B→B
+        // transition).  In that case one extra blank is always required because
+        // the YAML folder consumes the base line's break via b-l-trimmed, so N
+        // blank lines → N newlines; we need N+1 blanks to reproduce N+1 stored
+        // newlines.  For all other transitions (B→more-indented, more-indented→B,
+        // more-indented→more-indented) the break is preserved, so the stored
+        // blank-string count already equals the required YAML blank count.
+        //
+        // "More-indented" means the line starts with a space or tab.
+        // Whitespace-only lines (e.g. a tab-only line) must not emit a separator.
         for (i, line) in lines[..emit_count].iter().enumerate() {
             if line.is_empty() {
-                out.push('\n'); // extra \n beyond the paragraph separation
+                out.push('\n'); // blank line preserved from stored value
             } else {
                 out.push_str(&prefix);
                 out.push_str(line);
                 out.push('\n');
-                if i + 1 < emit_count {
+                // A separator is needed when:
+                //   • the current line is base-level (not more-indented, not whitespace-only)
+                //   • the next non-empty content line is also base-level
+                let is_more_indented = |s: &str| s.starts_with(' ') || s.starts_with('\t');
+                let next_non_empty_is_base = i + 1 < emit_count
+                    && lines[i + 1..emit_count]
+                        .iter()
+                        .find(|l| !l.is_empty())
+                        .is_some_and(|l| !is_more_indented(l));
+                let needs_sep =
+                    !is_more_indented(line) && !line.trim().is_empty() && next_non_empty_is_base;
+                if needs_sep {
                     out.push('\n'); // paragraph separator
                 }
             }
@@ -559,20 +729,20 @@ pub fn emit_scalar(s: &YamlScalar, out: &mut String) {
     out.push_str(&emit_scalar_value_with_style(&s.value, s.style));
 }
 
-fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> String {
+fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> Cow<'_, str> {
     match v {
-        ScalarValue::Null => "null".to_string(),
-        ScalarValue::Bool(true) => "true".to_string(),
-        ScalarValue::Bool(false) => "false".to_string(),
-        ScalarValue::Int(n) => n.to_string(),
+        ScalarValue::Null => Cow::Borrowed("null"),
+        ScalarValue::Bool(true) => Cow::Borrowed("true"),
+        ScalarValue::Bool(false) => Cow::Borrowed("false"),
+        ScalarValue::Int(n) => Cow::Owned(n.to_string()),
         ScalarValue::Float(f) => {
-            if f.is_nan() {
-                ".nan".to_string()
+            let s = if f.is_nan() {
+                ".nan".to_owned()
             } else if f.is_infinite() {
                 if *f > 0.0 {
-                    ".inf".to_string()
+                    ".inf".to_owned()
                 } else {
-                    "-.inf".to_string()
+                    "-.inf".to_owned()
                 }
             } else {
                 // Ensure it has a decimal point so it round-trips as float
@@ -582,9 +752,10 @@ fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> String {
                 } else {
                     format!("{f}.0")
                 }
-            }
+            };
+            Cow::Owned(s)
         }
-        ScalarValue::Str(s) => emit_string_with_style(s, style),
+        ScalarValue::Str(s) => Cow::Owned(emit_string_with_style(s, style)),
     }
 }
 
@@ -594,22 +765,7 @@ fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> String {
 fn emit_key(key: &str, style: ScalarStyle) -> String {
     match style {
         ScalarStyle::SingleQuoted => single_quote(key),
-        ScalarStyle::DoubleQuoted => {
-            let mut out = String::with_capacity(key.len() + 2);
-            out.push('"');
-            for c in key.chars() {
-                match c {
-                    '\\' => out.push_str("\\\\"),
-                    '"' => out.push_str("\\\""),
-                    '\n' => out.push_str("\\n"),
-                    '\r' => out.push_str("\\r"),
-                    '\t' => out.push_str("\\t"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-            out
-        }
+        ScalarStyle::DoubleQuoted => double_quote(key),
         _ => {
             if needs_quoting_for_key(key) {
                 single_quote(key)
@@ -673,36 +829,12 @@ fn emit_string_with_style(s: &str, style: ScalarStyle) -> String {
             // spaces on re-parse.  Switch to double-quoted (with \n escapes) when the
             // string contains newlines so the value is preserved on round-trip.
             if s.contains('\n') {
-                return double_quote(s);
+                double_quote(s)
+            } else {
+                single_quote(s)
             }
-            let mut out = String::with_capacity(s.len() + 2);
-            out.push('\'');
-            for c in s.chars() {
-                if c == '\'' {
-                    out.push_str("''");
-                } else {
-                    out.push(c);
-                }
-            }
-            out.push('\'');
-            out
         }
-        ScalarStyle::DoubleQuoted => {
-            let mut out = String::with_capacity(s.len() + 2);
-            out.push('"');
-            for c in s.chars() {
-                match c {
-                    '\\' => out.push_str("\\\\"),
-                    '"' => out.push_str("\\\""),
-                    '\n' => out.push_str("\\n"),
-                    '\r' => out.push_str("\\r"),
-                    '\t' => out.push_str("\\t"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-            out
-        }
+        ScalarStyle::DoubleQuoted => double_quote(s),
         ScalarStyle::Literal | ScalarStyle::Folded => {
             // Should have been handled by emit_block_scalar; if we reach here the node
             // is in a context where block scalars are not valid (e.g. flow or key
@@ -827,6 +959,10 @@ mod tests {
             comment_inline: None,
             blank_lines_before: 0,
             key_style: ScalarStyle::Plain,
+            key_anchor: None,
+            key_alias: None,
+            key_tag: None,
+            key_node: None,
         }
     }
 
@@ -1516,6 +1652,141 @@ mod tests {
     fn needs_quoting_colon_space() {
         assert!(needs_quoting("key: val"));
     }
+
+    // ── needs_quoting_for_key ────────────────────────────────────────────────
+
+    #[test]
+    fn needs_quoting_for_key_empty() {
+        assert!(needs_quoting_for_key(""));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_hash_leading() {
+        assert!(needs_quoting_for_key("#comment"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_star_leading() {
+        assert!(needs_quoting_for_key("*alias"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_question_leading() {
+        assert!(needs_quoting_for_key("?complex"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_bang_leading() {
+        assert!(needs_quoting_for_key("!tag"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_ends_with_colon() {
+        assert!(needs_quoting_for_key("key:"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_colon_space_inside() {
+        assert!(needs_quoting_for_key("key: value"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_space_hash_inside() {
+        assert!(needs_quoting_for_key("key #comment"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_newline() {
+        assert!(needs_quoting_for_key("a\nb"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_numeric_not_quoted() {
+        // Keys differ from values: numeric strings are valid plain-style keys
+        assert!(!needs_quoting_for_key("42"));
+        assert!(!needs_quoting_for_key("3.14"));
+        assert!(!needs_quoting_for_key("0xFF"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_plain_safe() {
+        assert!(!needs_quoting_for_key("simple"));
+        assert!(!needs_quoting_for_key("snake_case"));
+        assert!(!needs_quoting_for_key("kebab-case"));
+    }
+
+    // ── emit_key ─────────────────────────────────────────────────────────────
+
+    fn do_emit_key(key: &str, style: ScalarStyle) -> String {
+        emit_key(key, style)
+    }
+
+    #[test]
+    fn emit_key_plain_safe_unquoted() {
+        assert_eq!(do_emit_key("simple", ScalarStyle::Plain), "simple");
+    }
+
+    #[test]
+    fn emit_key_plain_needs_quoting_gets_single_quoted() {
+        let out = do_emit_key("key:", ScalarStyle::Plain);
+        assert!(out.starts_with('\''), "expected single-quoted: {out}");
+    }
+
+    #[test]
+    fn emit_key_explicit_single_quoted() {
+        assert_eq!(do_emit_key("hello", ScalarStyle::SingleQuoted), "'hello'");
+    }
+
+    #[test]
+    fn emit_key_explicit_double_quoted() {
+        assert_eq!(do_emit_key("hello", ScalarStyle::DoubleQuoted), "\"hello\"");
+    }
+
+    #[test]
+    fn emit_key_numeric_plain_unchanged() {
+        // Numeric keys are NOT quoted (they parse back as strings anyway)
+        assert_eq!(do_emit_key("42", ScalarStyle::Plain), "42");
+    }
+
+    // ── emit_string_with_style ───────────────────────────────────────────────
+
+    #[test]
+    fn emit_string_single_quoted_with_newline_uses_double_quotes() {
+        // SingleQuoted + embedded newline falls back to double-quoted with \n escapes
+        let out = emit_string_with_style("a\nb", ScalarStyle::SingleQuoted);
+        assert!(
+            out.starts_with('"'),
+            "expected double-quoted fallback for newline in single-quoted: {out}"
+        );
+        assert!(out.contains("\\n"), "expected \\n escape: {out}");
+    }
+
+    #[test]
+    fn emit_string_single_quoted_no_newline() {
+        let out = emit_string_with_style("hello", ScalarStyle::SingleQuoted);
+        assert_eq!(out, "'hello'");
+    }
+
+    #[test]
+    fn emit_string_double_quoted() {
+        let out = emit_string_with_style("hello", ScalarStyle::DoubleQuoted);
+        assert_eq!(out, "\"hello\"");
+    }
+
+    #[test]
+    fn emit_string_plain_safe_unquoted() {
+        let out = emit_string_with_style("hello", ScalarStyle::Plain);
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn emit_string_plain_needs_quoting() {
+        let out = emit_string_with_style("true", ScalarStyle::Plain);
+        assert!(
+            out.starts_with('\'') || out.starts_with('"'),
+            "expected quotes: {out}"
+        );
+    }
 }
 
 /// Return true if the string needs to be quoted in YAML plain style.
@@ -1533,23 +1804,22 @@ fn needs_quoting(s: &str) -> bool {
         _ => {}
     }
     // Numeric: hex/octal prefix → int; decimal int; float with . or e
+    // s is non-empty (checked above); safe to index b[0].
     let b = s.as_bytes();
     let start = if b[0] == b'-' || b[0] == b'+' { 1 } else { 0 };
-    if start < b.len() {
-        let rest = &s[start..];
-        if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-            if i64::from_str_radix(hex, 16).is_ok() {
-                return true;
-            }
-        } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-            if i64::from_str_radix(oct, 8).is_ok() {
-                return true;
-            }
-        } else if s.parse::<i64>().is_ok()
-            || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
-        {
+    let rest = &s[start..];
+    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        if i64::from_str_radix(hex, 16).is_ok() {
             return true;
         }
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+        if i64::from_str_radix(oct, 8).is_ok() {
+            return true;
+        }
+    } else if s.parse::<i64>().is_ok()
+        || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
+    {
+        return true;
     }
     // Check for characters that require quoting
     let first = b[0] as char;

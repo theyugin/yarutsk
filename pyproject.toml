@@ -43,3 +43,8 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.10",
 ]
+benchmark = [
+    "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",
+    "pytest-benchmark>=5.0",
+]

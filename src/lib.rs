@@ -47,6 +47,46 @@ fn plain_scalar(value: ScalarValue) -> YamlNode {
     })
 }
 
+/// A `YamlEntry` with no comments, no blank lines, and plain key style.
+/// Used when inserting entries via Python mutations (dict ops, update, etc.).
+fn plain_entry(value: YamlNode) -> YamlEntry {
+    YamlEntry {
+        value,
+        comment_before: None,
+        comment_inline: None,
+        blank_lines_before: 0,
+        key_style: ScalarStyle::Plain,
+        key_anchor: None,
+        key_alias: None,
+        key_tag: None,
+        key_node: None,
+    }
+}
+
+/// A `YamlItem` with no comments and no blank lines.
+/// Used when inserting items via Python mutations (append, insert, extend, etc.).
+fn plain_item(value: YamlNode) -> YamlItem {
+    YamlItem {
+        value,
+        comment_before: None,
+        comment_inline: None,
+        blank_lines_before: 0,
+    }
+}
+
+/// Resolve a Python sequence index (supports negative indices).
+/// Returns an error if the index is out of range.
+fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
+    let len_i = len as isize;
+    let real = if idx < 0 { len_i + idx } else { idx };
+    if real < 0 || real >= len_i {
+        return Err(pyo3::exceptions::PyIndexError::new_err(
+            "index out of range",
+        ));
+    }
+    Ok(real as usize)
+}
+
 fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
@@ -93,29 +133,14 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
-            let node = py_to_node(&v)?;
-            mapping.entries.insert(
-                key,
-                YamlEntry {
-                    value: node,
-                    comment_before: None,
-                    comment_inline: None,
-                    blank_lines_before: 0,
-                    key_style: ScalarStyle::Plain,
-                },
-            );
+            mapping.entries.insert(key, plain_entry(py_to_node(&v)?));
         }
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let mut seq = YamlSequence::new();
         for item in l.iter() {
-            seq.items.push(YamlItem {
-                value: py_to_node(&item)?,
-                comment_before: None,
-                comment_inline: None,
-                blank_lines_before: 0,
-            });
+            seq.items.push(plain_item(py_to_node(&item)?));
         }
         return Ok(YamlNode::Sequence(seq));
     }
@@ -185,6 +210,10 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                     comment_inline: e.comment_inline.clone(),
                     blank_lines_before: e.blank_lines_before,
                     key_style: e.key_style,
+                    key_anchor: e.key_anchor.clone(),
+                    key_alias: e.key_alias.clone(),
+                    key_tag: e.key_tag.clone(),
+                    key_node: e.key_node.clone(),
                 },
             );
         }
@@ -245,29 +274,16 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
-            let node = extract_yaml_node(&v)?;
-            mapping.entries.insert(
-                key,
-                YamlEntry {
-                    value: node,
-                    comment_before: None,
-                    comment_inline: None,
-                    blank_lines_before: 0,
-                    key_style: ScalarStyle::Plain,
-                },
-            );
+            mapping
+                .entries
+                .insert(key, plain_entry(extract_yaml_node(&v)?));
         }
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let mut seq = YamlSequence::new();
         for item in l.iter() {
-            seq.items.push(YamlItem {
-                value: extract_yaml_node(&item)?,
-                comment_before: None,
-                comment_inline: None,
-                blank_lines_before: 0,
-            });
+            seq.items.push(plain_item(extract_yaml_node(&item)?));
         }
         return Ok(YamlNode::Sequence(seq));
     }
@@ -672,16 +688,10 @@ impl PyYamlMapping {
             if let Some(entry) = borrow.inner.entries.get_mut(key) {
                 entry.value = node.clone();
             } else {
-                borrow.inner.entries.insert(
-                    key.to_owned(),
-                    YamlEntry {
-                        value: node.clone(),
-                        comment_before: None,
-                        comment_inline: None,
-                        blank_lines_before: 0,
-                        key_style: ScalarStyle::Plain,
-                    },
-                );
+                borrow
+                    .inner
+                    .entries
+                    .insert(key.to_owned(), plain_entry(node.clone()));
             }
         }
         let py_val = node_to_py(py, &node)?;
@@ -758,19 +768,10 @@ impl PyYamlMapping {
                 let k: String = key.extract()?;
                 let node = py_to_node(&val)?;
                 let py_val = node_to_py(py, &node)?;
-                {
-                    let mut borrow = slf.borrow_mut();
-                    borrow.inner.entries.insert(
-                        k.clone(),
-                        YamlEntry {
-                            value: node,
-                            comment_before: None,
-                            comment_inline: None,
-                            blank_lines_before: 0,
-                            key_style: ScalarStyle::Plain,
-                        },
-                    );
-                }
+                slf.borrow_mut()
+                    .inner
+                    .entries
+                    .insert(k.clone(), plain_entry(node));
                 dict_part.set_item(k.as_str(), py_val.bind(py))?;
             }
             return Ok(());
@@ -780,19 +781,10 @@ impl PyYamlMapping {
             let (k, val): (String, Bound<'_, PyAny>) = item.extract()?;
             let node = py_to_node(&val)?;
             let py_val = node_to_py(py, &node)?;
-            {
-                let mut borrow = slf.borrow_mut();
-                borrow.inner.entries.insert(
-                    k.clone(),
-                    YamlEntry {
-                        value: node,
-                        comment_before: None,
-                        comment_inline: None,
-                        blank_lines_before: 0,
-                        key_style: ScalarStyle::Plain,
-                    },
-                );
-            }
+            slf.borrow_mut()
+                .inner
+                .entries
+                .insert(k.clone(), plain_entry(node));
             dict_part.set_item(k.as_str(), py_val.bind(py))?;
         }
         Ok(())
@@ -810,19 +802,10 @@ impl PyYamlMapping {
             let default_val = default.unwrap_or_else(|| py.None());
             let node = py_to_node(default_val.bind(py))?;
             let py_val = node_to_py(py, &node)?;
-            {
-                let mut borrow = slf.borrow_mut();
-                borrow.inner.entries.insert(
-                    key.to_owned(),
-                    YamlEntry {
-                        value: node,
-                        comment_before: None,
-                        comment_inline: None,
-                        blank_lines_before: 0,
-                        key_style: ScalarStyle::Plain,
-                    },
-                );
-            }
+            slf.borrow_mut()
+                .inner
+                .entries
+                .insert(key.to_owned(), plain_entry(node));
             slf.as_super().set_item(key, py_val.bind(py))?;
         }
         let borrow = slf.borrow();
@@ -1009,13 +992,7 @@ impl PyYamlSequence {
     fn __setitem__(slf: &Bound<'_, Self>, key: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let node = py_to_node(value)?;
         let py = slf.py();
-        let len = slf.borrow().inner.items.len() as isize;
-        let real_idx = if key < 0 { len + key } else { key };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
+        let real_idx = resolve_seq_idx(key, slf.borrow().inner.items.len())?;
         {
             let mut borrow = slf.borrow_mut();
             borrow.inner.items[real_idx as usize].value = node.clone();
@@ -1027,13 +1004,7 @@ impl PyYamlSequence {
     }
 
     fn __delitem__(slf: &Bound<'_, Self>, key: isize) -> PyResult<()> {
-        let len = slf.borrow().inner.items.len() as isize;
-        let real_idx = if key < 0 { len + key } else { key };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
+        let real_idx = resolve_seq_idx(key, slf.borrow().inner.items.len())?;
         {
             let mut borrow = slf.borrow_mut();
             borrow.inner.items.remove(real_idx as usize);
@@ -1053,12 +1024,7 @@ impl PyYamlSequence {
         let py = slf.py();
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items.push(YamlItem {
-                value: node.clone(),
-                comment_before: None,
-                comment_inline: None,
-                blank_lines_before: 0,
-            });
+            borrow.inner.items.push(plain_item(node.clone()));
         }
         let py_val = node_to_py(py, &node)?;
         slf.as_super().append(py_val.bind(py))?;
@@ -1079,15 +1045,10 @@ impl PyYamlSequence {
         };
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items.insert(
-                real_idx,
-                YamlItem {
-                    value: node.clone(),
-                    comment_before: None,
-                    comment_inline: None,
-                    blank_lines_before: 0,
-                },
-            );
+            borrow
+                .inner
+                .items
+                .insert(real_idx, plain_item(node.clone()));
         }
         let py_val = node_to_py(py, &node)?;
         slf.as_super().insert(real_idx, py_val.bind(py))?;
@@ -1149,30 +1110,14 @@ impl PyYamlSequence {
         if let Ok(other) = iterable.extract::<PyYamlSequence>() {
             for item in &other.inner.items {
                 let py_val = node_to_py(py, &item.value)?;
-                pairs.push((
-                    YamlItem {
-                        value: item.value.clone(),
-                        comment_before: None,
-                        comment_inline: None,
-                        blank_lines_before: 0,
-                    },
-                    py_val,
-                ));
+                pairs.push((plain_item(item.value.clone()), py_val));
             }
         } else {
             for py_item in iterable.try_iter()? {
                 let py_item = py_item?;
                 let node = py_to_node(&py_item)?;
                 let py_val = node_to_py(py, &node)?;
-                pairs.push((
-                    YamlItem {
-                        value: node,
-                        comment_before: None,
-                        comment_inline: None,
-                        blank_lines_before: 0,
-                    },
-                    py_val,
-                ));
+                pairs.push((plain_item(node), py_val));
             }
         }
         {
@@ -1278,48 +1223,24 @@ impl PyYamlSequence {
     }
 
     fn get_comment_inline(&self, idx: isize) -> PyResult<Option<String>> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
-        Ok(self.inner.items[real_idx as usize].comment_inline.clone())
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        Ok(self.inner.items[i].comment_inline.clone())
     }
 
     fn get_comment_before(&self, idx: isize) -> PyResult<Option<String>> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
-        Ok(self.inner.items[real_idx as usize].comment_before.clone())
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        Ok(self.inner.items[i].comment_before.clone())
     }
 
     fn set_comment_inline(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
-        self.inner.items[real_idx as usize].comment_inline = comment.map(str::to_owned);
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        self.inner.items[i].comment_inline = comment.map(str::to_owned);
         Ok(())
     }
 
     fn set_comment_before(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let len = self.inner.items.len() as isize;
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx < 0 || real_idx >= len {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "index out of range",
-            ));
-        }
-        self.inner.items[real_idx as usize].comment_before = comment.map(str::to_owned);
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        self.inner.items[i].comment_before = comment.map(str::to_owned);
         Ok(())
     }
 
