@@ -17,15 +17,22 @@ pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
 }
 
 /// Emit a full document list to a string.
-pub fn emit_docs(docs: &[YamlNode]) -> String {
+/// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
+/// Either slice may be shorter than `docs`; missing entries default to `false`.
+pub fn emit_docs(docs: &[YamlNode], explicit_starts: &[bool], explicit_ends: &[bool]) -> String {
     let mut out = String::with_capacity(256);
     for (i, doc) in docs.iter().enumerate() {
-        if docs.len() > 1 {
+        let want_start = explicit_starts.get(i).copied().unwrap_or(false);
+        let want_end = explicit_ends.get(i).copied().unwrap_or(false);
+        if docs.len() > 1 || want_start {
             out.push_str("---\n");
         }
         emit_node(doc, 0, &mut out);
         if i + 1 < docs.len() && !out.ends_with('\n') {
             out.push('\n');
+        }
+        if want_end {
+            out.push_str("...\n");
         }
     }
     out
@@ -78,7 +85,7 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
         }
         // key:
         out.push_str(&indent_str(indent));
-        out.push_str(&emit_key(key));
+        out.push_str(&emit_key(key, entry.key_style));
         out.push(':');
 
         match &entry.value {
@@ -160,6 +167,9 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
             }
         }
     }
+    for _ in 0..m.trailing_blank_lines {
+        out.push('\n');
+    }
 }
 
 fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
@@ -170,7 +180,7 @@ fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
             out.push_str(", ");
         }
         first = false;
-        out.push_str(&emit_key(key));
+        out.push_str(&emit_key(key, entry.key_style));
         out.push_str(": ");
         emit_node_inline(&entry.value, 0, out);
     }
@@ -259,6 +269,9 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                 out.push('\n');
             }
         }
+    }
+    for _ in 0..s.trailing_blank_lines {
+        out.push('\n');
     }
 }
 
@@ -385,7 +398,7 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
             out.push_str(&indent_str(indent));
         }
 
-        out.push_str(&emit_key(key));
+        out.push_str(&emit_key(key, entry.key_style));
         out.push(':');
 
         match &entry.value {
@@ -466,15 +479,31 @@ fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
         ScalarValue::Str(text) => text.as_str(),
         _ => "",
     };
-    // Choose chomping indicator: '-' to strip final newline if content doesn't end with \n.
-    let chomping = if content.ends_with('\n') { "" } else { "-" };
+    // Choose chomping indicator based on trailing newlines:
+    //   strip (`-`)  → 0 trailing newlines
+    //   clip (none)  → exactly 1 trailing newline
+    //   keep (`+`)   → 2 or more trailing newlines
+    let trailing_newlines = content.bytes().rev().take_while(|&b| b == b'\n').count();
+    let chomping = match trailing_newlines {
+        0 => "-",
+        1 => "",
+        _ => "+",
+    };
     out.push(indicator);
     out.push_str(chomping);
     out.push('\n');
     let prefix = indent_str(indent);
-    for line in content.split('\n') {
-        // The last element of split('\n') is empty if content ends with '\n'.
-        if !line.is_empty() || !content.ends_with('\n') {
+    // Emit all lines except the artifact empty string produced by a trailing '\n'.
+    let lines: Vec<&str> = content.split('\n').collect();
+    let emit_count = if content.ends_with('\n') {
+        lines.len() - 1
+    } else {
+        lines.len()
+    };
+    for line in &lines[..emit_count] {
+        if line.is_empty() {
+            out.push('\n'); // blank line inside block scalar — no indent
+        } else {
             out.push_str(&prefix);
             out.push_str(line);
             out.push('\n');
@@ -484,6 +513,11 @@ fn emit_block_scalar(s: &YamlScalar, indent: usize, out: &mut String) {
 
 /// Emit a scalar value in the appropriate style.
 pub fn emit_scalar(s: &YamlScalar, out: &mut String) {
+    // Use preserved source text when available (e.g. float exponent form `1.5e10`).
+    if let Some(orig) = &s.original {
+        out.push_str(orig);
+        return;
+    }
     out.push_str(&emit_scalar_value_with_style(&s.value, s.style));
 }
 
@@ -516,9 +550,76 @@ fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> String {
     }
 }
 
-/// Emit a key string (always safe to quote if needed, but prefer plain).
-fn emit_key(key: &str) -> String {
-    emit_string_with_style(key, ScalarStyle::Plain)
+/// Emit a key string with its original quoting style.
+/// For `Plain` style, numeric-looking strings are left unquoted since `1:` is
+/// valid YAML and our library always stores keys as strings anyway.
+fn emit_key(key: &str, style: ScalarStyle) -> String {
+    match style {
+        ScalarStyle::SingleQuoted => single_quote(key),
+        ScalarStyle::DoubleQuoted => {
+            let mut out = String::with_capacity(key.len() + 2);
+            out.push('"');
+            for c in key.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        _ => {
+            if needs_quoting_for_key(key) {
+                single_quote(key)
+            } else {
+                key.to_owned()
+            }
+        }
+    }
+}
+
+/// Like `needs_quoting` but for mapping keys: numeric strings (`1`, `3.14`,
+/// `0xFF`) are left unquoted since they are valid plain-style YAML keys and
+/// our library stores all keys as strings regardless of their YAML type.
+fn needs_quoting_for_key(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    // Check for characters that are structurally significant in YAML
+    let b = s.as_bytes();
+    let first = b[0] as char;
+    if matches!(
+        first,
+        '#' | '&'
+            | '*'
+            | '?'
+            | '|'
+            | '<'
+            | '>'
+            | '='
+            | '!'
+            | '%'
+            | '@'
+            | '`'
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | ','
+    ) {
+        return true;
+    }
+    if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
+        return true;
+    }
+    if s.contains(" #") || s.contains('\n') || s.contains('\r') {
+        return true;
+    }
+    false
 }
 
 /// Emit a string value honoring the requested style.

@@ -36,6 +36,9 @@ pub struct YamlScalar {
     pub style: ScalarStyle,
     /// Optional YAML tag (e.g. `"!!str"`, `"!python/tuple"`).
     pub tag: Option<String>,
+    /// Original source text preserved for scalars where formatting matters
+    /// (e.g. floats written in exponent form: `1.5e10`).
+    pub original: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +120,8 @@ pub struct YamlMapping {
     pub style: ContainerStyle,
     /// Optional YAML tag.
     pub tag: Option<String>,
+    /// Blank lines at the end of this mapping before the closing context (capped at 255).
+    pub trailing_blank_lines: u8,
 }
 
 impl YamlMapping {
@@ -125,6 +130,7 @@ impl YamlMapping {
             entries: IndexMap::new(),
             style: ContainerStyle::Block,
             tag: None,
+            trailing_blank_lines: 0,
         }
     }
 
@@ -133,6 +139,7 @@ impl YamlMapping {
             entries: IndexMap::with_capacity(n),
             style: ContainerStyle::Block,
             tag: None,
+            trailing_blank_lines: 0,
         }
     }
 }
@@ -150,6 +157,8 @@ pub struct YamlEntry {
     pub comment_inline: Option<String>,
     /// Blank lines in the source before this entry (capped at 255).
     pub blank_lines_before: u8,
+    /// The quoting style the key was written with in the source.
+    pub key_style: ScalarStyle,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +168,8 @@ pub struct YamlSequence {
     pub style: ContainerStyle,
     /// Optional YAML tag.
     pub tag: Option<String>,
+    /// Blank lines at the end of this sequence before the closing context (capped at 255).
+    pub trailing_blank_lines: u8,
 }
 
 impl YamlSequence {
@@ -167,6 +178,7 @@ impl YamlSequence {
             items: Vec::new(),
             style: ContainerStyle::Block,
             tag: None,
+            trailing_blank_lines: 0,
         }
     }
 
@@ -175,6 +187,7 @@ impl YamlSequence {
             items: Vec::with_capacity(n),
             style: ContainerStyle::Block,
             tag: None,
+            trailing_blank_lines: 0,
         }
     }
 }

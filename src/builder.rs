@@ -11,6 +11,8 @@ pub struct Builder {
     pub docs: Vec<YamlNode>,
     /// Whether each doc in `docs` had an explicit `---` marker.
     pub doc_explicit: Vec<bool>,
+    /// Whether each doc in `docs` had an explicit `...` end marker.
+    pub doc_explicit_end: Vec<bool>,
     /// Whether the next document to be pushed had an explicit `---` marker.
     next_explicit: bool,
     /// Line of the last SCALAR content token (key or value), for inline comment detection.
@@ -34,6 +36,8 @@ struct MappingFrame {
     current_comment_inline: Option<String>,
     /// Blank lines before the current entry (computed when the key scalar is seen).
     current_blank_lines: u8,
+    /// The quoting style of the current key scalar.
+    current_key_style: ScalarStyle,
     /// Anchor ID declared on the MappingStart event (0 = no anchor).
     anchor_id: usize,
 }
@@ -70,6 +74,7 @@ impl Builder {
             stack: Vec::new(),
             docs: Vec::new(),
             doc_explicit: Vec::new(),
+            doc_explicit_end: Vec::new(),
             next_explicit: false,
             last_content_line: None,
             pending_before: Vec::new(),
@@ -165,6 +170,7 @@ impl Builder {
                     let comment_before = mf.current_comment_before.take();
                     let comment_inline = mf.current_comment_inline.take();
                     let blank_lines_before = mf.current_blank_lines;
+                    let key_style = mf.current_key_style;
                     mf.current_blank_lines = 0;
                     mf.mapping.entries.insert(
                         key,
@@ -173,6 +179,7 @@ impl Builder {
                             comment_before,
                             comment_inline,
                             blank_lines_before,
+                            key_style,
                         },
                     );
                 }
@@ -205,9 +212,14 @@ impl Builder {
 
             Event::DocumentStart(explicit) => {
                 self.next_explicit = explicit;
+                // Record the document-start line so blank lines between `---` and
+                // the first key are counted correctly by count_blank_lines.
+                self.last_content_line = Some(mark.line());
             }
 
-            Event::DocumentEnd => {}
+            Event::DocumentEnd(explicit_end) => {
+                self.doc_explicit_end.push(explicit_end);
+            }
 
             Event::MappingStart(anchor_id, tag, is_flow) => {
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
@@ -235,12 +247,32 @@ impl Builder {
                     current_comment_before: None,
                     current_comment_inline: None,
                     current_blank_lines: 0,
+                    current_key_style: ScalarStyle::Plain,
                     anchor_id,
                 }));
             }
 
             Event::MappingEnd => {
-                if let Some(Frame::Mapping(mf)) = self.stack.pop() {
+                if let Some(Frame::Mapping(mut mf)) = self.stack.pop() {
+                    // Count blank lines trailing after the last entry.
+                    let trailing = if let Some(last_line) = self.last_content_line {
+                        let end_line = mark.line();
+                        if end_line > last_line + 1 {
+                            let nc = self
+                                .pending_before
+                                .iter()
+                                .filter(|(l, _)| *l < end_line)
+                                .count();
+                            (end_line - last_line - 1).saturating_sub(nc).min(255) as u8
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    };
+                    mf.mapping.trailing_blank_lines = trailing;
+                    // Advance last_content_line so outer containers don't double-count.
+                    self.last_content_line = Some(mark.line());
                     let anchor_id = mf.anchor_id;
                     let node = YamlNode::Mapping(mf.mapping);
                     self.register_anchor(anchor_id, &node);
@@ -274,7 +306,26 @@ impl Builder {
             }
 
             Event::SequenceEnd => {
-                if let Some(Frame::Sequence(sf)) = self.stack.pop() {
+                if let Some(Frame::Sequence(mut sf)) = self.stack.pop() {
+                    // Count blank lines trailing after the last item.
+                    let trailing = if let Some(last_line) = self.last_content_line {
+                        let end_line = mark.line();
+                        if end_line > last_line + 1 {
+                            let nc = self
+                                .pending_before
+                                .iter()
+                                .filter(|(l, _)| *l < end_line)
+                                .count();
+                            (end_line - last_line - 1).saturating_sub(nc).min(255) as u8
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    };
+                    sf.seq.trailing_blank_lines = trailing;
+                    // Advance last_content_line so outer containers don't double-count.
+                    self.last_content_line = Some(mark.line());
                     let anchor_id = sf.anchor_id;
                     let node = YamlNode::Sequence(sf.seq);
                     self.register_anchor(anchor_id, &node);
@@ -301,6 +352,26 @@ impl Builder {
                     _ => typed,
                 };
 
+                // For block scalars, the content spans multiple source lines.
+                // Advance last_content_line past all those lines so outer containers
+                // don't double-count the trailing blank lines embedded in the value.
+                let effective_scalar_end_line =
+                    if matches!(scalar_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+                        mark.line() + value.bytes().filter(|&b| b == b'\n').count()
+                    } else {
+                        mark.line()
+                    };
+
+                // Preserve the original source text for floats written in exponent form
+                // (e.g. `1.5e10`) so the emitter can reproduce the exact representation.
+                let scalar_original: Option<String> = if matches!(typed, ScalarValue::Float(_))
+                    && (value.contains('e') || value.contains('E'))
+                {
+                    Some(value.clone())
+                } else {
+                    None
+                };
+
                 // Collect a clone for anchor registration AFTER the borrow-checking match below.
                 let mut anchor_node: Option<YamlNode> = None;
 
@@ -310,13 +381,14 @@ impl Builder {
                             value: typed,
                             style: scalar_style,
                             tag: scalar_tag,
+                            original: scalar_original,
                         });
                         if anchor_id != 0 {
                             anchor_node = Some(node.clone());
                         }
                         self.doc_explicit.push(self.next_explicit);
                         self.docs.push(node);
-                        self.last_content_line = Some(mark.line());
+                        self.last_content_line = Some(effective_scalar_end_line);
                     }
                     Some(Frame::Mapping(mf)) => {
                         if mf.current_key.is_none() {
@@ -353,13 +425,15 @@ impl Builder {
                             mf.current_comment_before = comment_before;
                             mf.current_comment_inline = None;
                             mf.current_blank_lines = blank_lines;
-                            self.last_content_line = Some(mark.line());
+                            mf.current_key_style = scalar_style;
+                            self.last_content_line = Some(effective_scalar_end_line);
                             // Register anchor for key scalars so they can later be aliased as values.
                             if anchor_id != 0 {
                                 anchor_node = Some(YamlNode::Scalar(YamlScalar {
                                     value: typed,
                                     style: scalar_style,
                                     tag: scalar_tag,
+                                    original: scalar_original.clone(),
                                 }));
                             }
                         } else {
@@ -367,6 +441,7 @@ impl Builder {
                                 value: typed,
                                 style: scalar_style,
                                 tag: scalar_tag,
+                                original: scalar_original,
                             });
                             if anchor_id != 0 {
                                 anchor_node = Some(node.clone());
@@ -375,6 +450,7 @@ impl Builder {
                                 let comment_before = mf.current_comment_before.take();
                                 let comment_inline = mf.current_comment_inline.take();
                                 let blank_lines_before = mf.current_blank_lines;
+                                let key_style = mf.current_key_style;
                                 mf.current_blank_lines = 0;
                                 mf.mapping.entries.insert(
                                     key,
@@ -383,10 +459,11 @@ impl Builder {
                                         comment_before,
                                         comment_inline,
                                         blank_lines_before,
+                                        key_style,
                                     },
                                 );
                             }
-                            self.last_content_line = Some(mark.line());
+                            self.last_content_line = Some(effective_scalar_end_line);
                         }
                     }
                     Some(Frame::Sequence(sf)) => {
@@ -423,6 +500,7 @@ impl Builder {
                             value: typed,
                             style: scalar_style,
                             tag: scalar_tag,
+                            original: scalar_original,
                         });
                         if anchor_id != 0 {
                             anchor_node = Some(node.clone());
@@ -433,7 +511,7 @@ impl Builder {
                             comment_inline: None,
                             blank_lines_before: blank_lines,
                         });
-                        self.last_content_line = Some(mark.line());
+                        self.last_content_line = Some(effective_scalar_end_line);
                     }
                 }
 
@@ -497,9 +575,10 @@ fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
 }
 
 /// Parse YAML input into a list of top-level documents.
-/// Returns `(docs, explicit_starts)` where `explicit_starts[i]` is `true` when
-/// document `i` had an explicit `---` marker in the source.
-pub fn parse_str(input: &str) -> Result<(Vec<YamlNode>, Vec<bool>), String> {
+/// Returns `(docs, explicit_starts, explicit_ends)` where the flags are `true` when
+/// the document had an explicit `---` / `...` marker in the source.
+#[allow(clippy::type_complexity)]
+pub fn parse_str(input: &str) -> Result<(Vec<YamlNode>, Vec<bool>, Vec<bool>), String> {
     let mut parser = Parser::new_from_str(input);
     let mut builder = Builder::new();
 
@@ -524,5 +603,5 @@ pub fn parse_str(input: &str) -> Result<(Vec<YamlNode>, Vec<bool>), String> {
         }
     }
 
-    Ok((builder.docs, builder.doc_explicit))
+    Ok((builder.docs, builder.doc_explicit, builder.doc_explicit_end))
 }

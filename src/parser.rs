@@ -66,7 +66,8 @@ pub enum Event {
     /// The bool is `true` when the source contained an explicit `---` marker.
     DocumentStart(bool),
     /// The YAML end document directive (`...`).
-    DocumentEnd,
+    /// The bool is `true` when the source contained an explicit `...` marker.
+    DocumentEnd(bool),
     /// A YAML Alias.
     Alias(
         /// The anchor ID the alias refers to.
@@ -445,7 +446,7 @@ impl<T: Iterator<Item = char>> Parser<T> {
 
         // DOCUMENT-END is expected.
         let (ev, mark) = self.next_token()?;
-        assert_eq!(ev, Event::DocumentEnd);
+        assert!(matches!(ev, Event::DocumentEnd(_)));
         recv.on_event(ev, mark);
 
         Ok(())
@@ -691,7 +692,7 @@ impl<T: Iterator<Item = char>> Parser<T> {
             self.state = State::DocumentStart;
         }
 
-        Ok((Event::DocumentEnd, marker))
+        Ok((Event::DocumentEnd(explicit_end), marker))
     }
 
     fn register_anchor(&mut self, name: String, _: &Marker) -> usize {
