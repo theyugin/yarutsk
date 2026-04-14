@@ -7,7 +7,9 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from typing import Any, Callable, IO, SupportsIndex, overload
+from typing import Any, Callable, IO, SupportsIndex, TypeVar, overload
+
+_T = TypeVar("_T")
 
 # The value that __getitem__ can return for a scalar leaf.
 _Scalar = int | float | bool | str | None
@@ -298,7 +300,9 @@ class Schema:
         """
         ...
 
-    def add_dumper(self, py_type: type, func: Callable[[Any], tuple[str, Any]]) -> None:
+    def add_dumper(
+        self, py_type: type[_T], func: Callable[[_T], tuple[str, Any]]
+    ) -> None:
         """Register a dumper callable for *py_type*.
 
         Dumpers are checked in registration order; the first ``isinstance`` match
