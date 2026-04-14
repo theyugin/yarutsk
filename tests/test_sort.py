@@ -127,9 +127,9 @@ m: 3  # m comment
 
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "m", "z"]
-        assert doc.get_comment_inline("a") == "a comment"
-        assert doc.get_comment_inline("m") == "m comment"
-        assert doc.get_comment_inline("z") == "z comment"
+        assert doc.comment_inline("a") == "a comment"
+        assert doc.comment_inline("m") == "m comment"
+        assert doc.comment_inline("z") == "z comment"
 
     def test_sort_keys_reverse_custom(self):
         """Reverse sort with custom key function."""

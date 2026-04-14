@@ -241,8 +241,8 @@ doc.style = "double"                   # 'plain'|'single'|'double'|'literal'|'fo
 
 # YAML tag
 doc = yarutsk.loads("!!str 42")
-doc.get_tag()                          # '!!str'
-doc.set_tag(None)                      # clear tag
+doc.tag                                # '!!str'
+doc.tag = None                         # clear tag
 
 # Explicit document markers
 doc = yarutsk.loads("---\n42\n...")
@@ -282,15 +282,15 @@ json.dumps(doc)                        # works
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python dict
 
-# Comments
-doc.get_comment_inline("key")          # -> str | None
-doc.get_comment_before("key")          # -> str | None
-doc.set_comment_inline("key", text)
-doc.set_comment_before("key", text)
+# Comments (1-arg = get, 2-arg = set; pass None to clear)
+doc.comment_inline("key")             # -> str | None
+doc.comment_before("key")             # -> str | None
+doc.comment_inline("key", text)
+doc.comment_before("key", text)
 
 # YAML tag
-doc.get_tag()                          # -> str | None  (e.g. '!!python/object:Foo')
-doc.set_tag("!!map")
+doc.tag                                # -> str | None  (e.g. '!!python/object:Foo')
+doc.tag = "!!map"
 
 # Explicit document markers
 doc.explicit_start                     # bool
@@ -299,10 +299,10 @@ doc.explicit_start = True
 doc.explicit_end   = True
 
 # Node access — returns YamlScalar/YamlMapping/YamlSequence preserving style/tag/anchor
-node = doc.get_node("key")            # KeyError if absent
+node = doc.node("key")                # KeyError if absent
 
-# Scalar style shortcut (equivalent to: doc.get_node("key").style = "single")
-doc.set_scalar_style("key", "single") # 'plain'|'single'|'double'|'literal'|'folded'
+# Scalar style shortcut (equivalent to: doc.node("key").style = "single")
+doc.scalar_style("key", "single")     # 'plain'|'single'|'double'|'literal'|'folded'
 
 # Sorting
 doc.sort_keys()                        # alphabetical, in-place
@@ -341,15 +341,15 @@ json.dumps(doc)                        # works
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python list
 
-# Comments (addressed by integer index)
-doc.get_comment_inline(idx)            # -> str | None
-doc.get_comment_before(idx)            # -> str | None
-doc.set_comment_inline(idx, text)
-doc.set_comment_before(idx, text)
+# Comments (1-arg = get, 2-arg = set; pass None to clear)
+doc.comment_inline(idx)               # -> str | None
+doc.comment_before(idx)               # -> str | None
+doc.comment_inline(idx, text)
+doc.comment_before(idx, text)
 
 # YAML tag
-doc.get_tag()                          # -> str | None  (e.g. '!!python/tuple')
-doc.set_tag(None)
+doc.tag                                # -> str | None  (e.g. '!!python/tuple')
+doc.tag = None
 
 # Explicit document markers
 doc.explicit_start                     # bool

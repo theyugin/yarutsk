@@ -7,7 +7,7 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from typing import Any, Callable, IO, SupportsIndex
+from typing import Any, Callable, IO, SupportsIndex, overload
 
 # The value that __getitem__ can return for a scalar leaf.
 _Scalar = int | float | bool | str | None
@@ -44,30 +44,27 @@ class YamlScalar:
 
     @explicit_end.setter
     def explicit_end(self, value: bool) -> None: ...
-    def get_tag(self) -> str | None:
-        """Return the YAML tag on this scalar (e.g. ``"!!str"``), or ``None``."""
+    @property
+    def tag(self) -> str | None:
+        """The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``."""
         ...
 
-    def set_tag(self, tag: str | None) -> None:
-        """Set or clear the YAML tag on this scalar."""
+    @tag.setter
+    def tag(self, value: str | None) -> None: ...
+    @property
+    def yaml_version(self) -> str | None:
+        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
         ...
 
-    def get_yaml_version(self) -> str | None:
-        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+    @yaml_version.setter
+    def yaml_version(self, value: str | None) -> None: ...
+    @property
+    def tag_directives(self) -> list[tuple[str, str]]:
+        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
         ...
 
-    def set_yaml_version(self, version: str | None) -> None:
-        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
-        ...
-
-    def get_tag_directives(self) -> list[tuple[str, str]]:
-        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
-        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
-        ...
-
+    @tag_directives.setter
+    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
     def to_dict(self) -> "_Scalar":
         """Return the Python primitive value."""
         ...
@@ -98,37 +95,34 @@ class YamlMapping(dict[str, Any]):
 
     @explicit_end.setter
     def explicit_end(self, value: bool) -> None: ...
-    def get_tag(self) -> str | None:
-        """Return the YAML tag on this mapping (e.g. ``"!!map"``), or ``None``."""
+    @property
+    def tag(self) -> str | None:
+        """The YAML tag on this mapping (e.g. ``"!!map"``), or ``None``."""
         ...
 
-    def set_tag(self, tag: str | None) -> None:
-        """Set or clear the YAML tag on this mapping."""
+    @tag.setter
+    def tag(self, value: str | None) -> None: ...
+    @property
+    def yaml_version(self) -> str | None:
+        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
         ...
 
-    def get_yaml_version(self) -> str | None:
-        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+    @yaml_version.setter
+    def yaml_version(self, value: str | None) -> None: ...
+    @property
+    def tag_directives(self) -> list[tuple[str, str]]:
+        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
         ...
 
-    def set_yaml_version(self, version: str | None) -> None:
-        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
-        ...
-
-    def get_tag_directives(self) -> list[tuple[str, str]]:
-        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
-        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    def get_node(self, key: str) -> "YamlMapping | YamlSequence | YamlScalar":
+    @tag_directives.setter
+    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
+    def node(self, key: str) -> "YamlMapping | YamlSequence | YamlScalar":
         """Return the underlying YAML node for *key*, preserving style/tag metadata.
         Raises ``KeyError`` if *key* is absent.
         """
         ...
 
-    def set_scalar_style(self, key: str, style: str) -> None:
+    def scalar_style(self, key: str, style: str) -> None:
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
@@ -153,20 +147,32 @@ class YamlMapping(dict[str, Any]):
         """Recursively convert to a plain Python dict (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    def get_comment_inline(self, key: str) -> str | None:
-        """Return the inline comment for *key* (text after ``#``, no leading ``#``)."""
+    @overload
+    def comment_inline(self, key: str) -> str | None:
+        """Return the inline comment for *key* (text after ``#``, no leading ``#``), or ``None``.
+        Raises ``KeyError`` if *key* is absent.
+        """
         ...
 
-    def get_comment_before(self, key: str) -> str | None:
-        """Return the block comment above *key*, lines joined with ``\\n``."""
+    @overload
+    def comment_inline(self, key: str, comment: str | None) -> None:
+        """Set or clear the inline comment for *key*. Pass ``None`` to remove it.
+        Raises ``KeyError`` if *key* is absent.
+        """
         ...
 
-    def set_comment_inline(self, key: str, comment: str | None) -> None:
-        """Set or replace the inline comment for *key*."""
+    @overload
+    def comment_before(self, key: str) -> str | None:
+        """Return the block comment above *key*, lines joined with ``\\n``, or ``None``.
+        Raises ``KeyError`` if *key* is absent.
+        """
         ...
 
-    def set_comment_before(self, key: str, comment: str | None) -> None:
-        """Set or replace the block comment above *key*."""
+    @overload
+    def comment_before(self, key: str, comment: str | None) -> None:
+        """Set or clear the block comment above *key*. Pass ``None`` to remove it.
+        Raises ``KeyError`` if *key* is absent.
+        """
         ...
 
 class YamlSequence(list[Any]):
@@ -192,30 +198,27 @@ class YamlSequence(list[Any]):
 
     @explicit_end.setter
     def explicit_end(self, value: bool) -> None: ...
-    def get_tag(self) -> str | None:
-        """Return the YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``."""
+    @property
+    def tag(self) -> str | None:
+        """The YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``."""
         ...
 
-    def set_tag(self, tag: str | None) -> None:
-        """Set or clear the YAML tag on this sequence."""
+    @tag.setter
+    def tag(self, value: str | None) -> None: ...
+    @property
+    def yaml_version(self) -> str | None:
+        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
         ...
 
-    def get_yaml_version(self) -> str | None:
-        """Return the ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+    @yaml_version.setter
+    def yaml_version(self, value: str | None) -> None: ...
+    @property
+    def tag_directives(self) -> list[tuple[str, str]]:
+        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
         ...
 
-    def set_yaml_version(self, version: str | None) -> None:
-        """Set or clear the ``%YAML`` directive. Format: ``"major.minor"`` (e.g. ``"1.2"``)."""
-        ...
-
-    def get_tag_directives(self) -> list[tuple[str, str]]:
-        """Return the ``%TAG`` directives as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    def set_tag_directives(self, directives: list[tuple[str, str]]) -> None:
-        """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
-        ...
-
+    @tag_directives.setter
+    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
     def clear(self) -> None:
         """Remove all items from this sequence."""
         ...
@@ -239,20 +242,24 @@ class YamlSequence(list[Any]):
         """Recursively convert to a plain Python list (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    def get_comment_inline(self, idx: int) -> str | None:
-        """Return the inline comment for the item at *idx* (text after ``#``, no leading ``#``)."""
+    @overload
+    def comment_inline(self, idx: int) -> str | None:
+        """Return the inline comment for the item at *idx* (text after ``#``, no leading ``#``), or ``None``."""
         ...
 
-    def get_comment_before(self, idx: int) -> str | None:
-        """Return the block comment above the item at *idx*, lines joined with ``\\n``."""
+    @overload
+    def comment_inline(self, idx: int, comment: str | None) -> None:
+        """Set or clear the inline comment for the item at *idx*. Pass ``None`` to remove it."""
         ...
 
-    def set_comment_inline(self, idx: int, comment: str | None) -> None:
-        """Set or replace the inline comment for the item at *idx*."""
+    @overload
+    def comment_before(self, idx: int) -> str | None:
+        """Return the block comment above the item at *idx*, lines joined with ``\\n``, or ``None``."""
         ...
 
-    def set_comment_before(self, idx: int, comment: str | None) -> None:
-        """Set or replace the block comment above the item at *idx*."""
+    @overload
+    def comment_before(self, idx: int, comment: str | None) -> None:
+        """Set or clear the block comment above the item at *idx*. Pass ``None`` to remove it."""
         ...
 
 class Schema:

@@ -86,14 +86,14 @@ class TestRoundTripScalarStyles:
     def test_scalar_style_attribute(self):
         """YamlScalar.style attribute reflects the source quoting style."""
         doc = yarutsk.loads("a: plain\nb: 'single'\nc: \"double\"")
-        assert doc.get_node("a").style == "plain"
-        assert doc.get_node("b").style == "single"
-        assert doc.get_node("c").style == "double"
+        assert doc.node("a").style == "plain"
+        assert doc.node("b").style == "single"
+        assert doc.node("c").style == "double"
 
     def test_scalar_style_can_be_changed(self):
         """Changing scalar style via set_scalar_style affects how the value is emitted."""
         doc = yarutsk.loads("key: hello")
-        doc.set_scalar_style("key", "double")
+        doc.scalar_style("key", "double")
         out = yarutsk.dumps(doc)
         assert out == 'key: "hello"\n'
 
@@ -230,29 +230,29 @@ class TestRoundTripTagAccess:
 
     def test_scalar_tag_loaded(self):
         doc = yarutsk.loads("value: !!str 42")
-        node = doc.get_node("value")
-        assert node.get_tag() is not None
+        node = doc.node("value")
+        assert node.tag is not None
 
     def test_mapping_tag_loaded(self):
         doc = yarutsk.loads("!!python/object:dict {a: 1}")
-        assert doc.get_tag() is not None
+        assert doc.tag is not None
 
     def test_scalar_no_tag_returns_none(self):
         doc = yarutsk.loads("value: hello")
-        node = doc.get_node("value")
-        assert node.get_tag() is None
+        node = doc.node("value")
+        assert node.tag is None
 
     def test_set_tag_on_scalar(self):
         doc = yarutsk.loads("key: hello")
-        node = doc.get_node("key")
-        node.set_tag("!!str")
-        assert node.get_tag() == "!!str"
+        node = doc.node("key")
+        node.tag = "!!str"
+        assert node.tag == "!!str"
 
     def test_set_tag_none_clears_tag(self):
         doc = yarutsk.loads("value: !!str 42")
-        node = doc.get_node("value")
-        node.set_tag(None)
-        assert node.get_tag() is None
+        node = doc.node("value")
+        node.tag = None
+        assert node.tag is None
 
     def test_tags_emitted_in_dump(self):
         """Tags are preserved in emitted YAML for round-trip fidelity."""
@@ -267,13 +267,13 @@ class TestRoundTripTagAccess:
 
     def test_set_tag_on_mapping(self):
         doc = yarutsk.loads("a: 1")
-        doc.set_tag("!!map")
-        assert doc.get_tag() == "!!map"
+        doc.tag = "!!map"
+        assert doc.tag == "!!map"
 
     def test_set_tag_on_sequence(self):
         doc = yarutsk.loads("- 1\n- 2")
-        doc.set_tag("!!seq")
-        assert doc.get_tag() == "!!seq"
+        doc.tag = "!!seq"
+        assert doc.tag == "!!seq"
 
 
 class TestExplicitDocumentMarker:
@@ -523,9 +523,9 @@ class TestTagRoundTrip:
     def test_tag_accessible_after_load(self):
         """get_node returns a snapshot; set_tag on it does not mutate the mapping."""
         doc = yarutsk.loads("value: !!str 42")
-        node = doc.get_node("value")
-        assert node.get_tag() is not None
-        node.set_tag(None)
+        node = doc.node("value")
+        assert node.tag is not None
+        node.tag = None
         # The change is local to the snapshot — the mapping still emits the tag.
         assert "!!" in yarutsk.dumps(doc)
 
@@ -536,7 +536,7 @@ class TestTagRoundTrip:
     def test_tag_on_top_level_sequence_accessible(self):
         """Tag on a top-level block sequence is parsed and accessible via get_tag()."""
         doc = yarutsk.loads("!!python/tuple\n- 1\n- 2\n")
-        assert doc.get_tag() is not None
+        assert doc.tag is not None
         assert list(doc) == [1, 2]
 
     def test_tag_on_sequence_item_via_mapping(self):
@@ -544,7 +544,7 @@ class TestTagRoundTrip:
         src = "x: !!python/tuple [1, 2]\n"
         doc = yarutsk.loads(src)
         seq = doc["x"]
-        assert seq.get_tag() is not None
+        assert seq.tag is not None
         assert yarutsk.dumps(doc) == src
 
 

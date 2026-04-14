@@ -71,7 +71,7 @@ class TestStringAPI:
         doc2 = yarutsk.loads(result)
         assert doc2["name"] == "Alice"
         assert doc2["age"] == 30
-        assert doc2.get_comment_inline("age") == "years"
+        assert doc2.comment_inline("age") == "years"
 
     def test_loads_all_dumps_all_round_trip(self):
         original = "---\na: 1\n---\nb: 2\n---\nc: 3"
@@ -308,16 +308,16 @@ class TestNegativeSequenceIndices:
 
     def test_get_comment_negative_index(self):
         doc = yarutsk.loads("- a  # first\n- b\n- c  # last")
-        assert doc.get_comment_inline(-1) == "last"
-        assert doc.get_comment_inline(-3) == "first"
+        assert doc.comment_inline(-1) == "last"
+        assert doc.comment_inline(-3) == "first"
 
     def test_set_comment_negative_index(self):
         doc = yarutsk.loads("- a\n- b\n- c")
-        doc.set_comment_inline(-1, "tail note")
+        doc.comment_inline(-1, "tail note")
         out = yarutsk.dumps(doc)
         assert "# tail note" in out
         doc2 = yarutsk.loads(out)
-        assert doc2.get_comment_inline(2) == "tail note"
+        assert doc2.comment_inline(2) == "tail note"
 
 
 class TestSetDefault:
@@ -380,23 +380,23 @@ class TestErrorCases:
         with pytest.raises(IndexError):
             del doc[5]
 
-    def test_set_comment_inline_missing_key_raises(self):
+    def test_comment_inline_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
         with pytest.raises(KeyError):
-            doc.set_comment_inline("missing", "note")
+            doc.comment_inline("missing", "note")
 
-    def test_set_comment_before_missing_key_raises(self):
+    def test_comment_before_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
         with pytest.raises(KeyError):
-            doc.set_comment_before("missing", "note")
+            doc.comment_before("missing", "note")
 
-    def test_get_comment_inline_missing_key_returns_none(self):
+    def test_comment_inline_missing_key_returns_none(self):
         doc = yarutsk.loads("a: 1")
-        assert doc.get_comment_inline("missing") is None
+        assert doc.comment_inline("missing") is None
 
-    def test_get_comment_before_missing_key_returns_none(self):
+    def test_comment_before_missing_key_returns_none(self):
         doc = yarutsk.loads("a: 1")
-        assert doc.get_comment_before("missing") is None
+        assert doc.comment_before("missing") is None
 
 
 class TestGetMethod:

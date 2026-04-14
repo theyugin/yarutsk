@@ -13,7 +13,7 @@ use builder::{ParseOutput, TagPolicy, parse_str};
 use emitter::emit_docs;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use types::*;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -906,6 +906,7 @@ impl PyYamlScalar {
     }
 
     /// The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``.
+    #[getter]
     fn get_tag(&self) -> Option<&str> {
         match &self.inner {
             YamlNode::Scalar(s) => s.tag.as_deref(),
@@ -913,6 +914,7 @@ impl PyYamlScalar {
         }
     }
 
+    #[setter]
     fn set_tag(&mut self, tag: Option<&str>) {
         if let YamlNode::Scalar(s) = &mut self.inner {
             s.tag = tag.map(str::to_owned);
@@ -942,20 +944,24 @@ impl PyYamlScalar {
     }
 
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    #[getter]
     fn get_yaml_version(&self) -> Option<String> {
         self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
     }
 
+    #[setter]
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
     }
 
     /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    #[getter]
     fn get_tag_directives(&self) -> Vec<(String, String)> {
         self.tag_directives.clone()
     }
 
+    #[setter]
     fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
         self.tag_directives = directives;
     }
@@ -1211,43 +1217,83 @@ impl PyYamlMapping {
         mapping_to_dict(py, &self.inner)
     }
 
-    fn get_comment_inline(&self, key: &str) -> Option<String> {
-        self.inner
-            .entries
-            .get(key)
-            .and_then(|e| e.comment_inline.clone())
-    }
-
-    fn get_comment_before(&self, key: &str) -> Option<String> {
-        self.inner
-            .entries
-            .get(key)
-            .and_then(|e| e.comment_before.clone())
-    }
-
-    fn set_comment_inline(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
-        if let Some(entry) = self.inner.entries.get_mut(key) {
-            entry.comment_inline = comment.map(str::to_owned);
-            Ok(())
-        } else {
-            Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
+    /// Read or write the inline comment for *key*.
+    /// `comment_inline(key)` returns the current comment (``str | None``).
+    /// `comment_inline(key, comment)` sets it; pass ``None`` to clear.
+    #[pyo3(signature = (key, *args))]
+    fn comment_inline(
+        &mut self,
+        py: Python<'_>,
+        key: &str,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => Ok(self
+                .inner
+                .entries
+                .get(key)
+                .and_then(|e| e.comment_inline.clone())
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            1 => {
+                let comment: Option<String> = args.get_item(0)?.extract()?;
+                match self.inner.entries.get_mut(key) {
+                    Some(entry) => {
+                        entry.comment_inline = comment;
+                        Ok(py.None())
+                    }
+                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+                }
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "comment_inline takes 1 or 2 positional arguments",
+            )),
         }
     }
 
-    fn set_comment_before(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
-        if let Some(entry) = self.inner.entries.get_mut(key) {
-            entry.comment_before = comment.map(str::to_owned);
-            Ok(())
-        } else {
-            Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
+    /// Read or write the block comment above *key*.
+    /// `comment_before(key)` returns the current comment (``str | None``).
+    /// `comment_before(key, comment)` sets it; pass ``None`` to clear.
+    #[pyo3(signature = (key, *args))]
+    fn comment_before(
+        &mut self,
+        py: Python<'_>,
+        key: &str,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => Ok(self
+                .inner
+                .entries
+                .get(key)
+                .and_then(|e| e.comment_before.clone())
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            1 => {
+                let comment: Option<String> = args.get_item(0)?.extract()?;
+                match self.inner.entries.get_mut(key) {
+                    Some(entry) => {
+                        entry.comment_before = comment;
+                        Ok(py.None())
+                    }
+                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+                }
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "comment_before takes 1 or 2 positional arguments",
+            )),
         }
     }
 
     /// The YAML tag on this mapping (e.g. ``"!!map"``), or ``None``.
+    #[getter]
     fn get_tag(&self) -> Option<&str> {
         self.inner.tag.as_deref()
     }
 
+    #[setter]
     fn set_tag(&mut self, tag: Option<&str>) {
         self.inner.tag = tag.map(str::to_owned);
     }
@@ -1275,20 +1321,24 @@ impl PyYamlMapping {
     }
 
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    #[getter]
     fn get_yaml_version(&self) -> Option<String> {
         self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
     }
 
+    #[setter]
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
     }
 
     /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    #[getter]
     fn get_tag_directives(&self) -> Vec<(String, String)> {
         self.tag_directives.clone()
     }
 
+    #[setter]
     fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
         self.tag_directives = directives;
     }
@@ -1296,7 +1346,7 @@ impl PyYamlMapping {
     /// Return the underlying YAML node for a key as a YamlScalar, YamlMapping,
     /// or YamlSequence object, preserving style/tag metadata.
     /// Raises KeyError if the key is absent.
-    fn get_node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
+    fn node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.inner.entries.get(key) {
             Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
@@ -1306,7 +1356,7 @@ impl PyYamlMapping {
     /// Set the scalar style for the value at `key`.
     /// `style` must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
     /// Raises KeyError if the key is absent; raises ValueError for unknown styles.
-    fn set_scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
+    fn scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
         let new_style = match style {
             "plain" => ScalarStyle::Plain,
             "single" => ScalarStyle::SingleQuoted,
@@ -1630,33 +1680,77 @@ impl PyYamlSequence {
         sequence_to_dict(py, &self.inner)
     }
 
-    fn get_comment_inline(&self, idx: isize) -> PyResult<Option<String>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(self.inner.items[i].comment_inline.clone())
+    /// Read or write the inline comment for the item at *idx*.
+    /// `comment_inline(idx)` returns the current comment (``str | None``).
+    /// `comment_inline(idx, comment)` sets it; pass ``None`` to clear.
+    #[pyo3(signature = (idx, *args))]
+    fn comment_inline(
+        &mut self,
+        py: Python<'_>,
+        idx: isize,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                Ok(self.inner.items[i]
+                    .comment_inline
+                    .clone()
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            }
+            1 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                let comment: Option<String> = args.get_item(0)?.extract()?;
+                self.inner.items[i].comment_inline = comment;
+                Ok(py.None())
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "comment_inline takes 1 or 2 positional arguments",
+            )),
+        }
     }
 
-    fn get_comment_before(&self, idx: isize) -> PyResult<Option<String>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(self.inner.items[i].comment_before.clone())
-    }
-
-    fn set_comment_inline(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        self.inner.items[i].comment_inline = comment.map(str::to_owned);
-        Ok(())
-    }
-
-    fn set_comment_before(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        self.inner.items[i].comment_before = comment.map(str::to_owned);
-        Ok(())
+    /// Read or write the block comment above the item at *idx*.
+    /// `comment_before(idx)` returns the current comment (``str | None``).
+    /// `comment_before(idx, comment)` sets it; pass ``None`` to clear.
+    #[pyo3(signature = (idx, *args))]
+    fn comment_before(
+        &mut self,
+        py: Python<'_>,
+        idx: isize,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                Ok(self.inner.items[i]
+                    .comment_before
+                    .clone()
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            }
+            1 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                let comment: Option<String> = args.get_item(0)?.extract()?;
+                self.inner.items[i].comment_before = comment;
+                Ok(py.None())
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "comment_before takes 1 or 2 positional arguments",
+            )),
+        }
     }
 
     /// The YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``.
+    #[getter]
     fn get_tag(&self) -> Option<&str> {
         self.inner.tag.as_deref()
     }
 
+    #[setter]
     fn set_tag(&mut self, tag: Option<&str>) {
         self.inner.tag = tag.map(str::to_owned);
     }
@@ -1684,20 +1778,24 @@ impl PyYamlSequence {
     }
 
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
+    #[getter]
     fn get_yaml_version(&self) -> Option<String> {
         self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
     }
 
+    #[setter]
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
     }
 
     /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
+    #[getter]
     fn get_tag_directives(&self) -> Vec<(String, String)> {
         self.tag_directives.clone()
     }
 
+    #[setter]
     fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
         self.tag_directives = directives;
     }

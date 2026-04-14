@@ -170,22 +170,22 @@ def check_scalar_document_markers(s: YamlScalar) -> None:
 
 
 def check_scalar_tag(s: YamlScalar) -> None:
-    tag: str | None = s.get_tag()
-    s.set_tag("!!str")
-    s.set_tag(None)
+    tag: str | None = s.tag
+    s.tag = "!!str"
+    s.tag = None
     _ = tag
 
 
 def check_scalar_yaml_version(s: YamlScalar) -> None:
-    ver: str | None = s.get_yaml_version()
-    s.set_yaml_version("1.2")
-    s.set_yaml_version(None)
+    ver: str | None = s.yaml_version
+    s.yaml_version = "1.2"
+    s.yaml_version = None
     _ = ver
 
 
 def check_scalar_tag_directives(s: YamlScalar) -> None:
-    dirs: list[tuple[str, str]] = s.get_tag_directives()
-    s.set_tag_directives([("!", "!foo!"), ("!bar!", "tag:example.com,2024:")])
+    dirs: list[tuple[str, str]] = s.tag_directives
+    s.tag_directives = [("!", "!foo!"), ("!bar!", "tag:example.com,2024:")]
     _ = dirs
 
 
@@ -224,10 +224,10 @@ def check_mapping_dict_compat(m: YamlMapping) -> None:
 
 
 def check_mapping_comments(m: YamlMapping) -> None:
-    inline: str | None = m.get_comment_inline("key")
-    before: str | None = m.get_comment_before("key")
-    m.set_comment_inline("key", "note")
-    m.set_comment_before("key", "header")
+    inline: str | None = m.comment_inline("key")
+    before: str | None = m.comment_before("key")
+    m.comment_inline("key", "note")
+    m.comment_before("key", "header")
     _ = inline, before
 
 
@@ -247,34 +247,34 @@ def check_mapping_document_markers(m: YamlMapping) -> None:
 
 
 def check_mapping_tag(m: YamlMapping) -> None:
-    tag: str | None = m.get_tag()
-    m.set_tag("!!map")
-    m.set_tag(None)
+    tag: str | None = m.tag
+    m.tag = "!!map"
+    m.tag = None
     _ = tag
 
 
 def check_mapping_yaml_version(m: YamlMapping) -> None:
-    ver: str | None = m.get_yaml_version()
-    m.set_yaml_version("1.2")
-    m.set_yaml_version(None)
+    ver: str | None = m.yaml_version
+    m.yaml_version = "1.2"
+    m.yaml_version = None
     _ = ver
 
 
 def check_mapping_tag_directives(m: YamlMapping) -> None:
-    dirs: list[tuple[str, str]] = m.get_tag_directives()
-    m.set_tag_directives([("!", "!foo!")])
+    dirs: list[tuple[str, str]] = m.tag_directives
+    m.tag_directives = [("!", "!foo!")]
     _ = dirs
 
 
-def check_mapping_get_node(m: YamlMapping) -> None:
-    node: YamlMapping | YamlSequence | YamlScalar = m.get_node("key")
+def check_mapping_node(m: YamlMapping) -> None:
+    node: YamlMapping | YamlSequence | YamlScalar = m.node("key")
     _ = node
 
 
-def check_mapping_set_scalar_style(m: YamlMapping) -> None:
-    m.set_scalar_style("key", "single")
-    m.set_scalar_style("key", "double")
-    m.set_scalar_style("key", "plain")
+def check_mapping_scalar_style(m: YamlMapping) -> None:
+    m.scalar_style("key", "single")
+    m.scalar_style("key", "double")
+    m.scalar_style("key", "plain")
 
 
 # ── YamlSequence interface ────────────────────────────────────────────────────
@@ -313,10 +313,10 @@ def check_sequence_list_compat(s: YamlSequence) -> None:
 
 
 def check_sequence_comments(s: YamlSequence) -> None:
-    inline: str | None = s.get_comment_inline(0)
-    before: str | None = s.get_comment_before(-1)
-    s.set_comment_inline(0, "note")
-    s.set_comment_before(0, "header")
+    inline: str | None = s.comment_inline(0)
+    before: str | None = s.comment_before(-1)
+    s.comment_inline(0, "note")
+    s.comment_before(0, "header")
     _ = inline, before
 
 
@@ -339,22 +339,22 @@ def check_sequence_document_markers(s: YamlSequence) -> None:
 
 
 def check_sequence_tag(s: YamlSequence) -> None:
-    tag: str | None = s.get_tag()
-    s.set_tag("!!seq")
-    s.set_tag(None)
+    tag: str | None = s.tag
+    s.tag = "!!seq"
+    s.tag = None
     _ = tag
 
 
 def check_sequence_yaml_version(s: YamlSequence) -> None:
-    ver: str | None = s.get_yaml_version()
-    s.set_yaml_version("1.2")
-    s.set_yaml_version(None)
+    ver: str | None = s.yaml_version
+    s.yaml_version = "1.2"
+    s.yaml_version = None
     _ = ver
 
 
 def check_sequence_tag_directives(s: YamlSequence) -> None:
-    dirs: list[tuple[str, str]] = s.get_tag_directives()
-    s.set_tag_directives([("!", "!foo!")])
+    dirs: list[tuple[str, str]] = s.tag_directives
+    s.tag_directives = [("!", "!foo!")]
     _ = dirs
 
 
