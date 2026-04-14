@@ -95,7 +95,53 @@ text = yarutsk.dumps(doc)
 text = yarutsk.dumps_all(docs)
 ```
 
-`load` / `loads` return a `YamlMapping`, `YamlSequence`, `YamlScalar`, or `None` (for empty input). Nested nodes are also `YamlMapping` or `YamlSequence`; scalar leaves are returned as native Python primitives (`int`, `float`, `bool`, `str`, or `None`).
+`load` / `loads` return a `YamlMapping`, `YamlSequence`, `YamlScalar`, or `None` (for empty input). Nested nodes are also `YamlMapping` or `YamlSequence`; scalar leaves are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
+
+### Type tags
+
+Standard YAML type tags affect the Python type returned from a load:
+
+| Tag | Python type | Notes |
+|---|---|---|
+| `!!str` | `str` | Forces string even if value looks like an int/bool/null |
+| `!!int` | `int` | Overrides if inference gave a different type |
+| `!!float` | `float` | Promotes integer literals (`!!float 1` → `1.0`) |
+| `!!bool` | `bool` | Overrides if inference gave a different type |
+| `!!null` | `None` | Forces null regardless of value (e.g. `!!null ""` → `None`) |
+| `!!binary` | `bytes` | Base64-decoded on load; base64-encoded on dump |
+| `!!timestamp` | `datetime.datetime` or `datetime.date` | Date-only values (`2024-01-15`) return `date`; datetime values return `datetime` |
+
+Tags are preserved for round-trip: load → dump reproduces the original tag and source text.
+
+```python
+# !!binary
+doc = yarutsk.loads("data: !!binary aGVsbG8=\n")
+doc["data"]                            # b'hello'
+yarutsk.dumps(doc)                     # 'data: !!binary aGVsbG8=\n'
+
+# Dumping Python bytes / datetime creates the appropriate tag automatically
+import datetime
+mapping = yarutsk.loads("x: placeholder\n")
+mapping["x"] = b"hello"
+yarutsk.dumps(mapping)                 # 'x: !!binary aGVsbG8=\n'
+
+mapping["x"] = datetime.datetime(2024, 1, 15, 10, 30)
+yarutsk.dumps(mapping)                 # 'x: !!timestamp 2024-01-15T10:30:00\n'
+
+# !!timestamp
+doc = yarutsk.loads("ts: !!timestamp 2024-01-15T10:30:00\n")
+doc["ts"]                              # datetime.datetime(2024, 1, 15, 10, 30)
+
+doc = yarutsk.loads("ts: !!timestamp 2024-01-15\n")
+doc["ts"]                              # datetime.date(2024, 1, 15)
+
+# Standard schema tag coercion
+doc = yarutsk.loads("x: !!float 1\n")
+doc["x"]                               # 1.0 (float, not int)
+
+doc = yarutsk.loads('x: !!null ""\n')
+doc["x"]                               # None
+```
 
 ### YamlScalar
 

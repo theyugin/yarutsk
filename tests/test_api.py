@@ -418,3 +418,40 @@ class TestGetMethod:
         doc = yarutsk.loads("a: null")
         assert doc.get("a") is None
         assert doc.get("a", "default") is None
+
+
+class TestTagCoercion:
+    """Standard schema tags coerce the Python type returned."""
+
+    def test_float_tag_on_integer_literal(self):
+        doc = yarutsk.loads("x: !!float 1\n")
+        assert isinstance(doc["x"], float)
+        assert doc["x"] == 1.0
+
+    def test_float_tag_on_float_literal(self):
+        doc = yarutsk.loads("x: !!float 1.5\n")
+        assert isinstance(doc["x"], float)
+        assert doc["x"] == 1.5
+
+    def test_int_tag_on_plain_int(self):
+        doc = yarutsk.loads("x: !!int 42\n")
+        assert isinstance(doc["x"], int)
+        assert doc["x"] == 42
+
+    def test_bool_tag_on_plain_bool(self):
+        doc = yarutsk.loads("x: !!bool true\n")
+        assert doc["x"] is True
+
+    def test_null_tag_on_quoted_empty(self):
+        doc = yarutsk.loads('x: !!null ""\n')
+        assert doc["x"] is None
+
+    def test_null_tag_on_plain_value(self):
+        doc = yarutsk.loads("x: !!null something\n")
+        assert doc["x"] is None
+
+    def test_int_tag_invalid_falls_back(self):
+        # !!int on a non-integer value — graceful fallback, not an error
+        doc = yarutsk.loads("x: !!int abc\n")
+        # value is preserved as-is (str) since parse failed
+        assert doc["x"] is not None

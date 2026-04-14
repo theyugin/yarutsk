@@ -396,11 +396,31 @@ impl Builder {
                     // not null (quoting is explicit intent to represent a string value).
                     _ => ScalarValue::Str(value.clone()),
                 };
-                // !!str and ! (non-specific) tags force the scalar to be a string,
-                // overriding any type inference that would have produced bool/int/float/null.
+                // Apply tag overrides: standard schema tags coerce the inferred type.
                 let typed = match scalar_tag.as_deref() {
                     Some("!!str") | Some("tag:yaml.org,2002:str") | Some("!") => {
                         ScalarValue::Str(value.clone())
+                    }
+                    Some("!!null") | Some("tag:yaml.org,2002:null") => ScalarValue::Null,
+                    Some("!!bool") | Some("tag:yaml.org,2002:bool") => {
+                        match ScalarValue::from_str(&value) {
+                            ScalarValue::Bool(b) => ScalarValue::Bool(b),
+                            _ => typed,
+                        }
+                    }
+                    Some("!!int") | Some("tag:yaml.org,2002:int") => {
+                        match ScalarValue::from_str(&value) {
+                            ScalarValue::Int(n) => ScalarValue::Int(n),
+                            _ => typed,
+                        }
+                    }
+                    Some("!!float") | Some("tag:yaml.org,2002:float") => {
+                        match ScalarValue::from_str(&value) {
+                            ScalarValue::Float(f) => ScalarValue::Float(f),
+                            // !!float on an integer literal → promote to Float
+                            ScalarValue::Int(n) => ScalarValue::Float(n as f64),
+                            _ => typed,
+                        }
                     }
                     _ => typed,
                 };

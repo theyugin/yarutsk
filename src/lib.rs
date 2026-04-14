@@ -30,6 +30,61 @@ fn scalar_to_py(py: Python<'_>, v: &ScalarValue) -> PyResult<Py<PyAny>> {
     }
 }
 
+/// Convert a `YamlScalar` to Python, applying tag-specific conversions first.
+///
+/// - `!!binary` → `bytes` (base64-decoded)
+/// - `!!timestamp` → `datetime.datetime` or `datetime.date`
+/// - everything else → delegated to `scalar_to_py`
+fn scalar_to_py_with_tag(py: Python<'_>, s: &YamlScalar) -> PyResult<Py<PyAny>> {
+    match s.tag.as_deref() {
+        Some("!!binary") | Some("tag:yaml.org,2002:binary") => {
+            let raw = s
+                .original
+                .as_deref()
+                .or(if let ScalarValue::Str(ref st) = s.value {
+                    Some(st.as_str())
+                } else {
+                    None
+                })
+                .unwrap_or("");
+            let stripped: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            let bytes = STANDARD
+                .decode(stripped.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("!!binary decode error: {e}")))?;
+            use pyo3::types::PyBytes;
+            Ok(PyBytes::new(py, &bytes).into_any().unbind())
+        }
+        Some("!!timestamp") | Some("tag:yaml.org,2002:timestamp") => {
+            let raw = s
+                .original
+                .as_deref()
+                .or(if let ScalarValue::Str(ref st) = s.value {
+                    Some(st.as_str())
+                } else {
+                    None
+                })
+                .unwrap_or("");
+            // YAML allows a space in place of 'T' between date and time.
+            let normalized = raw.replacen(' ', "T", 1);
+            let datetime_mod = py.import("datetime")?;
+            // Date-only values contain no 'T' and no time ':' after the date portion.
+            if !normalized.contains('T') && normalized.len() > 5 && !normalized[5..].contains(':') {
+                let date = datetime_mod
+                    .getattr("date")?
+                    .call_method1("fromisoformat", (&*normalized,))?;
+                Ok(date.into_any().unbind())
+            } else {
+                let dt = datetime_mod
+                    .getattr("datetime")?
+                    .call_method1("fromisoformat", (&*normalized,))?;
+                Ok(dt.into_any().unbind())
+            }
+        }
+        _ => scalar_to_py(py, &s.value),
+    }
+}
+
 // ─── Node ↔ Python conversion ─────────────────────────────────────────────────
 
 /// Convert a YamlNode to its Python representation.
@@ -90,7 +145,7 @@ fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
 fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
-        YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
+        YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s),
         YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), DocMeta::none()),
         YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), DocMeta::none()),
         YamlNode::Alias { resolved, .. } => node_to_py(py, resolved),
@@ -125,6 +180,34 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     }
     if let Ok(s) = obj.extract::<String>() {
         return Ok(plain_scalar(ScalarValue::Str(s)));
+    }
+    // bytes → !!binary scalar (base64-encoded)
+    if let Ok(b) = obj.extract::<Vec<u8>>() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(&b);
+        return Ok(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Str(encoded),
+            style: ScalarStyle::Plain,
+            tag: Some("!!binary".to_owned()),
+            original: None,
+            anchor: None,
+        }));
+    }
+    // datetime.datetime / datetime.date → !!timestamp scalar
+    {
+        let datetime_mod = obj.py().import("datetime")?;
+        let datetime_type = datetime_mod.getattr("datetime")?;
+        let date_type = datetime_mod.getattr("date")?;
+        if obj.is_instance(&datetime_type)? || obj.is_instance(&date_type)? {
+            let iso: String = obj.call_method0("isoformat")?.extract()?;
+            return Ok(YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str(iso),
+                style: ScalarStyle::Plain,
+                tag: Some("!!timestamp".to_owned()),
+                original: None,
+                anchor: None,
+            }));
+        }
     }
     // Plain dict/list fallback (for users passing native Python dicts/lists).
     // Note: PyYamlMapping extends PyDict so it would match cast::<PyDict>() too,

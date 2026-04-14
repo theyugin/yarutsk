@@ -1,6 +1,6 @@
 [package]
 name = "yarutsk"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A YAML round-trip library that preserves comments and insertion order"
 license = "MIT"
@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 indexmap = "2"
 pyo3 = { version = "0.28", features = ["extension-module", "indexmap"] }
 arraydeque = "0.5"
+base64 = "0.22"
 
 [profile.release]
 lto = true

@@ -670,3 +670,75 @@ class TestKeyMetadataRoundTrip:
         out = yarutsk.dumps(yarutsk.loads(src))
         doc2 = yarutsk.loads(out)
         assert "anchor" in doc2
+
+
+class TestBinaryTagRoundTrip:
+    """!!binary scalars round-trip as Python bytes."""
+
+    def test_binary_load_returns_bytes(self):
+        doc = yarutsk.loads("data: !!binary aGVsbG8=\n")
+        assert doc["data"] == b"hello"
+        assert isinstance(doc["data"], bytes)
+
+    def test_binary_roundtrip_preserves_source(self):
+        src = "data: !!binary aGVsbG8=\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_binary_with_whitespace_in_value(self):
+        # YAML binary values may contain whitespace (e.g. line-wrapped base64)
+        doc = yarutsk.loads("data: !!binary aGVs\n  bG8=\n")
+        assert doc["data"] == b"hello"
+
+    def test_binary_dump_from_bytes(self):
+        import yarutsk as yr
+
+        mapping = yr.loads("x: placeholder\n")
+        mapping["x"] = b"hello"
+        out = yr.dumps(mapping)
+        assert "!!binary" in out
+        doc2 = yr.loads(out)
+        assert doc2["x"] == b"hello"
+
+
+class TestTimestampTagRoundTrip:
+    """!!timestamp scalars round-trip as Python datetime objects."""
+
+    import datetime as _dt
+
+    def test_timestamp_datetime_load(self):
+        import datetime
+
+        doc = yarutsk.loads("ts: !!timestamp 2024-01-15T10:30:00\n")
+        assert doc["ts"] == datetime.datetime(2024, 1, 15, 10, 30, 0)
+        assert isinstance(doc["ts"], datetime.datetime)
+
+    def test_timestamp_date_only_load(self):
+        import datetime
+
+        doc = yarutsk.loads("ts: !!timestamp 2024-01-15\n")
+        assert doc["ts"] == datetime.date(2024, 1, 15)
+        assert isinstance(doc["ts"], datetime.date)
+
+    def test_timestamp_roundtrip_preserves_source(self):
+        src = "ts: !!timestamp 2024-01-15T10:30:00\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    def test_timestamp_space_separator(self):
+        # YAML allows space instead of T between date and time
+        import datetime
+
+        doc = yarutsk.loads("ts: !!timestamp 2024-01-15 10:30:00\n")
+        assert isinstance(doc["ts"], datetime.datetime)
+        assert doc["ts"].year == 2024
+        assert doc["ts"].hour == 10
+
+    def test_timestamp_dump_from_datetime(self):
+        import datetime
+        import yarutsk as yr
+
+        mapping = yr.loads("x: placeholder\n")
+        mapping["x"] = datetime.datetime(2024, 1, 15, 10, 30, 0)
+        out = yr.dumps(mapping)
+        assert "!!timestamp" in out
+        doc2 = yr.loads(out)
+        assert doc2["x"] == datetime.datetime(2024, 1, 15, 10, 30, 0)
