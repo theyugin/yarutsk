@@ -364,6 +364,15 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
     if let Some(node) = py_primitive_to_scalar(obj) {
         return Ok(node);
     }
+    // tuple → sequence (checked before bytes to prevent small-integer tuples
+    // being misinterpreted as Vec<u8> by PyO3's sequence extraction).
+    if let Ok(t) = obj.cast::<PyTuple>() {
+        let mut seq = YamlSequence::new();
+        for item in t.iter() {
+            seq.items.push(plain_item(py_to_node(&item, schema)?));
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
     // bytes → !!binary scalar (base64-encoded)
     if let Ok(b) = obj.extract::<Vec<u8>>() {
         use base64::{Engine, engine::general_purpose::STANDARD};
@@ -414,7 +423,7 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
     }
     Err(PyRuntimeError::new_err(format!(
         "Cannot convert {obj} to a YAML node; \
-         expected None, bool, int, float, str, dict, list, \
+         expected None, bool, int, float, str, dict, list, tuple, \
          YamlMapping, YamlSequence, or YamlScalar"
     )))
 }
@@ -560,13 +569,21 @@ fn extract_yaml_node(
         }
         return Ok(YamlNode::Sequence(seq));
     }
+    if let Ok(t) = obj.cast::<PyTuple>() {
+        let mut seq = YamlSequence::new();
+        for item in t.iter() {
+            seq.items
+                .push(plain_item(extract_yaml_node(&item, schema)?));
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
     // Last resort: try schema dumpers before giving up.
     if schema.is_some() {
         return py_to_node(obj, schema);
     }
     Err(PyRuntimeError::new_err(format!(
         "Cannot convert {obj} to a YAML node; \
-         expected None, bool, int, float, str, dict, list, \
+         expected None, bool, int, float, str, dict, list, tuple, \
          YamlMapping, YamlSequence, or YamlScalar"
     )))
 }
