@@ -7,12 +7,110 @@ mod parser;
 mod scanner;
 mod types;
 
-use builder::{ParseOutput, parse_str};
+use std::collections::{HashMap, HashSet};
+
+use builder::{ParseOutput, TagPolicy, parse_str};
 use emitter::emit_docs;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use types::*;
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+/// Tags for which the builder skips coercion when a loader is registered.
+/// These are the tags whose ScalarValue is determined by the builder, so a
+/// loader for them needs the raw string rather than a pre-converted value.
+const COERCION_TAGS: &[&str] = &[
+    "!!null",
+    "tag:yaml.org,2002:null",
+    "!!bool",
+    "tag:yaml.org,2002:bool",
+    "!!int",
+    "tag:yaml.org,2002:int",
+    "!!float",
+    "tag:yaml.org,2002:float",
+    "!!str",
+    "tag:yaml.org,2002:str",
+];
+
+/// Expand the `!!` shorthand to the full YAML 1.1 secondary tag URI.
+/// `"!!int"` → `"tag:yaml.org,2002:int"`.  Any other tag is returned unchanged.
+/// This mirrors what the parser does internally, so user-registered `"!!int"`
+/// tags match the `"tag:yaml.org,2002:int"` that the parser stores on scalars.
+fn normalize_tag(tag: &str) -> String {
+    if let Some(suffix) = tag.strip_prefix("!!") {
+        format!("tag:yaml.org,2002:{suffix}")
+    } else {
+        tag.to_owned()
+    }
+}
+
+/// Per-call registry of custom YAML ↔ Python type handlers.
+///
+/// Pass as `schema=` to any load/dump function. Has no global state — each
+/// `Schema` is independent and can be reused across calls.
+#[pyclass]
+#[derive(Default)]
+pub struct Schema {
+    /// tag → callable(value) → Py<PyAny>  (load side)
+    loaders: HashMap<String, Py<PyAny>>,
+    /// ordered list of (type, callable(obj) → (tag, data))  (dump side)
+    dumpers: Vec<(Py<PyAny>, Py<PyAny>)>,
+    /// Tags for which the builder must skip ScalarValue coercion.
+    raw_tags: HashSet<String>,
+}
+
+#[pymethods]
+impl Schema {
+    #[new]
+    pub fn new() -> Self {
+        Schema::default()
+    }
+
+    /// Register a loader for a YAML tag.
+    ///
+    /// *func* is called with the default-converted Python value during load:
+    /// - For scalar nodes: a Python `str` (raw YAML text) when the tag is a
+    ///   standard coercion tag (``!!int``, ``!!float``, ``!!bool``, ``!!null``,
+    ///   ``!!str``); otherwise whatever type inference produced.
+    /// - For mapping nodes: the ``YamlMapping`` (dict subclass).
+    /// - For sequence nodes: the ``YamlSequence`` (list subclass).
+    ///
+    /// The return value of *func* is used as the loaded Python object.
+    fn add_loader(&mut self, tag: String, func: Py<PyAny>) {
+        let normalized = normalize_tag(&tag);
+        if COERCION_TAGS.contains(&normalized.as_str()) {
+            self.raw_tags.insert(normalized.clone());
+        }
+        self.loaders.insert(normalized, func);
+    }
+
+    /// Register a dumper for a Python type.
+    ///
+    /// *func* is called with the Python object and must return a 2-tuple
+    /// ``(tag: str, data)`` where *data* is any YAML-serialisable value
+    /// (``str``, ``int``, ``float``, ``bool``, ``None``, ``dict``, or ``list``).
+    ///
+    /// Dumpers are checked in registration order; the first ``isinstance`` match
+    /// wins, so register more specific types before base types.
+    fn add_dumper(&mut self, py_type: Py<PyAny>, func: Py<PyAny>) {
+        self.dumpers.push((py_type, func));
+    }
+}
+
+impl Schema {
+    /// Derive a ``TagPolicy`` from the registered loaders.
+    fn tag_policy(&self) -> Option<TagPolicy> {
+        if self.raw_tags.is_empty() {
+            None
+        } else {
+            Some(TagPolicy {
+                raw_tags: self.raw_tags.clone(),
+            })
+        }
+    }
+}
 
 // ─── Scalar conversion ────────────────────────────────────────────────────────
 
@@ -32,10 +130,28 @@ fn scalar_to_py(py: Python<'_>, v: &ScalarValue) -> PyResult<Py<PyAny>> {
 
 /// Convert a `YamlScalar` to Python, applying tag-specific conversions first.
 ///
+/// - Schema loader for the tag (if any) fires first.
 /// - `!!binary` → `bytes` (base64-decoded)
 /// - `!!timestamp` → `datetime.datetime` or `datetime.date`
 /// - everything else → delegated to `scalar_to_py`
-fn scalar_to_py_with_tag(py: Python<'_>, s: &YamlScalar) -> PyResult<Py<PyAny>> {
+fn scalar_to_py_with_tag(
+    py: Python<'_>,
+    s: &YamlScalar,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
+    // Schema loader takes priority over all built-in tag handlers.
+    if let Some(schema_bound) = schema {
+        let loader = {
+            let sr = schema_bound.borrow();
+            s.tag
+                .as_deref()
+                .and_then(|t| sr.loaders.get(t).map(|f| f.clone_ref(py)))
+        };
+        if let Some(loader_fn) = loader {
+            let default_val = scalar_to_py(py, &s.value)?;
+            return loader_fn.bind(py).call1((default_val,)).map(|v| v.unbind());
+        }
+    }
     match s.tag.as_deref() {
         Some("!!binary") | Some("tag:yaml.org,2002:binary") => {
             let raw = s
@@ -142,21 +258,98 @@ fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
     Ok(real as usize)
 }
 
-fn node_to_py(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
+fn node_to_py(
+    py: Python<'_>,
+    node: &YamlNode,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
-        YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s),
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m.clone(), DocMeta::none()),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s.clone(), DocMeta::none()),
-        YamlNode::Alias { resolved, .. } => node_to_py(py, resolved),
+        YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s, schema),
+        YamlNode::Mapping(m) => {
+            let tag = m.tag.clone();
+            let py_obj = mapping_to_py_obj(py, m.clone(), DocMeta::none(), schema)?;
+            apply_loader(py, schema, tag.as_deref(), py_obj)
+        }
+        YamlNode::Sequence(s) => {
+            let tag = s.tag.clone();
+            let py_obj = sequence_to_py_obj(py, s.clone(), DocMeta::none(), schema)?;
+            apply_loader(py, schema, tag.as_deref(), py_obj)
+        }
+        YamlNode::Alias { resolved, .. } => node_to_py(py, resolved, schema),
     }
 }
 
-/// Convert a Python object to a YamlNode.
-fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
-    if obj.is_none() {
-        return Ok(plain_scalar(ScalarValue::Null));
+/// If *schema* has a loader for *tag*, call it with *py_obj* and return the result.
+/// Otherwise return *py_obj* unchanged.
+fn apply_loader(
+    py: Python<'_>,
+    schema: Option<&Bound<'_, Schema>>,
+    tag: Option<&str>,
+    py_obj: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    if let (Some(schema_bound), Some(t)) = (schema, tag) {
+        let loader = {
+            let sr = schema_bound.borrow();
+            sr.loaders.get(t).map(|f| f.clone_ref(py))
+        };
+        if let Some(loader_fn) = loader {
+            return loader_fn.bind(py).call1((py_obj,)).map(|v| v.unbind());
+        }
     }
+    Ok(py_obj)
+}
+
+/// Convert a Python primitive (None/bool/int/float/str) to a scalar YamlNode.
+/// Returns None if *obj* is not a recognised primitive type.
+fn py_primitive_to_scalar(obj: &Bound<'_, PyAny>) -> Option<YamlNode> {
+    if obj.is_none() {
+        return Some(plain_scalar(ScalarValue::Null));
+    }
+    // bool must come before i64 (Python bool is a subtype of int)
+    if let Ok(b) = obj.extract::<bool>() {
+        return Some(plain_scalar(ScalarValue::Bool(b)));
+    }
+    if let Ok(n) = obj.extract::<i64>() {
+        return Some(plain_scalar(ScalarValue::Int(n)));
+    }
+    if let Ok(f) = obj.extract::<f64>() {
+        return Some(plain_scalar(ScalarValue::Float(f)));
+    }
+    if let Ok(s) = obj.extract::<String>() {
+        return Some(plain_scalar(ScalarValue::Str(s)));
+    }
+    None
+}
+
+/// Convert a Python object to a YamlNode.
+fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyResult<YamlNode> {
+    // Schema dumpers are checked first (before all built-in type handling).
+    if let Some(schema_bound) = schema {
+        let match_result: Option<(Py<PyAny>, Py<PyAny>)> = {
+            let sr = schema_bound.borrow();
+            sr.dumpers.iter().find_map(|(py_type, fn_obj)| {
+                if obj.is_instance(py_type.bind(obj.py())).unwrap_or(false) {
+                    Some((py_type.clone_ref(obj.py()), fn_obj.clone_ref(obj.py())))
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some((_, dumper_fn)) = match_result {
+            let call_result = dumper_fn.bind(obj.py()).call1((obj,))?;
+            let (tag, data): (String, Bound<'_, PyAny>) = call_result.extract()?;
+            let mut node = py_to_node(&data, schema)?;
+            match &mut node {
+                YamlNode::Scalar(s) => s.tag = Some(tag),
+                YamlNode::Mapping(m) => m.tag = Some(tag),
+                YamlNode::Sequence(s) => s.tag = Some(tag),
+                _ => {}
+            }
+            return Ok(node);
+        }
+    }
+
     // Check our custom types before primitives (PyYamlMapping extends PyDict,
     // so the PyDict check below would also match — order matters here).
     if let Ok(m) = obj.extract::<PyYamlMapping>() {
@@ -168,18 +361,8 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
         return Ok(sc.inner);
     }
-    // Primitives — bool must come before i64 (bool is a subtype of int in Python)
-    if let Ok(b) = obj.extract::<bool>() {
-        return Ok(plain_scalar(ScalarValue::Bool(b)));
-    }
-    if let Ok(n) = obj.extract::<i64>() {
-        return Ok(plain_scalar(ScalarValue::Int(n)));
-    }
-    if let Ok(f) = obj.extract::<f64>() {
-        return Ok(plain_scalar(ScalarValue::Float(f)));
-    }
-    if let Ok(s) = obj.extract::<String>() {
-        return Ok(plain_scalar(ScalarValue::Str(s)));
+    if let Some(node) = py_primitive_to_scalar(obj) {
+        return Ok(node);
     }
     // bytes → !!binary scalar (base64-encoded)
     if let Ok(b) = obj.extract::<Vec<u8>>() {
@@ -216,14 +399,16 @@ fn py_to_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
-            mapping.entries.insert(key, plain_entry(py_to_node(&v)?));
+            mapping
+                .entries
+                .insert(key, plain_entry(py_to_node(&v, schema)?));
         }
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let mut seq = YamlSequence::new();
         for item in l.iter() {
-            seq.items.push(plain_item(py_to_node(&item)?));
+            seq.items.push(plain_item(py_to_node(&item, schema)?));
         }
         return Ok(YamlNode::Sequence(seq));
     }
@@ -254,10 +439,15 @@ impl DocMeta {
 }
 
 /// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
-fn node_to_doc(py: Python<'_>, node: YamlNode, meta: DocMeta) -> PyResult<Py<PyAny>> {
+fn node_to_doc(
+    py: Python<'_>,
+    node: YamlNode,
+    meta: DocMeta,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
     match node {
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, meta),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, meta),
+        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, meta, schema),
+        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, meta, schema),
         other => Ok(PyYamlScalar {
             inner: other,
             explicit_start: meta.explicit_start,
@@ -276,7 +466,10 @@ fn node_to_doc(py: Python<'_>, node: YamlNode, meta: DocMeta) -> PyResult<Py<PyA
 /// For mappings and sequences, current values come from the parent dict/list (so that
 /// mutations made to nested objects after they were returned from __getitem__ are visible),
 /// while key ordering and comment metadata come from `inner`.
-fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
+fn extract_yaml_node(
+    obj: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<YamlNode> {
     if let Ok(bound_m) = obj.cast::<PyYamlMapping>() {
         let borrow = bound_m.borrow();
         let dict_part = bound_m.as_super();
@@ -299,21 +492,14 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                         Some(v) => v,
                         None => continue, // key was removed; skip
                     };
-                    extract_yaml_node(&py_val)?
+                    extract_yaml_node(&py_val, schema)?
                 }
             };
             mapping.entries.insert(
                 k.clone(),
                 YamlEntry {
                     value: node,
-                    comment_before: e.comment_before.clone(),
-                    comment_inline: e.comment_inline.clone(),
-                    blank_lines_before: e.blank_lines_before,
-                    key_style: e.key_style,
-                    key_anchor: e.key_anchor.clone(),
-                    key_alias: e.key_alias.clone(),
-                    key_tag: e.key_tag.clone(),
-                    key_node: e.key_node.clone(),
+                    ..e.clone()
                 },
             );
         }
@@ -336,14 +522,12 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
                 }
                 _ => {
                     let py_val = list_part.get_item(i)?;
-                    extract_yaml_node(&py_val)?
+                    extract_yaml_node(&py_val, schema)?
                 }
             };
             seq.items.push(YamlItem {
                 value: node,
-                comment_before: borrow.inner.items[i].comment_before.clone(),
-                comment_inline: borrow.inner.items[i].comment_inline.clone(),
-                blank_lines_before: borrow.inner.items[i].blank_lines_before,
+                ..borrow.inner.items[i].clone()
             });
         }
         return Ok(YamlNode::Sequence(seq));
@@ -352,20 +536,8 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
         return Ok(sc.inner);
     }
     // Scalars passed directly (int, str, etc.)
-    if obj.is_none() {
-        return Ok(plain_scalar(ScalarValue::Null));
-    }
-    if let Ok(b) = obj.extract::<bool>() {
-        return Ok(plain_scalar(ScalarValue::Bool(b)));
-    }
-    if let Ok(n) = obj.extract::<i64>() {
-        return Ok(plain_scalar(ScalarValue::Int(n)));
-    }
-    if let Ok(f) = obj.extract::<f64>() {
-        return Ok(plain_scalar(ScalarValue::Float(f)));
-    }
-    if let Ok(s) = obj.extract::<String>() {
-        return Ok(plain_scalar(ScalarValue::Str(s)));
+    if let Some(node) = py_primitive_to_scalar(obj) {
+        return Ok(node);
     }
     // Plain dict fallback — no comment/style metadata, but values are correct.
     // Uses extract_yaml_node recursively so nested YamlMapping/YamlSequence
@@ -376,16 +548,21 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
             let key: String = k.extract()?;
             mapping
                 .entries
-                .insert(key, plain_entry(extract_yaml_node(&v)?));
+                .insert(key, plain_entry(extract_yaml_node(&v, schema)?));
         }
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let mut seq = YamlSequence::new();
         for item in l.iter() {
-            seq.items.push(plain_item(extract_yaml_node(&item)?));
+            seq.items
+                .push(plain_item(extract_yaml_node(&item, schema)?));
         }
         return Ok(YamlNode::Sequence(seq));
+    }
+    // Last resort: try schema dumpers before giving up.
+    if schema.is_some() {
+        return py_to_node(obj, schema);
     }
     Err(PyRuntimeError::new_err(format!(
         "Cannot convert {obj} to a YAML node; \
@@ -398,13 +575,18 @@ fn extract_yaml_node(obj: &Bound<'_, PyAny>) -> PyResult<YamlNode> {
 
 /// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
 /// The parent dict is populated with the mapping's entries.
-fn mapping_to_py_obj(py: Python<'_>, m: types::YamlMapping, meta: DocMeta) -> PyResult<Py<PyAny>> {
+fn mapping_to_py_obj(
+    py: Python<'_>,
+    m: types::YamlMapping,
+    meta: DocMeta,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
     // Build Python values before moving m into the struct.
     let py_pairs: Vec<(String, Py<PyAny>)> = m
         .entries
         .iter()
         .map(|(k, e)| {
-            let v = node_to_py(py, &e.value)?;
+            let v = node_to_py(py, &e.value, schema)?;
             Ok((k.clone(), v))
         })
         .collect::<PyResult<_>>()?;
@@ -438,12 +620,13 @@ fn sequence_to_py_obj(
     py: Python<'_>,
     s: types::YamlSequence,
     meta: DocMeta,
+    schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
     // Build Python values before moving s into the struct.
     let py_items: Vec<Py<PyAny>> = s
         .items
         .iter()
-        .map(|item| node_to_py(py, &item.value))
+        .map(|item| node_to_py(py, &item.value, schema))
         .collect::<PyResult<_>>()?;
 
     let obj: Py<PyYamlSequence> = Py::new(
@@ -559,8 +742,10 @@ fn write_to_stream(stream: &Bound<'_, PyAny>, text: &str) -> PyResult<()> {
 
 // ─── Parse / emit helpers ─────────────────────────────────────────────────────
 
-fn parse_text(text: &str) -> PyResult<ParseOutput> {
-    parse_str(text).map_err(|e| PyRuntimeError::new_err(format!("Parse error: {e}")))
+fn parse_text(text: &str, schema: Option<&Schema>) -> PyResult<ParseOutput> {
+    let policy = schema.and_then(Schema::tag_policy);
+    parse_str(text, policy.as_ref())
+        .map_err(|e| PyRuntimeError::new_err(format!("Parse error: {e}")))
 }
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
@@ -810,20 +995,31 @@ impl PyYamlMapping {
     // ── Mutations (must sync parent dict) ────────────────────────────────────
 
     fn __setitem__(slf: &Bound<'_, Self>, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let node = py_to_node(value)?;
         let py = slf.py();
+        // For unknown types (custom Python objects), store an opaque empty-mapping
+        // placeholder in inner so that extract_yaml_node reads the real value from
+        // the parent dict at dump time (where the schema's dumpers can handle it).
+        let (node, py_val) = match py_to_node(value, None) {
+            Ok(n) => {
+                let pv = node_to_py(py, &n, None)?;
+                (n, pv)
+            }
+            Err(_) => (
+                YamlNode::Mapping(types::YamlMapping::new()),
+                value.clone().unbind(),
+            ),
+        };
         {
             let mut borrow = slf.borrow_mut();
             if let Some(entry) = borrow.inner.entries.get_mut(key) {
-                entry.value = node.clone();
+                entry.value = node;
             } else {
                 borrow
                     .inner
                     .entries
-                    .insert(key.to_owned(), plain_entry(node.clone()));
+                    .insert(key.to_owned(), plain_entry(node));
             }
         }
-        let py_val = node_to_py(py, &node)?;
         slf.as_super().set_item(key, py_val.bind(py))?;
         Ok(())
     }
@@ -854,7 +1050,7 @@ impl PyYamlMapping {
         match entry {
             Some(e) => {
                 slf.as_super().del_item(key)?;
-                node_to_py(py, &e.value)
+                node_to_py(py, &e.value, None)
             }
             None => match default {
                 Some(d) => Ok(d),
@@ -895,8 +1091,16 @@ impl PyYamlMapping {
                 let key = key?;
                 let val = other.get_item(&key)?;
                 let k: String = key.extract()?;
-                let node = py_to_node(&val)?;
-                let py_val = node_to_py(py, &node)?;
+                let (node, py_val) = match py_to_node(&val, None) {
+                    Ok(n) => {
+                        let pv = node_to_py(py, &n, None)?;
+                        (n, pv)
+                    }
+                    Err(_) => (
+                        YamlNode::Mapping(types::YamlMapping::new()),
+                        val.clone().unbind(),
+                    ),
+                };
                 slf.borrow_mut()
                     .inner
                     .entries
@@ -908,8 +1112,16 @@ impl PyYamlMapping {
         for item in other.try_iter()? {
             let item = item?;
             let (k, val): (String, Bound<'_, PyAny>) = item.extract()?;
-            let node = py_to_node(&val)?;
-            let py_val = node_to_py(py, &node)?;
+            let (node, py_val) = match py_to_node(&val, None) {
+                Ok(n) => {
+                    let pv = node_to_py(py, &n, None)?;
+                    (n, pv)
+                }
+                Err(_) => (
+                    YamlNode::Mapping(types::YamlMapping::new()),
+                    val.clone().unbind(),
+                ),
+            };
             slf.borrow_mut()
                 .inner
                 .entries
@@ -929,16 +1141,29 @@ impl PyYamlMapping {
         let contains = slf.borrow().inner.entries.contains_key(key);
         if !contains {
             let default_val = default.unwrap_or_else(|| py.None());
-            let node = py_to_node(default_val.bind(py))?;
-            let py_val = node_to_py(py, &node)?;
+            let dv = default_val.bind(py);
+            let (node, py_val) = match py_to_node(dv, None) {
+                Ok(n) => {
+                    let pv = node_to_py(py, &n, None)?;
+                    (n, pv)
+                }
+                Err(_) => (
+                    YamlNode::Mapping(types::YamlMapping::new()),
+                    default_val.clone_ref(py),
+                ),
+            };
             slf.borrow_mut()
                 .inner
                 .entries
                 .insert(key.to_owned(), plain_entry(node));
             slf.as_super().set_item(key, py_val.bind(py))?;
         }
-        let borrow = slf.borrow();
-        node_to_py(py, &borrow.inner.entries[key].value)
+        // Return the real Python value from the parent dict (not node_to_py, which
+        // would return an opaque placeholder for custom types stored via __setitem__).
+        slf.as_super()
+            .get_item(key)?
+            .ok_or_else(|| PyKeyError::new_err(key.to_owned()))
+            .map(|v| v.unbind())
     }
 
     #[pyo3(signature = (key=None, reverse=false, recursive=false))]
@@ -960,7 +1185,7 @@ impl PyYamlMapping {
             dict_part.clear();
             let borrow = slf.borrow();
             for (k, e) in &borrow.inner.entries {
-                let py_val = node_to_py(py, &e.value)?;
+                let py_val = node_to_py(py, &e.value, None)?;
                 dict_part.set_item(k, py_val.bind(py))?;
             }
         } else {
@@ -1073,7 +1298,7 @@ impl PyYamlMapping {
     /// Raises KeyError if the key is absent.
     fn get_node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.inner.entries.get(key) {
-            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none())?),
+            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
         }
     }
@@ -1144,14 +1369,22 @@ impl PyYamlSequence {
     // ── Mutations (must sync parent list) ────────────────────────────────────
 
     fn __setitem__(slf: &Bound<'_, Self>, key: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let node = py_to_node(value)?;
         let py = slf.py();
         let real_idx = resolve_seq_idx(key, slf.borrow().inner.items.len())?;
+        let (node, py_val) = match py_to_node(value, None) {
+            Ok(n) => {
+                let pv = node_to_py(py, &n, None)?;
+                (n, pv)
+            }
+            Err(_) => (
+                YamlNode::Mapping(types::YamlMapping::new()),
+                value.clone().unbind(),
+            ),
+        };
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items[real_idx as usize].value = node.clone();
+            borrow.inner.items[real_idx as usize].value = node;
         }
-        let py_val = node_to_py(py, &node)?;
         slf.as_super()
             .set_item(real_idx as usize, py_val.bind(py))?;
         Ok(())
@@ -1174,20 +1407,37 @@ impl PyYamlSequence {
     }
 
     fn append(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let node = py_to_node(value)?;
         let py = slf.py();
+        let (node, py_val) = match py_to_node(value, None) {
+            Ok(n) => {
+                let pv = node_to_py(py, &n, None)?;
+                (n, pv)
+            }
+            Err(_) => (
+                YamlNode::Mapping(types::YamlMapping::new()),
+                value.clone().unbind(),
+            ),
+        };
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items.push(plain_item(node.clone()));
+            borrow.inner.items.push(plain_item(node));
         }
-        let py_val = node_to_py(py, &node)?;
         slf.as_super().append(py_val.bind(py))?;
         Ok(())
     }
 
     fn insert(slf: &Bound<'_, Self>, idx: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        let node = py_to_node(value)?;
         let py = slf.py();
+        let (node, py_val_insert) = match py_to_node(value, None) {
+            Ok(n) => {
+                let pv = node_to_py(py, &n, None)?;
+                (n, pv)
+            }
+            Err(_) => (
+                YamlNode::Mapping(types::YamlMapping::new()),
+                value.clone().unbind(),
+            ),
+        };
         let real_idx = {
             let borrow = slf.borrow();
             let len = borrow.inner.items.len() as isize;
@@ -1199,13 +1449,9 @@ impl PyYamlSequence {
         };
         {
             let mut borrow = slf.borrow_mut();
-            borrow
-                .inner
-                .items
-                .insert(real_idx, plain_item(node.clone()));
+            borrow.inner.items.insert(real_idx, plain_item(node));
         }
-        let py_val = node_to_py(py, &node)?;
-        slf.as_super().insert(real_idx, py_val.bind(py))?;
+        slf.as_super().insert(real_idx, py_val_insert.bind(py))?;
         Ok(())
     }
 
@@ -1232,7 +1478,7 @@ impl PyYamlSequence {
         let empty = PyList::empty(py);
         slf.as_super()
             .set_slice(real_idx as usize, real_idx as usize + 1, empty.as_any())?;
-        node_to_py(py, &node)
+        node_to_py(py, &node, None)
     }
 
     fn remove(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1241,7 +1487,7 @@ impl PyYamlSequence {
             let borrow = slf.borrow();
             let mut found = None;
             for (i, item) in borrow.inner.items.iter().enumerate() {
-                let v = node_to_py(py, &item.value)?;
+                let v = node_to_py(py, &item.value, None)?;
                 if v.bind(py).eq(value)? {
                     found = Some(i);
                     break;
@@ -1263,14 +1509,22 @@ impl PyYamlSequence {
         let mut pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
         if let Ok(other) = iterable.extract::<PyYamlSequence>() {
             for item in &other.inner.items {
-                let py_val = node_to_py(py, &item.value)?;
+                let py_val = node_to_py(py, &item.value, None)?;
                 pairs.push((plain_item(item.value.clone()), py_val));
             }
         } else {
             for py_item in iterable.try_iter()? {
                 let py_item = py_item?;
-                let node = py_to_node(&py_item)?;
-                let py_val = node_to_py(py, &node)?;
+                let (node, py_val) = match py_to_node(&py_item, None) {
+                    Ok(n) => {
+                        let pv = node_to_py(py, &n, None)?;
+                        (n, pv)
+                    }
+                    Err(_) => (
+                        YamlNode::Mapping(types::YamlMapping::new()),
+                        py_item.clone().unbind(),
+                    ),
+                };
                 pairs.push((plain_item(node), py_val));
             }
         }
@@ -1482,30 +1736,48 @@ fn doc_meta(out: &mut ParseOutput, i: usize) -> DocMeta {
 }
 
 #[pyfunction]
-fn load(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (stream, *, schema=None))]
+fn load(
+    py: Python<'_>,
+    stream: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<Py<PyAny>> {
+    // `Py<T>::bind()` returns `&Bound<>`, so `sb` is `Option<&Bound<'_, Schema>>` (Copy).
     let text = read_stream(stream)?;
-    let mut out = parse_text(&text)?;
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let mut out = parse_text(&text, sb_borrow.as_deref())?;
     if out.docs.is_empty() {
         return Ok(py.None());
     }
     let meta = doc_meta(&mut out, 0);
-    node_to_doc(py, out.docs.swap_remove(0), meta)
+    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
 }
 
 #[pyfunction]
-fn loads(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let mut out = parse_text(text)?;
+#[pyo3(signature = (text, *, schema=None))]
+fn loads(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let mut out = parse_text(text, sb_borrow.as_deref())?;
     if out.docs.is_empty() {
         return Ok(py.None());
     }
     let meta = doc_meta(&mut out, 0);
-    node_to_doc(py, out.docs.swap_remove(0), meta)
+    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
 }
 
 #[pyfunction]
-fn load_all(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (stream, *, schema=None))]
+fn load_all(
+    py: Python<'_>,
+    stream: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<Py<PyAny>> {
     let text = read_stream(stream)?;
-    let mut out = parse_text(&text)?;
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let mut out = parse_text(&text, sb_borrow.as_deref())?;
     let pydocs: Vec<Py<PyAny>> = out
         .docs
         .drain(..)
@@ -1517,15 +1789,18 @@ fn load_all(py: Python<'_>, stream: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
                 yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
                 tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
             };
-            node_to_doc(py, d, meta)
+            node_to_doc(py, d, meta, sb)
         })
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
 
 #[pyfunction]
-fn loads_all(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let mut out = parse_text(text)?;
+#[pyo3(signature = (text, *, schema=None))]
+fn loads_all(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let mut out = parse_text(text, sb_borrow.as_deref())?;
     let pydocs: Vec<Py<PyAny>> = out
         .docs
         .drain(..)
@@ -1537,7 +1812,7 @@ fn loads_all(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
                 yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
                 tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
             };
-            node_to_doc(py, d, meta)
+            node_to_doc(py, d, meta, sb)
         })
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
@@ -1597,8 +1872,11 @@ fn get_tag_directives_flag(obj: &Bound<'_, PyAny>) -> Vec<(String, String)> {
     vec![]
 }
 
-fn emit_doc_to_string(doc: &Bound<'_, PyAny>) -> PyResult<String> {
-    let node = extract_yaml_node(doc)?;
+fn emit_doc_to_string(
+    doc: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<String> {
+    let node = extract_yaml_node(doc, schema)?;
     Ok(emit_docs(
         std::slice::from_ref(&node),
         &[get_explicit_start_flag(doc)],
@@ -1609,21 +1887,36 @@ fn emit_doc_to_string(doc: &Bound<'_, PyAny>) -> PyResult<String> {
 }
 
 #[pyfunction]
-fn dump(doc: &Bound<'_, PyAny>, stream: &Bound<'_, PyAny>) -> PyResult<()> {
-    write_to_stream(stream, &emit_doc_to_string(doc)?)
+#[pyo3(signature = (doc, stream, *, schema=None))]
+fn dump(
+    doc: &Bound<'_, PyAny>,
+    stream: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<()> {
+    let sb = schema.as_ref().map(|s| s.bind(doc.py()));
+    write_to_stream(stream, &emit_doc_to_string(doc, sb)?)
 }
 
 #[pyfunction]
-fn dumps(doc: &Bound<'_, PyAny>) -> PyResult<String> {
-    emit_doc_to_string(doc)
+#[pyo3(signature = (doc, *, schema=None))]
+fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>) -> PyResult<String> {
+    let sb = schema.as_ref().map(|s| s.bind(doc.py()));
+    emit_doc_to_string(doc, sb)
 }
 
 #[pyfunction]
-fn dump_all(_py: Python<'_>, docs: &Bound<'_, PyAny>, stream: &Bound<'_, PyAny>) -> PyResult<()> {
+#[pyo3(signature = (docs, stream, *, schema=None))]
+fn dump_all(
+    py: Python<'_>,
+    docs: &Bound<'_, PyAny>,
+    stream: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<()> {
+    let sb = schema.as_ref().map(|s| s.bind(py));
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
     let nodes: Vec<YamlNode> = items
         .iter()
-        .map(|i| extract_yaml_node(i))
+        .map(|i| extract_yaml_node(i, sb))
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
@@ -1634,11 +1927,17 @@ fn dump_all(_py: Python<'_>, docs: &Bound<'_, PyAny>, stream: &Bound<'_, PyAny>)
 }
 
 #[pyfunction]
-fn dumps_all(_py: Python<'_>, docs: &Bound<'_, PyAny>) -> PyResult<String> {
+#[pyo3(signature = (docs, *, schema=None))]
+fn dumps_all(
+    py: Python<'_>,
+    docs: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<String> {
+    let sb = schema.as_ref().map(|s| s.bind(py));
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
     let nodes: Vec<YamlNode> = items
         .iter()
-        .map(|i| extract_yaml_node(i))
+        .map(|i| extract_yaml_node(i, sb))
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
@@ -1651,6 +1950,7 @@ fn dumps_all(_py: Python<'_>, docs: &Bound<'_, PyAny>) -> PyResult<String> {
 /// The yarutsk module.
 #[pymodule]
 fn yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Schema>()?;
     m.add_class::<PyYamlScalar>()?;
     m.add_class::<PyYamlMapping>()?;
     m.add_class::<PyYamlSequence>()?;

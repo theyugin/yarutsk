@@ -14,7 +14,27 @@ from typing import Any, Callable
 from collections.abc import KeysView
 
 import yarutsk
-from yarutsk import YamlMapping, YamlScalar, YamlSequence
+from yarutsk import Schema, YamlMapping, YamlScalar, YamlSequence
+
+
+# ── Schema ────────────────────────────────────────────────────────────────────
+
+
+def check_schema_construction() -> None:
+    schema: Schema = yarutsk.Schema()
+    _ = schema
+
+
+def check_schema_add_loader() -> None:
+    schema = yarutsk.Schema()
+    schema.add_loader("!point", lambda d: d)
+    schema.add_loader("!!int", lambda raw: int(str(raw), 0))
+
+
+def check_schema_add_dumper() -> None:
+    schema = yarutsk.Schema()
+    schema.add_dumper(int, lambda n: ("!!int", str(n)))
+    schema.add_dumper(list, lambda lst: ("!!seq", lst))
 
 
 # ── load / loads ──────────────────────────────────────────────────────────────
@@ -50,6 +70,28 @@ def check_loads_all() -> None:
     _ = docs
 
 
+def check_load_with_schema() -> None:
+    schema = yarutsk.Schema()
+    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
+        io.StringIO("key: val"), schema=schema
+    )
+    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads(
+        "key: val", schema=schema
+    )
+    _ = doc, doc2
+
+
+def check_load_all_with_schema() -> None:
+    schema = yarutsk.Schema()
+    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.load_all(
+        io.StringIO("a: 1"), schema=schema
+    )
+    docs2: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all(
+        "a: 1", schema=schema
+    )
+    _ = docs, docs2
+
+
 # ── dump / dumps ──────────────────────────────────────────────────────────────
 
 
@@ -75,6 +117,22 @@ def check_dumps_all_to_string(
     _ = text
 
 
+def check_dump_with_schema(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
+    schema = yarutsk.Schema()
+    yarutsk.dump(doc, io.StringIO(), schema=schema)
+    text: str = yarutsk.dumps(doc, schema=schema)
+    _ = text
+
+
+def check_dump_all_with_schema(
+    docs: list[YamlMapping | YamlSequence | YamlScalar],
+) -> None:
+    schema = yarutsk.Schema()
+    yarutsk.dump_all(docs, io.StringIO(), schema=schema)
+    text: str = yarutsk.dumps_all(docs, schema=schema)
+    _ = text
+
+
 # ── None-guard required before using the document ────────────────────────────
 
 
@@ -86,11 +144,49 @@ def check_none_narrowing() -> str:
     return yarutsk.dumps(doc)
 
 
-def check_scalar(s: YamlScalar) -> None:
+# ── YamlScalar ────────────────────────────────────────────────────────────────
+
+
+def check_scalar_value(s: YamlScalar) -> None:
     v: int | float | bool | str | None = s.value
     d: int | float | bool | str | None = s.to_dict()
     eq: bool = s == 42
     _ = v, d, eq
+
+
+def check_scalar_style(s: YamlScalar) -> None:
+    style: str = s.style
+    s.style = "single"
+    s.style = "double"
+    _ = style
+
+
+def check_scalar_document_markers(s: YamlScalar) -> None:
+    start: bool = s.explicit_start
+    end: bool = s.explicit_end
+    s.explicit_start = True
+    s.explicit_end = False
+    _ = start, end
+
+
+def check_scalar_tag(s: YamlScalar) -> None:
+    tag: str | None = s.get_tag()
+    s.set_tag("!!str")
+    s.set_tag(None)
+    _ = tag
+
+
+def check_scalar_yaml_version(s: YamlScalar) -> None:
+    ver: str | None = s.get_yaml_version()
+    s.set_yaml_version("1.2")
+    s.set_yaml_version(None)
+    _ = ver
+
+
+def check_scalar_tag_directives(s: YamlScalar) -> None:
+    dirs: list[tuple[str, str]] = s.get_tag_directives()
+    s.set_tag_directives([("!", "!foo!"), ("!bar!", "tag:example.com,2024:")])
+    _ = dirs
 
 
 # ── YamlMapping interface ─────────────────────────────────────────────────────
@@ -140,6 +236,45 @@ def check_mapping_sort(m: YamlMapping) -> None:
     m.sort_keys(reverse=True)
     key_fn: Callable[[str], int] = len
     m.sort_keys(key=key_fn, reverse=True, recursive=True)
+
+
+def check_mapping_document_markers(m: YamlMapping) -> None:
+    start: bool = m.explicit_start
+    end: bool = m.explicit_end
+    m.explicit_start = True
+    m.explicit_end = False
+    _ = start, end
+
+
+def check_mapping_tag(m: YamlMapping) -> None:
+    tag: str | None = m.get_tag()
+    m.set_tag("!!map")
+    m.set_tag(None)
+    _ = tag
+
+
+def check_mapping_yaml_version(m: YamlMapping) -> None:
+    ver: str | None = m.get_yaml_version()
+    m.set_yaml_version("1.2")
+    m.set_yaml_version(None)
+    _ = ver
+
+
+def check_mapping_tag_directives(m: YamlMapping) -> None:
+    dirs: list[tuple[str, str]] = m.get_tag_directives()
+    m.set_tag_directives([("!", "!foo!")])
+    _ = dirs
+
+
+def check_mapping_get_node(m: YamlMapping) -> None:
+    node: YamlMapping | YamlSequence | YamlScalar = m.get_node("key")
+    _ = node
+
+
+def check_mapping_set_scalar_style(m: YamlMapping) -> None:
+    m.set_scalar_style("key", "single")
+    m.set_scalar_style("key", "double")
+    m.set_scalar_style("key", "plain")
 
 
 # ── YamlSequence interface ────────────────────────────────────────────────────
@@ -193,6 +328,34 @@ def check_sequence_sort(s: YamlSequence) -> None:
         return len(str(v))
 
     s.sort(key=key_fn, reverse=True)
+
+
+def check_sequence_document_markers(s: YamlSequence) -> None:
+    start: bool = s.explicit_start
+    end: bool = s.explicit_end
+    s.explicit_start = True
+    s.explicit_end = False
+    _ = start, end
+
+
+def check_sequence_tag(s: YamlSequence) -> None:
+    tag: str | None = s.get_tag()
+    s.set_tag("!!seq")
+    s.set_tag(None)
+    _ = tag
+
+
+def check_sequence_yaml_version(s: YamlSequence) -> None:
+    ver: str | None = s.get_yaml_version()
+    s.set_yaml_version("1.2")
+    s.set_yaml_version(None)
+    _ = ver
+
+
+def check_sequence_tag_directives(s: YamlSequence) -> None:
+    dirs: list[tuple[str, str]] = s.get_tag_directives()
+    s.set_tag_directives([("!", "!foo!")])
+    _ = dirs
 
 
 # ── Type errors that mypy should catch (kept as comments to document intent) ──

@@ -196,10 +196,14 @@ fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
             out.push('\n');
         }
         YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
-            // Block mapping value: anchor (if any) + inline comment, then content below.
+            // Block mapping value: anchor + tag (if any) + inline comment, then content below.
             if let Some(anchor) = &nested.anchor {
                 out.push_str(" &");
                 out.push_str(anchor);
+            }
+            if let Some(tag) = &nested.tag {
+                out.push(' ');
+                out.push_str(&format_tag(tag));
             }
             push_inline_comment(entry.comment_inline.as_deref(), out);
             out.push('\n');
@@ -215,10 +219,14 @@ fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
             out.push('\n');
         }
         YamlNode::Sequence(nested) if !nested.items.is_empty() => {
-            // Block sequence value: anchor (if any) + inline comment, then content below.
+            // Block sequence value: anchor + tag (if any) + inline comment, then content below.
             if let Some(anchor) = &nested.anchor {
                 out.push_str(" &");
                 out.push_str(anchor);
+            }
+            if let Some(tag) = &nested.tag {
+                out.push(' ');
+                out.push_str(&format_tag(tag));
             }
             push_inline_comment(entry.comment_inline.as_deref(), out);
             out.push('\n');
@@ -343,11 +351,19 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                 out.push('\n');
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("# ");
-                    out.push_str(ci);
+                if nested.tag.is_some() || item.comment_inline.is_some() {
+                    // Tagged or commented: emit tag/comment on the `-` line, content below.
+                    if let Some(tag) = &nested.tag {
+                        out.push_str(&format_tag(tag));
+                        if item.comment_inline.is_some() {
+                            out.push(' ');
+                        }
+                    }
+                    if let Some(ci) = &item.comment_inline {
+                        out.push_str("# ");
+                        out.push_str(ci);
+                    }
                     out.push('\n');
-                    out.push_str(&indent_str(indent + 2));
                     emit_mapping(nested, indent + 2, out);
                 } else {
                     // First entry inline with `-`, rest indented
@@ -363,9 +379,18 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                 out.push('\n');
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
-                if let Some(ci) = &item.comment_inline {
-                    out.push_str("# ");
-                    out.push_str(ci);
+                if nested.tag.is_some() || item.comment_inline.is_some() {
+                    // Tagged or commented: emit tag/comment on the `-` line, content below.
+                    if let Some(tag) = &nested.tag {
+                        out.push_str(&format_tag(tag));
+                        if item.comment_inline.is_some() {
+                            out.push(' ');
+                        }
+                    }
+                    if let Some(ci) = &item.comment_inline {
+                        out.push_str("# ");
+                        out.push_str(ci);
+                    }
                     out.push('\n');
                     emit_sequence(nested, indent + 2, out);
                 } else {
@@ -406,7 +431,17 @@ fn emit_sequence_flow(s: &YamlSequence, out: &mut String) {
             out.push_str(", ");
         }
         first = false;
-        emit_node_inline(&item.value, 0, out);
+        // A block mapping/sequence nested inside a flow sequence must be emitted as
+        // flow — block syntax is invalid inside flow context.
+        match &item.value {
+            YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
+                emit_mapping_flow(m, out);
+            }
+            YamlNode::Sequence(inner) if inner.style == ContainerStyle::Block => {
+                emit_sequence_flow(inner, out);
+            }
+            node => emit_node_inline(node, 0, out),
+        }
     }
     out.push(']');
 }
@@ -560,16 +595,21 @@ fn emit_block_scalar(
     //
     // Case C — min_leading == 0 and first non-empty line has no leading spaces:
     //   Auto-detection works correctly; no explicit indicator needed.
-    let non_empty_lines: Vec<&&str> = lines.iter().filter(|l| !l.is_empty()).collect();
-    let min_leading: usize = non_empty_lines
-        .iter()
-        .map(|l| l.bytes().take_while(|&b| b == b' ').count())
-        .min()
-        .unwrap_or(0);
-    let first_leading: usize = non_empty_lines
-        .first()
-        .map(|l| l.bytes().take_while(|&b| b == b' ').count())
-        .unwrap_or(0);
+    let mut min_leading = usize::MAX;
+    let mut first_leading: Option<usize> = None;
+    for line in lines.iter().filter(|l| !l.is_empty()) {
+        let n = line.bytes().take_while(|&b| b == b' ').count();
+        if first_leading.is_none() {
+            first_leading = Some(n);
+        }
+        min_leading = min_leading.min(n);
+    }
+    let min_leading: usize = if min_leading == usize::MAX {
+        0
+    } else {
+        min_leading
+    };
+    let first_leading: usize = first_leading.unwrap_or(0);
 
     let (explicit_indicator, content_indent) = if min_leading > 0 {
         // Case A

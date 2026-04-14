@@ -60,6 +60,17 @@ pub enum ScalarValue {
 }
 
 impl ScalarValue {
+    /// Convert to the string used as a Python dict key for this scalar.
+    pub fn to_key_string(&self) -> String {
+        match self {
+            ScalarValue::Null => String::new(),
+            ScalarValue::Bool(b) => b.to_string(),
+            ScalarValue::Int(n) => n.to_string(),
+            ScalarValue::Float(f) => f.to_string(),
+            ScalarValue::Str(s) => s.clone(),
+        }
+    }
+
     /// Parse a raw YAML scalar string into a typed value.
     pub fn from_str(s: &str) -> ScalarValue {
         if s.is_empty() || s == "null" || s == "Null" || s == "NULL" || s == "~" {

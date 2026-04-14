@@ -1,10 +1,18 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::{Event, Parser, Tag};
 use crate::scanner::{Marker, TScalarStyle};
 use crate::types::*;
+
+/// Tags that should bypass built-in ScalarValue coercion in the builder.
+/// When a tag is in this set the scalar value is kept as `ScalarValue::Str`
+/// with the raw source text, so that Python-layer constructors receive the
+/// original YAML string rather than a pre-converted value.
+pub struct TagPolicy {
+    pub raw_tags: HashSet<String>,
+}
 
 pub struct Builder {
     stack: Vec<Frame>,
@@ -283,7 +291,7 @@ impl Builder {
     }
 
     /// Process a single parser event.
-    pub fn process_event(&mut self, ev: Event, mark: Marker) {
+    pub fn process_event(&mut self, ev: Event, mark: Marker, policy: Option<&TagPolicy>) {
         match ev {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
 
@@ -306,12 +314,25 @@ impl Builder {
                     // Only drain before-comments when our parent is a sequence item;
                     // for mapping/root parents, leave comments in pending_before so the
                     // first key scalar can pick them up.
-                    let blank_lines = self.count_blank_lines(mark.line());
-                    let before = self.take_before(mark.line());
+                    //
+                    // For block mappings with a tag (e.g. `- !tag\n  key: val`), the
+                    // parser emits MappingStart at the first KEY line, not at the `!tag`
+                    // line. Use `mark.line() - 1` as the reference so blank-line counting
+                    // reflects the actual `- !tag` line where the item begins.
+                    let ref_line = if !is_flow && tag.is_some() && mark.line() > 0 {
+                        mark.line() - 1
+                    } else {
+                        mark.line()
+                    };
+                    let blank_lines = self.count_blank_lines(ref_line);
+                    let before = self.take_before(ref_line);
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
                         sf.current_comment_before = before;
                         sf.current_blank_lines = blank_lines;
                     }
+                    // Update last_content_line to the container start so the first key
+                    // inside this mapping doesn't see a spurious gap.
+                    self.last_content_line = Some(mark.line() - 1);
                 }
                 let mut mapping = YamlMapping::new();
                 mapping.style = if is_flow {
@@ -351,12 +372,21 @@ impl Builder {
             Event::SequenceStart(anchor_name, tag, is_flow) => {
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
-                    let blank_lines = self.count_blank_lines(mark.line());
-                    let before = self.take_before(mark.line());
+                    // Same adjustment as for MappingStart: when a block sequence with a
+                    // tag appears as a sequence item (`- !tag\n  - item`), the parser
+                    // emits SequenceStart at the first ITEM line, not the `- !tag` line.
+                    let ref_line = if !is_flow && tag.is_some() && mark.line() > 0 {
+                        mark.line() - 1
+                    } else {
+                        mark.line()
+                    };
+                    let blank_lines = self.count_blank_lines(ref_line);
+                    let before = self.take_before(ref_line);
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
                         sf.current_comment_before = before;
                         sf.current_blank_lines = blank_lines;
                     }
+                    self.last_content_line = Some(mark.line() - 1);
                 }
                 let mut seq = YamlSequence::new();
                 seq.style = if is_flow {
@@ -396,34 +426,44 @@ impl Builder {
                     // not null (quoting is explicit intent to represent a string value).
                     _ => ScalarValue::Str(value.clone()),
                 };
-                // Apply tag overrides: standard schema tags coerce the inferred type.
-                let typed = match scalar_tag.as_deref() {
-                    Some("!!str") | Some("tag:yaml.org,2002:str") | Some("!") => {
-                        ScalarValue::Str(value.clone())
-                    }
-                    Some("!!null") | Some("tag:yaml.org,2002:null") => ScalarValue::Null,
-                    Some("!!bool") | Some("tag:yaml.org,2002:bool") => {
-                        match ScalarValue::from_str(&value) {
-                            ScalarValue::Bool(b) => ScalarValue::Bool(b),
-                            _ => typed,
+                // If the tag is in the TagPolicy's raw set, skip all coercion and keep
+                // the scalar as its raw string so Python-layer loaders get the original text.
+                let typed = if policy.is_some_and(|p| {
+                    scalar_tag
+                        .as_deref()
+                        .is_some_and(|t| p.raw_tags.contains(t))
+                }) {
+                    ScalarValue::Str(value.clone())
+                } else {
+                    // Apply tag overrides: standard schema tags coerce the inferred type.
+                    match scalar_tag.as_deref() {
+                        Some("!!str") | Some("tag:yaml.org,2002:str") | Some("!") => {
+                            ScalarValue::Str(value.clone())
                         }
-                    }
-                    Some("!!int") | Some("tag:yaml.org,2002:int") => {
-                        match ScalarValue::from_str(&value) {
-                            ScalarValue::Int(n) => ScalarValue::Int(n),
-                            _ => typed,
+                        Some("!!null") | Some("tag:yaml.org,2002:null") => ScalarValue::Null,
+                        Some("!!bool") | Some("tag:yaml.org,2002:bool") => {
+                            match ScalarValue::from_str(&value) {
+                                ScalarValue::Bool(b) => ScalarValue::Bool(b),
+                                _ => typed,
+                            }
                         }
-                    }
-                    Some("!!float") | Some("tag:yaml.org,2002:float") => {
-                        match ScalarValue::from_str(&value) {
-                            ScalarValue::Float(f) => ScalarValue::Float(f),
-                            // !!float on an integer literal → promote to Float
-                            ScalarValue::Int(n) => ScalarValue::Float(n as f64),
-                            _ => typed,
+                        Some("!!int") | Some("tag:yaml.org,2002:int") => {
+                            match ScalarValue::from_str(&value) {
+                                ScalarValue::Int(n) => ScalarValue::Int(n),
+                                _ => typed,
+                            }
                         }
+                        Some("!!float") | Some("tag:yaml.org,2002:float") => {
+                            match ScalarValue::from_str(&value) {
+                                ScalarValue::Float(f) => ScalarValue::Float(f),
+                                // !!float on an integer literal → promote to Float
+                                ScalarValue::Int(n) => ScalarValue::Float(n as f64),
+                                _ => typed,
+                            }
+                        }
+                        _ => typed,
                     }
-                    _ => typed,
-                };
+                }; // close the else { match ... } from the TagPolicy check above
 
                 let node_line = mark.line();
                 // For block scalars the content spans multiple source lines; advance
@@ -631,13 +671,7 @@ impl Builder {
                 {
                     // Use the resolved scalar value as the key string (for Python access).
                     mf.current_key = Some(match &resolved {
-                        YamlNode::Scalar(s) => match &s.value {
-                            ScalarValue::Null => String::new(),
-                            ScalarValue::Bool(b) => b.to_string(),
-                            ScalarValue::Int(n) => n.to_string(),
-                            ScalarValue::Float(f) => f.to_string(),
-                            ScalarValue::Str(s) => s.clone(),
-                        },
+                        YamlNode::Scalar(s) => s.value.to_key_string(),
                         _ => String::new(),
                     });
                     // Preserve the alias name so the emitter can emit `*name:`.
@@ -1371,7 +1405,7 @@ pub struct ParseOutput {
     pub doc_tag_directives: Vec<Vec<(String, String)>>,
 }
 
-pub fn parse_str(input: &str) -> Result<ParseOutput, String> {
+pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
     let mut parser = Parser::new_from_str(input);
     let mut builder = Builder::new();
 
@@ -1389,7 +1423,7 @@ pub fn parse_str(input: &str) -> Result<ParseOutput, String> {
         builder.absorb_comments(comments);
 
         let done = matches!(ev, Event::StreamEnd);
-        builder.process_event(ev, mark);
+        builder.process_event(ev, mark, policy);
 
         if done {
             break;

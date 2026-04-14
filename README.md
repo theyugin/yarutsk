@@ -95,38 +95,49 @@ text = yarutsk.dumps(doc)
 text = yarutsk.dumps_all(docs)
 ```
 
-`load` / `loads` return a `YamlMapping`, `YamlSequence`, `YamlScalar`, or `None` (for empty input). Nested nodes are also `YamlMapping` or `YamlSequence`; scalar leaves are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
+`load` / `loads` return a `YamlMapping`, `YamlSequence`, or `YamlScalar` (for a top-level scalar document), or `None` for empty input. Nested container nodes are `YamlMapping` or `YamlSequence`; scalar leaves inside mappings and sequences are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
 
-### Type tags
+### Type conversions
 
-Standard YAML type tags affect the Python type returned from a load:
+#### Implicit coercion
+
+Plain YAML values (no tag) are converted to Python types automatically:
+
+| Value pattern | Python type | Examples |
+|---|---|---|
+| Decimal integer | `int` | `42`, `-7` |
+| Hex / octal integer | `int` | `0xFF` → `255`, `0o17` → `15` |
+| Float | `float` | `3.14`, `1.5e2`, `.inf`, `-.inf`, `.nan` |
+| `true` / `false` (any case) | `bool` | `True`, `FALSE` |
+| `yes` / `no` / `on` / `off` (any case) | `bool` | YAML 1.1 booleans |
+| `null`, `Null`, `NULL`, `~`, empty value | `None` | — |
+| Anything else | `str` | `hello`, `"quoted"` |
+
+Non-canonical forms are **reproduced as written** on dump — `yes` stays `yes`, `0xFF` stays `0xFF`, `~` stays `~`.
+
+#### Explicit tags
+
+A `!!tag` overrides implicit coercion and controls which Python type is returned:
 
 | Tag | Python type | Notes |
 |---|---|---|
-| `!!str` | `str` | Forces string even if value looks like an int/bool/null |
-| `!!int` | `int` | Overrides if inference gave a different type |
+| `!!str` | `str` | Forces string even if the value looks like an int, bool, or null |
+| `!!int` | `int` | Parses decimal, hex (`0xFF`), and octal (`0o17`) |
 | `!!float` | `float` | Promotes integer literals (`!!float 1` → `1.0`) |
-| `!!bool` | `bool` | Overrides if inference gave a different type |
-| `!!null` | `None` | Forces null regardless of value (e.g. `!!null ""` → `None`) |
+| `!!bool` | `bool` | — |
+| `!!null` | `None` | Forces null regardless of content (`!!null ""` → `None`) |
 | `!!binary` | `bytes` | Base64-decoded on load; base64-encoded on dump |
-| `!!timestamp` | `datetime.datetime` or `datetime.date` | Date-only values (`2024-01-15`) return `date`; datetime values return `datetime` |
+| `!!timestamp` | `datetime.datetime` or `datetime.date` | Date-only values return `date`; datetime values return `datetime` |
 
-Tags are preserved for round-trip: load → dump reproduces the original tag and source text.
+Tags are preserved through the round-trip: load → dump reproduces the original tag and source text exactly.
 
 ```python
+import datetime
+
 # !!binary
 doc = yarutsk.loads("data: !!binary aGVsbG8=\n")
 doc["data"]                            # b'hello'
 yarutsk.dumps(doc)                     # 'data: !!binary aGVsbG8=\n'
-
-# Dumping Python bytes / datetime creates the appropriate tag automatically
-import datetime
-mapping = yarutsk.loads("x: placeholder\n")
-mapping["x"] = b"hello"
-yarutsk.dumps(mapping)                 # 'x: !!binary aGVsbG8=\n'
-
-mapping["x"] = datetime.datetime(2024, 1, 15, 10, 30)
-yarutsk.dumps(mapping)                 # 'x: !!timestamp 2024-01-15T10:30:00\n'
 
 # !!timestamp
 doc = yarutsk.loads("ts: !!timestamp 2024-01-15T10:30:00\n")
@@ -135,13 +146,84 @@ doc["ts"]                              # datetime.datetime(2024, 1, 15, 10, 30)
 doc = yarutsk.loads("ts: !!timestamp 2024-01-15\n")
 doc["ts"]                              # datetime.date(2024, 1, 15)
 
-# Standard schema tag coercion
+# !!float promotes integers
 doc = yarutsk.loads("x: !!float 1\n")
-doc["x"]                               # 1.0 (float, not int)
+doc["x"]                               # 1.0  (float, not int)
 
-doc = yarutsk.loads('x: !!null ""\n')
-doc["x"]                               # None
+# !!str forces a string
+doc = yarutsk.loads("x: !!str 42\n")
+doc["x"]                               # '42'
+
+# Dumping Python bytes / datetime automatically produces the right tag
+mapping = yarutsk.loads("x: placeholder\n")
+mapping["x"] = b"hello"
+yarutsk.dumps(mapping)                 # 'x: !!binary aGVsbG8=\n'
+
+mapping["x"] = datetime.datetime(2024, 1, 15, 10, 30)
+yarutsk.dumps(mapping)                 # 'x: !!timestamp 2024-01-15T10:30:00\n'
 ```
+
+### Schema — custom types
+
+`Schema` lets you register loaders (tag → Python object, fired on load) and dumpers (Python type → tag + data, fired on dump). Pass it as a keyword argument to any load or dump function.
+
+#### Mapping types
+
+The loader receives a `YamlMapping` (dict-like); the dumper returns a `(tag, dict)` tuple:
+
+```python
+import yarutsk
+
+class Point:
+    def __init__(self, x, y): self.x, self.y = x, y
+
+schema = yarutsk.Schema()
+schema.add_loader("!point", lambda d: Point(d["x"], d["y"]))
+schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
+
+doc = yarutsk.loads("origin: !point\n  x: 0\n  y: 0\n", schema=schema)
+doc["origin"]                          # Point(0, 0)
+
+doc["pos"] = Point(3, 4)               # assigning custom objects works too
+yarutsk.dumps(doc, schema=schema)
+# origin: !point
+#   x: 0
+#   y: 0
+# pos: !point
+#   x: 3
+#   y: 4
+```
+
+#### Scalar types
+
+The loader receives the raw scalar string; the dumper returns a `(tag, str)` tuple:
+
+```python
+class Color:
+    def __init__(self, r, g, b): self.r, self.g, self.b = r, g, b
+
+schema = yarutsk.Schema()
+schema.add_loader("!color", lambda s: Color(*[int(x) for x in s.split(",")]))
+schema.add_dumper(Color, lambda c: ("!color", f"{c.r},{c.g},{c.b}"))
+
+doc = yarutsk.loads("bg: !color 255,0,128\n", schema=schema)
+doc["bg"]                              # Color(255, 0, 128)
+yarutsk.dumps(doc, schema=schema)      # 'bg: !color 255,0,128\n'
+```
+
+#### Overriding built-in tags
+
+Registering a loader for `!!int`, `!!float`, `!!bool`, `!!null`, or `!!str` bypasses the built-in coercion. The callable receives the **raw YAML string** rather than the already-converted Python value:
+
+```python
+schema = yarutsk.Schema()
+schema.add_loader("!!int", lambda raw: int(raw, 0))  # parses 0xFF, 0o77, etc.
+
+doc = yarutsk.loads("x: !!int 0xFF\n", schema=schema)
+doc["x"]                               # 255
+```
+
+Multiple dumpers for the same type are checked in registration order; the first `isinstance` match wins.
 
 ### YamlScalar
 

@@ -7,7 +7,7 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from typing import Any, Callable, IO
+from typing import Any, Callable, IO, SupportsIndex
 
 # The value that __getitem__ can return for a scalar leaf.
 _Scalar = int | float | bool | str | None
@@ -135,6 +135,10 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
+    def clear(self) -> None:
+        """Remove all entries from this mapping."""
+        ...
+
     def __repr__(self) -> str: ...
     def sort_keys(
         self,
@@ -212,6 +216,16 @@ class YamlSequence(list[Any]):
         """Set the ``%TAG`` directives from a list of ``(handle, prefix)`` pairs."""
         ...
 
+    def clear(self) -> None:
+        """Remove all items from this sequence."""
+        ...
+
+    def index(
+        self, value: object, start: SupportsIndex = ..., stop: SupportsIndex = ...
+    ) -> int:
+        """Return the index of the first occurrence of *value*."""
+        ...
+
     def __repr__(self) -> str: ...
     def sort(
         self,
@@ -241,45 +255,116 @@ class YamlSequence(list[Any]):
         """Set or replace the block comment above the item at *idx*."""
         ...
 
+class Schema:
+    """A per-call type registry for customising load and dump behaviour.
+
+    Pass a ``Schema`` instance as the ``schema=`` keyword argument to any
+    load or dump function. It carries:
+
+    - **loaders** — tag → callable, called during load when a node carries that tag
+    - **dumpers** — type → callable, called during dump for matching Python objects
+
+    Example::
+
+        schema = yarutsk.Schema()
+        schema.add_loader("!point", lambda d: Point(d["x"], d["y"]))
+        schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
+
+        doc = yarutsk.loads(src, schema=schema)
+        out = yarutsk.dumps(doc, schema=schema)
+    """
+
+    def __init__(self) -> None: ...
+    def add_loader(self, tag: str, func: Callable[[Any], Any]) -> None:
+        """Register a loader callable for *tag*.
+
+        The callable receives the default-converted Python value:
+
+        - For scalar nodes: ``str``, ``int``, ``float``, ``bool``, or ``None``
+          (for built-in coercion tags such as ``!!int`` / ``!!bool`` / ``!!null`` /
+          ``!!float`` / ``!!str``, the builder is bypassed and the raw YAML string
+          is passed instead, giving full control over parsing)
+        - For mapping nodes: a ``YamlMapping``
+        - For sequence nodes: a ``YamlSequence``
+
+        The return value replaces the node in the loaded document.
+        """
+        ...
+
+    def add_dumper(self, py_type: type, func: Callable[[Any], tuple[str, Any]]) -> None:
+        """Register a dumper callable for *py_type*.
+
+        Dumpers are checked in registration order; the first ``isinstance`` match
+        wins. The callable receives the Python object and must return a 2-tuple
+        ``(tag: str, data)``, where *data* is a scalar, dict, or list that will
+        be serialized as the node body.
+        """
+        ...
+
 # ── Module-level functions ────────────────────────────────────────────────────
 
 def load(
     stream: IO[str] | IO[bytes],
+    *,
+    schema: Schema | None = None,
 ) -> "YamlMapping | YamlSequence | YamlScalar | None":
     """Parse the first YAML document from a stream. Returns ``None`` for empty input."""
     ...
 
-def loads(text: str) -> "YamlMapping | YamlSequence | YamlScalar | None":
+def loads(
+    text: str,
+    *,
+    schema: Schema | None = None,
+) -> "YamlMapping | YamlSequence | YamlScalar | None":
     """Parse the first YAML document from a string. Returns ``None`` for empty input."""
     ...
 
 def load_all(
     stream: IO[str] | IO[bytes],
+    *,
+    schema: Schema | None = None,
 ) -> "list[YamlMapping | YamlSequence | YamlScalar]":
     """Parse all YAML documents from a stream, returning a list."""
     ...
 
-def loads_all(text: str) -> "list[YamlMapping | YamlSequence | YamlScalar]":
+def loads_all(
+    text: str,
+    *,
+    schema: Schema | None = None,
+) -> "list[YamlMapping | YamlSequence | YamlScalar]":
     """Parse all YAML documents from a string, returning a list."""
     ...
 
 def dump(
-    doc: "YamlMapping | YamlSequence | YamlScalar", stream: IO[str] | IO[bytes]
+    doc: "YamlMapping | YamlSequence | YamlScalar",
+    stream: IO[str] | IO[bytes],
+    *,
+    schema: Schema | None = None,
 ) -> None:
     """Serialize *doc* to *stream* in block-style YAML."""
     ...
 
-def dumps(doc: "YamlMapping | YamlSequence | YamlScalar") -> str:
+def dumps(
+    doc: "YamlMapping | YamlSequence | YamlScalar",
+    *,
+    schema: Schema | None = None,
+) -> str:
     """Serialize *doc* to a YAML string."""
     ...
 
 def dump_all(
     docs: "list[YamlMapping | YamlSequence | YamlScalar]",
     stream: IO[str] | IO[bytes],
+    *,
+    schema: Schema | None = None,
 ) -> None:
     """Serialize multiple documents to *stream*, separated by ``---``."""
     ...
 
-def dumps_all(docs: "list[YamlMapping | YamlSequence | YamlScalar]") -> str:
+def dumps_all(
+    docs: "list[YamlMapping | YamlSequence | YamlScalar]",
+    *,
+    schema: Schema | None = None,
+) -> str:
     """Serialize multiple documents to a string, separated by ``---``."""
     ...
