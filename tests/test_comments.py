@@ -414,3 +414,78 @@ class TestCommentSequenceMutations:
         assert doc.comment_inline(0) == "last"
         assert doc[2] == "a"
         assert doc.comment_inline(2) == "first"
+
+
+class TestBlankLines:
+    """blank_lines_before and trailing_blank_lines APIs on mappings and sequences."""
+
+    # ── YamlMapping ──────────────────────────────────────────────────────────
+
+    def test_mapping_blank_lines_before_roundtrip(self):
+        src = "a: 1\n\n\nb: 2\n"
+        doc = yarutsk.loads(src)
+        assert doc.blank_lines_before("a") == 0
+        assert doc.blank_lines_before("b") == 2
+        assert yarutsk.dumps(doc) == src
+
+    def test_mapping_blank_lines_before_set(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc.blank_lines_before("b", 1)
+        assert yarutsk.dumps(doc) == "a: 1\n\nb: 2\n"
+
+    def test_mapping_blank_lines_before_clear(self):
+        doc = yarutsk.loads("a: 1\n\nb: 2\n")
+        doc.blank_lines_before("b", 0)
+        assert yarutsk.dumps(doc) == "a: 1\nb: 2\n"
+
+    def test_mapping_blank_lines_before_key_error(self):
+        doc = yarutsk.loads("a: 1\n")
+        with pytest.raises(KeyError):
+            doc.blank_lines_before("missing")
+
+    def test_mapping_trailing_blank_lines_roundtrip(self):
+        src = "a: 1\nb: 2\n\n\n"
+        doc = yarutsk.loads(src)
+        assert doc.trailing_blank_lines == 2
+        assert yarutsk.dumps(doc) == src
+
+    def test_mapping_trailing_blank_lines_set(self):
+        doc = yarutsk.loads("a: 1\n")
+        doc.trailing_blank_lines = 2
+        assert yarutsk.dumps(doc) == "a: 1\n\n\n"
+
+    def test_mapping_trailing_blank_lines_clear(self):
+        doc = yarutsk.loads("a: 1\n\n\n")
+        doc.trailing_blank_lines = 0
+        assert yarutsk.dumps(doc) == "a: 1\n"
+
+    # ── YamlSequence ─────────────────────────────────────────────────────────
+
+    def test_sequence_blank_lines_before_roundtrip(self):
+        src = "- 1\n\n\n- 2\n"
+        doc = yarutsk.loads(src)
+        assert doc.blank_lines_before(0) == 0
+        assert doc.blank_lines_before(1) == 2
+        assert yarutsk.dumps(doc) == src
+
+    def test_sequence_blank_lines_before_set(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        doc.blank_lines_before(1, 1)
+        assert yarutsk.dumps(doc) == "- 1\n\n- 2\n"
+
+    def test_sequence_blank_lines_before_negative_index(self):
+        doc = yarutsk.loads("- 1\n- 2\n- 3\n")
+        assert doc.blank_lines_before(-1) == 0
+        doc.blank_lines_before(-1, 2)
+        assert yarutsk.dumps(doc) == "- 1\n- 2\n\n\n- 3\n"
+
+    def test_sequence_trailing_blank_lines_roundtrip(self):
+        src = "- 1\n- 2\n\n"
+        doc = yarutsk.loads(src)
+        assert doc.trailing_blank_lines == 1
+        assert yarutsk.dumps(doc) == src
+
+    def test_sequence_trailing_blank_lines_set(self):
+        doc = yarutsk.loads("- 1\n")
+        doc.trailing_blank_lines = 3
+        assert yarutsk.dumps(doc) == "- 1\n\n\n\n"

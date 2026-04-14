@@ -742,3 +742,157 @@ class TestTimestampTagRoundTrip:
         assert "!!timestamp" in out
         doc2 = yr.loads(out)
         assert doc2["x"] == datetime.datetime(2024, 1, 15, 10, 30, 0)
+
+
+class TestContainerStyle:
+    """style property: read block/flow from source and switch between them."""
+
+    # ── YamlMapping ──────────────────────────────────────────────────────────
+
+    def test_mapping_block_style_default(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        assert doc.style == "block"
+
+    def test_mapping_flow_style_roundtrip(self):
+        doc = yarutsk.loads("{a: 1, b: 2}")
+        assert doc.style == "flow"
+        assert yarutsk.dumps(doc) == "{a: 1, b: 2}\n"
+
+    def test_mapping_block_to_flow(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc.style = "flow"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("{")
+        assert "a: 1" in out
+        assert "b: 2" in out
+
+    def test_mapping_flow_to_block(self):
+        doc = yarutsk.loads("{a: 1, b: 2}")
+        doc.style = "block"
+        out = yarutsk.dumps(doc)
+        assert "a: 1\n" in out
+        assert "b: 2\n" in out
+
+    def test_mapping_style_invalid_raises(self):
+        doc = yarutsk.loads("a: 1\n")
+        with pytest.raises(ValueError):
+            doc.style = "invalid"
+
+    # ── YamlSequence ─────────────────────────────────────────────────────────
+
+    def test_sequence_block_style_default(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        assert doc.style == "block"
+
+    def test_sequence_flow_style_roundtrip(self):
+        doc = yarutsk.loads("[1, 2, 3]")
+        assert doc.style == "flow"
+        assert yarutsk.dumps(doc) == "[1, 2, 3]\n"
+
+    def test_sequence_block_to_flow(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        doc.style = "flow"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("[")
+
+    def test_sequence_style_invalid_raises(self):
+        doc = yarutsk.loads("- 1\n")
+        with pytest.raises(ValueError):
+            doc.style = "bad"
+
+
+class TestContainerStyleSetter:
+    """container_style(key/idx, style) sets the block/flow style of a nested
+    mapping or sequence value directly, without going through node() clones."""
+
+    # ── nested sequences inside a mapping ────────────────────────────────────
+
+    def test_mapping_value_default_block_after_plain_list_assign(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = ["a", "b", "c"]
+        assert doc.node("k").style == "block"
+
+    def test_mapping_set_seq_value_to_flow(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = ["a", "b", "c"]
+        doc.container_style("k", "flow")
+        assert "[" in yarutsk.dumps(doc)
+
+    def test_mapping_set_seq_value_back_to_block(self):
+        doc = yarutsk.loads("k: [a, b, c]\n")
+        assert doc.node("k").style == "flow"
+        doc.container_style("k", "block")
+        out = yarutsk.dumps(doc)
+        assert "- a\n" in out
+
+    def test_mapping_node_clone_does_not_affect_dump(self):
+        """node() returns a clone — style mutations on it are silently ignored."""
+        doc = yarutsk.loads("k: [1, 2]\n")
+        clone = doc.node("k")
+        clone.style = "block"
+        # dump must still use the stored (flow) style
+        assert "[" in yarutsk.dumps(doc)
+
+    def test_mapping_container_style_key_error(self):
+        doc = yarutsk.loads("a: 1\n")
+        with pytest.raises(KeyError):
+            doc.container_style("missing", "flow")
+
+    def test_mapping_container_style_invalid_raises(self):
+        doc = yarutsk.loads("k: [a, b]\n")
+        with pytest.raises(ValueError):
+            doc.container_style("k", "bad")
+
+    def test_mapping_container_style_on_scalar_is_noop(self):
+        """container_style on a scalar value silently does nothing."""
+        doc = yarutsk.loads("k: hello\n")
+        doc.container_style("k", "flow")
+        assert yarutsk.dumps(doc) == "k: hello\n"
+
+    # ── nested mappings inside a mapping ─────────────────────────────────────
+
+    def test_mapping_nested_mapping_set_to_flow(self):
+        doc = yarutsk.loads("k:\n  a: 1\n  b: 2\n")
+        assert doc.node("k").style == "block"
+        doc.container_style("k", "flow")
+        out = yarutsk.dumps(doc)
+        assert "{" in out
+
+    def test_mapping_nested_mapping_set_to_block(self):
+        doc = yarutsk.loads("k: {a: 1, b: 2}\n")
+        doc.container_style("k", "block")
+        out = yarutsk.dumps(doc)
+        assert "a: 1\n" in out
+
+    # ── nested containers inside a sequence ──────────────────────────────────
+
+    def test_sequence_item_set_to_flow(self):
+        doc = yarutsk.loads("- - a\n  - b\n")
+        assert doc.node(0).style == "block"
+        doc.container_style(0, "flow")
+        out = yarutsk.dumps(doc)
+        assert "[" in out
+
+    def test_sequence_item_set_to_block(self):
+        doc = yarutsk.loads("- [a, b]\n")
+        assert doc.node(0).style == "flow"
+        doc.container_style(0, "block")
+        out = yarutsk.dumps(doc)
+        assert "- a\n" in out
+
+    def test_sequence_container_style_negative_index(self):
+        doc = yarutsk.loads("- [a, b]\n- [c, d]\n")
+        doc.container_style(-1, "block")
+        out = yarutsk.dumps(doc)
+        assert "[a, b]" in out  # first unchanged
+        assert "- c\n" in out  # last converted
+
+    def test_sequence_container_style_invalid_raises(self):
+        doc = yarutsk.loads("- [a, b]\n")
+        with pytest.raises(ValueError):
+            doc.container_style(0, "bad")
+
+    def test_sequence_container_style_on_scalar_is_noop(self):
+        doc = yarutsk.loads("- hello\n")
+        doc.container_style(0, "flow")
+        assert yarutsk.dumps(doc) == "- hello\n"

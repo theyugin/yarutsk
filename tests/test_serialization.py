@@ -306,3 +306,100 @@ class TestPlainDictListDumping:
         assert doc["b"] is False
         assert doc["s"] == "text"
         assert doc["n"] is None
+
+
+class TestIndent:
+    """Configurable indentation via the indent= keyword argument."""
+
+    def test_default_is_two_spaces(self):
+        doc = yarutsk.loads("a:\n  b: 1\n")
+        assert yarutsk.dumps(doc) == "a:\n  b: 1\n"
+
+    def test_four_space_indent(self):
+        doc = yarutsk.loads("a:\n  b: 1\n")
+        assert yarutsk.dumps(doc, indent=4) == "a:\n    b: 1\n"
+
+    def test_one_space_indent(self):
+        doc = yarutsk.loads("a:\n  b: 1\n")
+        assert yarutsk.dumps(doc, indent=1) == "a:\n b: 1\n"
+
+    def test_deeply_nested(self):
+        doc = yarutsk.loads("a:\n  b:\n    c: 1\n")
+        assert yarutsk.dumps(doc, indent=4) == "a:\n    b:\n        c: 1\n"
+
+    def test_sequence_indent(self):
+        doc = yarutsk.loads("items:\n  - a\n  - b\n")
+        assert yarutsk.dumps(doc, indent=4) == "items:\n    - a\n    - b\n"
+
+    def test_comments_preserved_with_indent(self):
+        doc = yarutsk.loads("a:\n  # comment\n  b: 1\n")
+        out = yarutsk.dumps(doc, indent=4)
+        assert "# comment" in out
+        assert "    b: 1" in out
+
+    def test_dumps_all_indent(self):
+        d1 = yarutsk.loads("a:\n  b: 1\n")
+        d2 = yarutsk.loads("x:\n  y: 2\n")
+        out = yarutsk.dumps_all([d1, d2], indent=4)
+        assert "    b: 1" in out
+        assert "    y: 2" in out
+
+    def test_dump_to_stream_indent(self):
+        import io
+
+        doc = yarutsk.loads("k:\n  v: 1\n")
+        stream = io.StringIO()
+        yarutsk.dump(doc, stream, indent=4)
+        assert stream.getvalue() == "k:\n    v: 1\n"
+
+    def test_dump_all_to_stream_indent(self):
+        import io
+
+        d1 = yarutsk.loads("a:\n  b: 1\n")
+        d2 = yarutsk.loads("x:\n  y: 2\n")
+        stream = io.StringIO()
+        yarutsk.dump_all([d1, d2], stream, indent=4)
+        out = stream.getvalue()
+        assert "    b: 1" in out
+        assert "    y: 2" in out
+
+    def test_round_trip_with_four_space_indent_is_stable(self):
+        """dumps(loads(dumps(doc, indent=4)), indent=4) == dumps(doc, indent=4).
+
+        The emitter does not remember original indentation, so the only guarantee
+        is that a second pass with the same indent= produces identical output to
+        the first pass — i.e. the round-trip is idempotent once a specific width
+        is chosen.
+        """
+        src = "a:\n  b:\n    c: 1\n  d: 2\nitems:\n  - x\n  - y\n"
+        doc = yarutsk.loads(src)
+        first = yarutsk.dumps(doc, indent=4)
+        doc2 = yarutsk.loads(first)
+        second = yarutsk.dumps(doc2, indent=4)
+        assert first == second
+
+    def test_round_trip_with_two_space_source_and_four_space_dump(self):
+        """Loading 2-space-indented YAML and re-dumping with indent=4 changes
+        only the whitespace, not the data.
+        """
+        src = "a:\n  b: 1\n  c: 2\n"
+        doc = yarutsk.loads(src)
+        out = yarutsk.dumps(doc, indent=4)
+        assert "    b: 1" in out
+        assert "    c: 2" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2["a"]["b"] == 1
+        assert doc2["a"]["c"] == 2
+
+    def test_round_trip_with_four_space_source_and_default_dump(self):
+        """Loading 4-space-indented YAML and re-dumping with the default (2-space)
+        produces 2-space output, but all values survive intact.
+        """
+        src = "a:\n    b: 1\n    c:\n        d: true\n"
+        doc = yarutsk.loads(src)
+        out = yarutsk.dumps(doc)
+        assert "  b: 1" in out
+        assert "    d: true" in out
+        doc2 = yarutsk.loads(out)
+        assert doc2["a"]["b"] == 1
+        assert doc2["a"]["c"]["d"] is True

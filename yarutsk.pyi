@@ -7,7 +7,7 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from typing import Any, Callable, IO, SupportsIndex, TypeVar, overload
+from typing import Any, Callable, IO, Literal, SupportsIndex, TypeVar, overload
 
 _T = TypeVar("_T")
 
@@ -118,6 +118,20 @@ class YamlMapping(dict[str, Any]):
 
     @tag_directives.setter
     def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
+    @property
+    def style(self) -> Literal["block", "flow"]:
+        """The container style: ``"block"`` (default) or ``"flow"`` (inline ``{…}``)."""
+        ...
+
+    @style.setter
+    def style(self, value: Literal["block", "flow"]) -> None: ...
+    @property
+    def trailing_blank_lines(self) -> int:
+        """Number of blank lines emitted after the last entry in this mapping (0–255)."""
+        ...
+
+    @trailing_blank_lines.setter
+    def trailing_blank_lines(self, value: int) -> None: ...
     def node(self, key: str) -> "YamlMapping | YamlSequence | YamlScalar":
         """Return the underlying YAML node for *key*, preserving style/tag metadata.
         Raises ``KeyError`` if *key* is absent.
@@ -128,6 +142,20 @@ class YamlMapping(dict[str, Any]):
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+        """
+        ...
+
+    @overload
+    def blank_lines_before(self, key: str) -> int:
+        """Return the number of blank lines before *key* (0 if none).
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    @overload
+    def blank_lines_before(self, key: str, n: int) -> None:
+        """Set the number of blank lines before *key*. Values are clamped to 0–255.
+        Raises ``KeyError`` if *key* is absent.
         """
         ...
 
@@ -221,6 +249,27 @@ class YamlSequence(list[Any]):
 
     @tag_directives.setter
     def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
+    @property
+    def style(self) -> Literal["block", "flow"]:
+        """The container style: ``"block"`` (default) or ``"flow"`` (inline ``[…]``)."""
+        ...
+
+    @style.setter
+    def style(self, value: Literal["block", "flow"]) -> None: ...
+    @property
+    def trailing_blank_lines(self) -> int:
+        """Number of blank lines emitted after the last item in this sequence (0–255)."""
+        ...
+
+    @trailing_blank_lines.setter
+    def trailing_blank_lines(self, value: int) -> None: ...
+    def scalar_style(self, idx: int, style: str) -> None:
+        """Set the scalar quoting style for the item at *idx*.
+        *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+        """
+        ...
+
     def clear(self) -> None:
         """Remove all items from this sequence."""
         ...
@@ -262,6 +311,16 @@ class YamlSequence(list[Any]):
     @overload
     def comment_before(self, idx: int, comment: str | None) -> None:
         """Set or clear the block comment above the item at *idx*. Pass ``None`` to remove it."""
+        ...
+
+    @overload
+    def blank_lines_before(self, idx: int) -> int:
+        """Return the number of blank lines before the item at *idx* (0 if none)."""
+        ...
+
+    @overload
+    def blank_lines_before(self, idx: int, n: int) -> None:
+        """Set the number of blank lines before the item at *idx*. Values are clamped to 0–255."""
         ...
 
 class Schema:
@@ -351,16 +410,24 @@ def dump(
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
+    indent: int = 2,
 ) -> None:
-    """Serialize *doc* to *stream* in block-style YAML."""
+    """Serialize *doc* to *stream* in block-style YAML.
+
+    *indent* controls the per-level indentation width (default: 2).
+    """
     ...
 
 def dumps(
     doc: "YamlMapping | YamlSequence | YamlScalar",
     *,
     schema: Schema | None = None,
+    indent: int = 2,
 ) -> str:
-    """Serialize *doc* to a YAML string."""
+    """Serialize *doc* to a YAML string.
+
+    *indent* controls the per-level indentation width (default: 2).
+    """
     ...
 
 def dump_all(
@@ -368,14 +435,22 @@ def dump_all(
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
+    indent: int = 2,
 ) -> None:
-    """Serialize multiple documents to *stream*, separated by ``---``."""
+    """Serialize multiple documents to *stream*, separated by ``---``.
+
+    *indent* controls the per-level indentation width (default: 2).
+    """
     ...
 
 def dumps_all(
     docs: "list[YamlMapping | YamlSequence | YamlScalar]",
     *,
     schema: Schema | None = None,
+    indent: int = 2,
 ) -> str:
-    """Serialize multiple documents to a string, separated by ``---``."""
+    """Serialize multiple documents to a string, separated by ``---``.
+
+    *indent* controls the per-level indentation width (default: 2).
+    """
     ...

@@ -8,6 +8,7 @@ Covers:
   5. Stream edge cases (load / dump)
   6. dumps_all / dump_all with invalid docs
   7. Comment / style operations with bad arguments
+  8. Plain Python collections assigned as values
 """
 
 import io
@@ -323,3 +324,44 @@ class TestBadCommentAndStyleArgs:
         doc = yarutsk.loads("- a\n- b\n")
         with pytest.raises(IndexError):
             doc.comment_inline(99)
+
+
+class TestPlainCollectionAssignment:
+    """Assigning plain Python dicts and lists as mapping/sequence values.
+
+    A plain Python list assigned to a key must become a YAML sequence, not
+    !!binary — even when the list contains small integers that PyO3 could
+    otherwise extract as Vec<u8>.
+    """
+
+    def test_list_of_integers_becomes_sequence_not_binary(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = [1, 2, 3]
+        out = yarutsk.dumps(doc)
+        assert "!!binary" not in out
+        assert "- 1" in out
+
+    def test_list_of_strings_becomes_sequence(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = ["a", "b"]
+        out = yarutsk.dumps(doc)
+        assert "- a\n" in out
+        assert "- b\n" in out
+
+    def test_bytes_still_becomes_binary(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = b"hello"
+        out = yarutsk.dumps(doc)
+        assert "!!binary" in out
+
+    def test_new_list_default_style_is_block(self):
+        doc = yarutsk.loads("k: placeholder\n")
+        doc["k"] = ["a", "b"]
+        assert doc.node("k").style == "block"
+
+    def test_list_in_sequence_item_becomes_sequence(self):
+        doc = yarutsk.loads("- placeholder\n")
+        doc[0] = [10, 20]
+        out = yarutsk.dumps(doc)
+        assert "!!binary" not in out
+        assert "- 10\n" in out

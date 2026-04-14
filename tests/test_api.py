@@ -455,3 +455,41 @@ class TestTagCoercion:
         doc = yarutsk.loads("x: !!int abc\n")
         # value is preserved as-is (str) since parse failed
         assert doc["x"] is not None
+
+
+class TestSequenceScalarStyle:
+    """scalar_style() on YamlSequence."""
+
+    def test_set_single_quoted(self):
+        doc = yarutsk.loads("- hello\n- world\n")
+        doc.scalar_style(0, "single")
+        out = yarutsk.dumps(doc)
+        assert "'hello'" in out
+        assert "world" in out
+
+    def test_set_double_quoted(self):
+        doc = yarutsk.loads("- hello\n")
+        doc.scalar_style(0, "double")
+        assert yarutsk.dumps(doc) == '- "hello"\n'
+
+    def test_negative_index(self):
+        doc = yarutsk.loads("- a\n- b\n- c\n")
+        doc.scalar_style(-1, "single")
+        assert yarutsk.dumps(doc) == "- a\n- b\n- 'c'\n"
+
+    def test_only_target_item_changes(self):
+        doc = yarutsk.loads("- 'a'\n- b\n")
+        doc.scalar_style(1, "double")
+        out = yarutsk.dumps(doc)
+        assert "'a'" in out
+        assert '"b"' in out
+
+    def test_invalid_style_raises(self):
+        doc = yarutsk.loads("- hello\n")
+        with pytest.raises(ValueError):
+            doc.scalar_style(0, "bad")
+
+    def test_out_of_range_raises(self):
+        doc = yarutsk.loads("- hello\n")
+        with pytest.raises(IndexError):
+            doc.scalar_style(99, "plain")

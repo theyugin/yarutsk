@@ -1,5 +1,9 @@
 # yarutsk
 
+[![PyPI](https://img.shields.io/pypi/v/yarutsk)](https://pypi.org/project/yarutsk/)
+[![Python 3.12+](https://img.shields.io/pypi/pyversions/yarutsk)](https://pypi.org/project/yarutsk/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Python YAML library that round-trips documents while preserving **comments**, **insertion order**, **scalar styles**, **tags**, **anchors and aliases**, **blank lines**, and **explicit document markers**.
 
 ## What it does
@@ -66,10 +70,16 @@ Specifically preserved:
 
 ## Installation
 
-Built with [Maturin](https://github.com/PyO3/maturin). From the repo root:
+```bash
+pip install yarutsk
+```
+
+To build from source (requires Rust 1.85+):
 
 ```bash
 pip install maturin
+git clone --recurse-submodules https://github.com/theyugin/yarutsk
+cd yarutsk
 maturin develop
 ```
 
@@ -93,6 +103,9 @@ yarutsk.dump_all(docs, stream)
 # Dump to string
 text = yarutsk.dumps(doc)
 text = yarutsk.dumps_all(docs)
+
+# Custom indentation (default is 2 spaces)
+text = yarutsk.dumps(doc, indent=4)
 ```
 
 `load` / `loads` return a `YamlMapping`, `YamlSequence`, or `YamlScalar` (for a top-level scalar document), or `None` for empty input. Nested container nodes are `YamlMapping` or `YamlSequence`; scalar leaves inside mappings and sequences are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
@@ -304,6 +317,16 @@ node = doc.node("key")                # KeyError if absent
 # Scalar style shortcut (equivalent to: doc.node("key").style = "single")
 doc.scalar_style("key", "single")     # 'plain'|'single'|'double'|'literal'|'folded'
 
+# Container style (read from source; also settable to switch block ↔ flow)
+doc.style                              # -> 'block' | 'flow'
+doc.style = "flow"                     # emit as {key: value, ...}
+
+# Blank lines before a key (1-arg = get, 2-arg = set)
+doc.blank_lines_before("key")         # -> int
+doc.blank_lines_before("key", 2)      # emit 2 blank lines before this key
+doc.trailing_blank_lines              # blank lines after all entries
+doc.trailing_blank_lines = 1
+
 # Sorting
 doc.sort_keys()                        # alphabetical, in-place
 doc.sort_keys(reverse=True)            # reverse alphabetical
@@ -357,6 +380,19 @@ doc.explicit_end                       # bool
 doc.explicit_start = True
 doc.explicit_end   = True
 
+# Scalar style shortcut (equivalent to: doc.node(idx).style = "single")
+doc.scalar_style(0, "double")         # 'plain'|'single'|'double'|'literal'|'folded'
+
+# Container style
+doc.style                              # -> 'block' | 'flow'
+doc.style = "flow"                     # emit as [item, ...]
+
+# Blank lines before an item (1-arg = get, 2-arg = set)
+doc.blank_lines_before(0)             # -> int
+doc.blank_lines_before(0, 1)          # emit 1 blank line before item 0
+doc.trailing_blank_lines              # blank lines after all items
+doc.trailing_blank_lines = 0
+
 # Sorting (preserves comment metadata)
 doc.sort()                             # natural order, in-place
 doc.sort(reverse=True)
@@ -364,6 +400,58 @@ doc.sort(key=lambda v: len(v))         # custom key function on item values
 ```
 
 Sorting preserves all comments — each entry or item carries its inline and before-key comments with it when reordered.
+
+## Comparison
+
+| Feature | yarutsk | ruamel.yaml | PyYAML |
+|---|---|---|---|
+| Comments preserved | Yes | Yes | No |
+| Scalar styles preserved | Yes | Partial | No |
+| Insertion order preserved | Yes | Yes | No |
+| Blank lines preserved | Yes | Partial | No |
+| Tags preserved | Yes | Yes | No |
+| Anchors/aliases preserved | Yes | Yes | No |
+| `dict` / `list` subclasses | Yes | No | No |
+| Rust speed | Yes | No | No |
+| Python 3.12+ required | Yes | No | No |
+
+yarutsk focuses on **round-trip fidelity**: if you need to edit a config file and emit it back without touching the formatting, it keeps every comment, blank line, and scalar quote style exactly as written. ruamel.yaml offers similar round-trip support in pure Python. PyYAML is faster for load-only workloads where output formatting doesn't matter.
+
+## Error handling
+
+```python
+import yarutsk
+
+# Malformed YAML → ValueError
+try:
+    yarutsk.loads("key: [unclosed")
+except ValueError as e:
+    print(e)   # scan error: ...
+
+# Unsupported Python type → TypeError
+try:
+    yarutsk.dumps({"key": {1, 2}})  # sets are not supported
+except TypeError as e:
+    print(e)
+
+# Missing key → KeyError  (standard dict behaviour)
+doc = yarutsk.loads("a: 1")
+doc["missing"]               # KeyError: 'missing'
+doc.comment_inline("missing")  # KeyError: 'missing'
+
+# Bad index → IndexError  (standard list behaviour)
+seq = yarutsk.loads("- 1\n- 2")
+seq[99]                      # IndexError
+```
+
+## Limitations
+
+- **Integer range**: integers are stored as 64-bit signed (`i64`). Values outside `[-9223372036854775808, 9223372036854775807]` are loaded as strings.
+- **Underscore separators**: `1_000` is not parsed as an integer — it is loaded as the string `"1_000"` (and round-tripped faithfully as such).
+- **Blank line cap**: at most 255 blank lines before any entry are tracked; runs longer than that are clamped to 255 on load.
+- **Block only by default**: the emitter writes block-style YAML. Flow containers (`{...}` / `[...]`) from the source are preserved if they were already flow-style, but there is no option to force everything to flow on dump.
+- **Streaming**: the entire document must fit in memory; incremental/streaming parse is not supported.
+- **YAML version**: the scanner implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`). Most YAML 1.2-only documents work, but a small number of spec edge cases differ — see `tests/test_yaml_suite.py` for the `xfail` markers.
 
 ## Benchmarks
 

@@ -21,14 +21,15 @@ fn format_tag(tag: &str) -> Cow<'_, str> {
 }
 
 /// Emit a YAML node to a string, with the given indentation level.
-pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
+/// `step` is the per-level indentation increment (e.g. 2 or 4).
+pub fn emit_node(node: &YamlNode, indent: usize, step: usize, out: &mut String) {
     match node {
-        YamlNode::Mapping(m) => emit_mapping(m, indent, out),
-        YamlNode::Sequence(s) => emit_sequence(s, indent, out),
+        YamlNode::Mapping(m) => emit_mapping(m, indent, step, out),
+        YamlNode::Sequence(s) => emit_sequence(s, indent, step, out),
         // Block scalars (`|` / `>`) are routed to `emit_block_scalar` so that
         // the indicator and indented content are always emitted correctly,
         // whether the scalar is a top-level document or a nested value.
-        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, None, out),
+        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, step, None, out),
         YamlNode::Scalar(s) => emit_scalar(s, out),
         YamlNode::Null => {
             out.push_str("null");
@@ -44,6 +45,7 @@ pub fn emit_node(node: &YamlNode, indent: usize, out: &mut String) {
 /// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
 /// `yaml_versions[i]` emits a `%YAML` directive before `---` when `Some`.
 /// `tag_directives[i]` emits `%TAG` directives before `---` when non-empty.
+/// `indent_step` is the per-level indentation increment (default: 2).
 /// Any slice may be shorter than `docs`; missing entries default to `false` / `None` / empty.
 pub fn emit_docs(
     docs: &[YamlNode],
@@ -51,7 +53,9 @@ pub fn emit_docs(
     explicit_ends: &[bool],
     yaml_versions: &[Option<(u8, u8)>],
     tag_directives: &[Vec<(String, String)>],
+    indent_step: usize,
 ) -> String {
+    let step = if indent_step == 0 { 2 } else { indent_step };
     let mut out = String::with_capacity(256);
     for (i, doc) in docs.iter().enumerate() {
         let want_start = explicit_starts.get(i).copied().unwrap_or(false);
@@ -68,7 +72,7 @@ pub fn emit_docs(
             }
             out.push_str("---\n");
         }
-        emit_node(doc, 0, &mut out);
+        emit_node(doc, 0, step, &mut out);
         // Always ensure a trailing newline after document content (valid YAML convention).
         if !out.ends_with('\n') {
             out.push('\n');
@@ -114,9 +118,9 @@ fn indent_str(indent: usize) -> Cow<'static, str> {
 
 /// Emit `node` into `out` without a trailing newline.
 /// Used for scalar values that appear inline after `: ` or `- `.
-fn emit_node_inline(node: &YamlNode, indent: usize, out: &mut String) {
+fn emit_node_inline(node: &YamlNode, indent: usize, step: usize, out: &mut String) {
     let start = out.len();
-    emit_node(node, indent, out);
+    emit_node(node, indent, step, out);
     // Trim any trailing newline added by emit_node.
     while out.len() > start && out.ends_with('\n') {
         out.pop();
@@ -125,7 +129,7 @@ fn emit_node_inline(node: &YamlNode, indent: usize, out: &mut String) {
 
 /// Emit a mapping key (alias / complex / block-scalar / plain scalar).
 /// The caller is responsible for pushing any leading indentation before this call.
-fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, out: &mut String) {
+fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, step: usize, out: &mut String) {
     // Alias key: `? *name\n: value` — explicit form avoids ambiguity with
     // `*alias:` being misinterpreted in block context by some parsers.
     if let Some(alias) = &entry.key_alias {
@@ -138,18 +142,18 @@ fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, out: &mut Strin
         // Complex (non-scalar) key: `? <key_node>\n: <value>`
         out.push_str("? ");
         // For block collections, add a newline after `? ` so the content starts
-        // on its own line at indent+2, avoiding `?   - item` ambiguity.
+        // on its own line at indent+step, avoiding `?   - item` ambiguity.
         match key_node.as_ref() {
             YamlNode::Sequence(s) if s.style == ContainerStyle::Block => {
                 out.push('\n');
-                emit_sequence(s, indent + 2, out);
+                emit_sequence(s, indent + step, step, out);
             }
             YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
                 out.push('\n');
-                emit_mapping(m, indent + 2, out);
+                emit_mapping(m, indent + step, step, out);
             }
             _ => {
-                emit_node(key_node, indent + 2, out);
+                emit_node(key_node, indent + step, step, out);
             }
         }
         out.push_str(&indent_str(indent));
@@ -164,7 +168,7 @@ fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, out: &mut Strin
             anchor: entry.key_anchor.clone(),
         };
         out.push_str("? ");
-        emit_block_scalar(&key_scalar, indent + 2, None, out);
+        emit_block_scalar(&key_scalar, indent + step, step, None, out);
         out.push_str(&indent_str(indent));
         out.push(':');
     } else {
@@ -184,7 +188,7 @@ fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, out: &mut Strin
 }
 
 /// Emit a mapping entry value (the part after the `:` on the key line).
-fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
+fn emit_mapping_value(entry: &YamlEntry, indent: usize, step: usize, out: &mut String) {
     match &entry.value {
         YamlNode::Mapping(nested)
             if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
@@ -207,7 +211,7 @@ fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
             }
             push_inline_comment(entry.comment_inline.as_deref(), out);
             out.push('\n');
-            emit_mapping(nested, indent + 2, out);
+            emit_mapping(nested, indent + step, step, out);
         }
         YamlNode::Sequence(nested)
             if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
@@ -230,7 +234,7 @@ fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
             }
             push_inline_comment(entry.comment_inline.as_deref(), out);
             out.push('\n');
-            emit_sequence(nested, indent + 2, out);
+            emit_sequence(nested, indent + step, step, out);
         }
         YamlNode::Mapping(_) => {
             // Empty mapping — always inline.
@@ -246,18 +250,18 @@ fn emit_mapping_value(entry: &YamlEntry, indent: usize, out: &mut String) {
             // Block scalar: indicator goes on the key line; inline comment follows
             // the indicator (YAML allows `key: |  # comment`).
             out.push(' ');
-            emit_block_scalar(s, indent + 2, entry.comment_inline.as_deref(), out);
+            emit_block_scalar(s, indent + step, step, entry.comment_inline.as_deref(), out);
         }
         node => {
             out.push(' ');
-            emit_node_inline(node, indent + 2, out);
+            emit_node_inline(node, indent + step, step, out);
             push_inline_comment(entry.comment_inline.as_deref(), out);
             out.push('\n');
         }
     }
 }
 
-fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
+fn emit_mapping(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
     if m.style == ContainerStyle::Flow {
         emit_mapping_flow(m, out);
         return;
@@ -272,8 +276,8 @@ fn emit_mapping(m: &YamlMapping, indent: usize, out: &mut String) {
         }
         emit_comment_before(entry.comment_before.as_deref(), indent, out);
         out.push_str(&indent_str(indent));
-        emit_mapping_key(key, entry, indent, out);
-        emit_mapping_value(entry, indent, out);
+        emit_mapping_key(key, entry, indent, step, out);
+        emit_mapping_value(entry, indent, step, out);
     }
     for _ in 0..m.trailing_blank_lines {
         out.push('\n');
@@ -300,7 +304,7 @@ fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
         // Emit key: complex key_node, alias key, or plain scalar key.
         if let Some(key_node) = &entry.key_node {
             // Flow context supports `? <node>: <value>` or plain `<node>: <value>` syntax.
-            emit_node_inline(key_node, 0, out);
+            emit_node_inline(key_node, 0, 2, out);
         } else if let Some(alias) = &entry.key_alias {
             out.push('*');
             out.push_str(alias);
@@ -320,12 +324,12 @@ fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
             out.push_str(&emit_key(key, entry.key_style));
         }
         out.push_str(": ");
-        emit_node_inline(&entry.value, 0, out);
+        emit_node_inline(&entry.value, 0, 2, out);
     }
     out.push('}');
 }
 
-fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
+fn emit_sequence(s: &YamlSequence, indent: usize, step: usize, out: &mut String) {
     if s.style == ContainerStyle::Flow {
         emit_sequence_flow(s, out);
         return;
@@ -364,10 +368,10 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                         out.push_str(ci);
                     }
                     out.push('\n');
-                    emit_mapping(nested, indent + 2, out);
+                    emit_mapping(nested, indent + step, step, out);
                 } else {
                     // First entry inline with `-`, rest indented
-                    emit_mapping_inline_first(nested, indent + 2, out);
+                    emit_mapping_inline_first(nested, indent + step, step, out);
                 }
             }
             YamlNode::Sequence(nested)
@@ -392,18 +396,18 @@ fn emit_sequence(s: &YamlSequence, indent: usize, out: &mut String) {
                         out.push_str(ci);
                     }
                     out.push('\n');
-                    emit_sequence(nested, indent + 2, out);
+                    emit_sequence(nested, indent + step, step, out);
                 } else {
                     // First inner item inline with `-`, rest indented
-                    emit_sequence_inline_first(nested, indent + 2, out);
+                    emit_sequence_inline_first(nested, indent + step, step, out);
                 }
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
                 // Block scalar directly in sequence
-                emit_block_scalar(scalar, indent + 2, None, out);
+                emit_block_scalar(scalar, indent + step, step, None, out);
             }
             node => {
-                emit_node_inline(node, indent + 2, out);
+                emit_node_inline(node, indent + step, step, out);
                 push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
@@ -440,14 +444,14 @@ fn emit_sequence_flow(s: &YamlSequence, out: &mut String) {
             YamlNode::Sequence(inner) if inner.style == ContainerStyle::Block => {
                 emit_sequence_flow(inner, out);
             }
-            node => emit_node_inline(node, 0, out),
+            node => emit_node_inline(node, 0, 2, out),
         }
     }
     out.push(']');
 }
 
 /// Emit a sequence where the first item shares the line with the parent `-`.
-fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String) {
+fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, step: usize, out: &mut String) {
     let mut first = true;
     for item in &s.items {
         if !first {
@@ -479,9 +483,9 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                     out.push_str("# ");
                     out.push_str(ci);
                     out.push('\n');
-                    emit_mapping(nested, indent + 2, out);
+                    emit_mapping(nested, indent + step, step, out);
                 } else {
-                    emit_mapping_inline_first(nested, indent + 2, out);
+                    emit_mapping_inline_first(nested, indent + step, step, out);
                 }
             }
             YamlNode::Sequence(nested)
@@ -496,16 +500,16 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
                     out.push_str("# ");
                     out.push_str(ci);
                     out.push('\n');
-                    emit_sequence(nested, indent + 2, out);
+                    emit_sequence(nested, indent + step, step, out);
                 } else {
-                    emit_sequence_inline_first(nested, indent + 2, out);
+                    emit_sequence_inline_first(nested, indent + step, step, out);
                 }
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
-                emit_block_scalar(scalar, indent + 2, None, out);
+                emit_block_scalar(scalar, indent + step, step, None, out);
             }
             node => {
-                emit_node_inline(node, indent + 2, out);
+                emit_node_inline(node, indent + step, step, out);
                 push_inline_comment(item.comment_inline.as_deref(), out);
                 out.push('\n');
             }
@@ -515,7 +519,7 @@ fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, out: &mut String)
 }
 
 /// Emit a mapping where the first entry shares the line with the parent `-`.
-fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
+fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
     let mut first = true;
     for (key, entry) in &m.entries {
         if entry.comment_before.is_some() {
@@ -529,8 +533,8 @@ fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, out: &mut String) {
             out.push_str(&indent_str(indent));
         }
         // For the first entry the cursor is already positioned after `- ` by the caller.
-        emit_mapping_key(key, entry, indent, out);
-        emit_mapping_value(entry, indent, out);
+        emit_mapping_key(key, entry, indent, step, out);
+        emit_mapping_value(entry, indent, step, out);
         first = false;
     }
 }
@@ -554,6 +558,7 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
 fn emit_block_scalar(
     s: &YamlScalar,
     indent: usize,
+    step: usize,
     inline_comment: Option<&str>,
     out: &mut String,
 ) {
@@ -615,8 +620,10 @@ fn emit_block_scalar(
         // Case A
         (min_leading, indent.saturating_sub(min_leading))
     } else if first_leading > 0 {
-        // Case B — hard-code indicator = 2 (= standard emitter indent step)
-        (2, indent)
+        // Case B — explicit indicator equals the indent step so that the parser
+        // (using base = parent_indent + N) strips exactly content_indent + N = indent
+        // spaces, leaving the stored leading spaces in the value.
+        (step, indent)
     } else {
         // Case C
         (0, indent)
@@ -908,7 +915,7 @@ mod tests {
 
     fn node_emit(node: &YamlNode) -> String {
         let mut out = String::new();
-        emit_node(node, 0, &mut out);
+        emit_node(node, 0, 2, &mut out);
         out
     }
 
@@ -1329,7 +1336,7 @@ mod tests {
             ("m", plain_int(3)),
         ]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "z: 1");
         assert_eq!(lines[1], "a: 2");
@@ -1340,7 +1347,7 @@ mod tests {
     fn emit_empty_mapping() {
         let m = make_mapping(&[]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "{}\n");
     }
 
@@ -1349,7 +1356,7 @@ mod tests {
         let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
         m.style = ContainerStyle::Flow;
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "{a: 1, b: 2}");
     }
 
@@ -1360,7 +1367,7 @@ mod tests {
         entry.comment_inline = Some("a comment".to_owned());
         m.entries.insert("key".to_owned(), entry);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: 1  # a comment\n");
     }
 
@@ -1371,7 +1378,7 @@ mod tests {
         entry.comment_before = Some("header".to_owned());
         m.entries.insert("key".to_owned(), entry);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "# header\nkey: 1\n");
     }
 
@@ -1380,7 +1387,7 @@ mod tests {
         let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
         m.entries.get_mut("b").unwrap().blank_lines_before = 1;
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "a: 1\n\nb: 2\n");
     }
 
@@ -1389,7 +1396,7 @@ mod tests {
         let empty = YamlNode::Mapping(make_mapping(&[]));
         let m = make_mapping(&[("key", empty)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: {}\n");
     }
 
@@ -1398,7 +1405,7 @@ mod tests {
         let empty = YamlNode::Sequence(make_seq(&[]));
         let m = make_mapping(&[("key", empty)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: []\n");
     }
 
@@ -1408,7 +1415,7 @@ mod tests {
     fn emit_sequence_items() {
         let s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "- 1\n- 2\n- 3\n");
     }
 
@@ -1416,7 +1423,7 @@ mod tests {
     fn emit_empty_sequence() {
         let s = make_seq(&[]);
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "[]\n");
     }
 
@@ -1425,7 +1432,7 @@ mod tests {
         let mut s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
         s.style = ContainerStyle::Flow;
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "[1, 2, 3]");
     }
 
@@ -1439,7 +1446,7 @@ mod tests {
             blank_lines_before: 0,
         });
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, &mut out);
+        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "- 1  # one\n");
     }
 
@@ -1458,7 +1465,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |\n"),
             "expected block indicator: {out}"
@@ -1482,7 +1489,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: >\n"),
             "expected folded indicator: {out}"
@@ -1510,7 +1517,7 @@ mod tests {
                 }),
             )]);
             let mut out = String::new();
-            emit_node(&YamlNode::Mapping(m), 0, &mut out);
+            emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
             let re_parsed = crate::builder::parse_str(&out).expect("re-parse failed");
             let re_docs = re_parsed.docs;
             if let YamlNode::Mapping(m2) = &re_docs[0] {
@@ -1539,7 +1546,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |-\n"),
             "expected strip chomping: {out}"
@@ -1560,7 +1567,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, &mut out);
+        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |+\n"),
             "expected keep chomping: {out}"

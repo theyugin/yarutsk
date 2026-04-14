@@ -364,11 +364,18 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
     if let Some(node) = py_primitive_to_scalar(obj) {
         return Ok(node);
     }
-    // tuple → sequence (checked before bytes to prevent small-integer tuples
-    // being misinterpreted as Vec<u8> by PyO3's sequence extraction).
+    // tuple / list → sequence (checked before bytes to prevent small-integer
+    // collections being misinterpreted as Vec<u8> by PyO3's sequence extraction).
     if let Ok(t) = obj.cast::<PyTuple>() {
         let mut seq = YamlSequence::new();
         for item in t.iter() {
+            seq.items.push(plain_item(py_to_node(&item, schema)?));
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
+    if let Ok(l) = obj.cast::<PyList>() {
+        let mut seq = YamlSequence::new();
+        for item in l.iter() {
             seq.items.push(plain_item(py_to_node(&item, schema)?));
         }
         return Ok(YamlNode::Sequence(seq));
@@ -401,9 +408,10 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
             }));
         }
     }
-    // Plain dict/list fallback (for users passing native Python dicts/lists).
+    // Plain dict fallback (for users passing native Python dicts).
     // Note: PyYamlMapping extends PyDict so it would match cast::<PyDict>() too,
     // but we already handled it with extract::<PyYamlMapping>() above.
+    // Plain list is already handled above before the bytes check.
     if let Ok(d) = obj.cast::<PyDict>() {
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
@@ -413,13 +421,6 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
                 .insert(key, plain_entry(py_to_node(&v, schema)?));
         }
         return Ok(YamlNode::Mapping(mapping));
-    }
-    if let Ok(l) = obj.cast::<PyList>() {
-        let mut seq = YamlSequence::new();
-        for item in l.iter() {
-            seq.items.push(plain_item(py_to_node(&item, schema)?));
-        }
-        return Ok(YamlNode::Sequence(seq));
     }
     Err(PyRuntimeError::new_err(format!(
         "Cannot convert {obj} to a YAML node; \
@@ -1315,6 +1316,40 @@ impl PyYamlMapping {
         self.inner.tag = tag.map(str::to_owned);
     }
 
+    /// The container style: ``"block"`` or ``"flow"``.
+    #[getter]
+    fn get_style(&self) -> &str {
+        match self.inner.style {
+            ContainerStyle::Block => "block",
+            ContainerStyle::Flow => "flow",
+        }
+    }
+
+    #[setter]
+    fn set_style(&mut self, style: &str) -> PyResult<()> {
+        self.inner.style = match style {
+            "block" => ContainerStyle::Block,
+            "flow" => ContainerStyle::Flow,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected \"block\" or \"flow\""
+                )));
+            }
+        };
+        Ok(())
+    }
+
+    /// The number of blank lines emitted after all entries in this mapping.
+    #[getter]
+    fn get_trailing_blank_lines(&self) -> u8 {
+        self.inner.trailing_blank_lines
+    }
+
+    #[setter]
+    fn set_trailing_blank_lines(&mut self, n: u8) {
+        self.inner.trailing_blank_lines = n;
+    }
+
     /// Whether this document had an explicit `---` marker in the source.
     #[getter]
     fn get_explicit_start(&self) -> bool {
@@ -1394,6 +1429,81 @@ impl PyYamlMapping {
                 Ok(())
             }
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
+    /// Set the block/flow style for the container value at *key*.
+    /// *style* must be ``"block"`` or ``"flow"``.
+    /// No-op when the value is a scalar or null.
+    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+    fn container_style(slf: &Bound<'_, Self>, key: &str, style: &str) -> PyResult<()> {
+        let new_style = match style {
+            "block" => ContainerStyle::Block,
+            "flow" => ContainerStyle::Flow,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected \"block\" or \"flow\""
+                )));
+            }
+        };
+        {
+            let mut borrow = slf.borrow_mut();
+            match borrow.inner.entries.get_mut(key) {
+                Some(entry) => {
+                    match &mut entry.value {
+                        YamlNode::Mapping(m) => m.style = new_style,
+                        YamlNode::Sequence(s) => s.style = new_style,
+                        _ => {} // scalar / null / alias — silently ignored
+                    }
+                }
+                None => return Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+            }
+        }
+        // Also sync the Python-side object stored in the parent dict so that
+        // extract_yaml_node (which reads inner.style from the child object) sees the change.
+        if let Some(py_val) = slf.as_super().get_item(key)? {
+            if let Ok(bound_m) = py_val.cast::<PyYamlMapping>() {
+                bound_m.borrow_mut().inner.style = new_style;
+            } else if let Ok(bound_s) = py_val.cast::<PyYamlSequence>() {
+                bound_s.borrow_mut().inner.style = new_style;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read or write the number of blank lines emitted before *key*.
+    /// `blank_lines_before(key)` returns the current count (``int``).
+    /// `blank_lines_before(key, n)` sets it; values are clamped to 0–255.
+    /// Raises ``KeyError`` if *key* is absent.
+    #[pyo3(signature = (key, *args))]
+    fn blank_lines_before(
+        &mut self,
+        py: Python<'_>,
+        key: &str,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => match self.inner.entries.get(key) {
+                Some(entry) => Ok((entry.blank_lines_before as u32)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind()),
+                None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+            },
+            1 => {
+                let n: u32 = args.get_item(0)?.extract()?;
+                let n = n.min(255) as u8;
+                match self.inner.entries.get_mut(key) {
+                    Some(entry) => {
+                        entry.blank_lines_before = n;
+                        Ok(py.None())
+                    }
+                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+                }
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "blank_lines_before takes 1 or 2 positional arguments",
+            )),
         }
     }
 
@@ -1772,6 +1882,40 @@ impl PyYamlSequence {
         self.inner.tag = tag.map(str::to_owned);
     }
 
+    /// The container style: ``"block"`` or ``"flow"``.
+    #[getter]
+    fn get_style(&self) -> &str {
+        match self.inner.style {
+            ContainerStyle::Block => "block",
+            ContainerStyle::Flow => "flow",
+        }
+    }
+
+    #[setter]
+    fn set_style(&mut self, style: &str) -> PyResult<()> {
+        self.inner.style = match style {
+            "block" => ContainerStyle::Block,
+            "flow" => ContainerStyle::Flow,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected \"block\" or \"flow\""
+                )));
+            }
+        };
+        Ok(())
+    }
+
+    /// The number of blank lines emitted after all items in this sequence.
+    #[getter]
+    fn get_trailing_blank_lines(&self) -> u8 {
+        self.inner.trailing_blank_lines
+    }
+
+    #[setter]
+    fn set_trailing_blank_lines(&mut self, n: u8) {
+        self.inner.trailing_blank_lines = n;
+    }
+
     /// Whether this document had an explicit `---` marker in the source.
     #[getter]
     fn get_explicit_start(&self) -> bool {
@@ -1815,6 +1959,104 @@ impl PyYamlSequence {
     #[setter]
     fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
         self.tag_directives = directives;
+    }
+
+    /// Return the underlying YAML node for the item at *idx* as a YamlScalar,
+    /// YamlMapping, or YamlSequence object, preserving style/tag metadata.
+    /// Raises ``IndexError`` for out-of-range indices.
+    fn node(&self, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        node_to_doc(py, self.inner.items[i].value.clone(), DocMeta::none(), None)
+    }
+
+    /// Set the block/flow style for the container value at *idx*.
+    /// *style* must be ``"block"`` or ``"flow"``.
+    /// No-op when the item is a scalar or null.
+    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+    fn container_style(slf: &Bound<'_, Self>, idx: isize, style: &str) -> PyResult<()> {
+        let new_style = match style {
+            "block" => ContainerStyle::Block,
+            "flow" => ContainerStyle::Flow,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected \"block\" or \"flow\""
+                )));
+            }
+        };
+        let i = {
+            let borrow = slf.borrow();
+            resolve_seq_idx(idx, borrow.inner.items.len())?
+        };
+        {
+            let mut borrow = slf.borrow_mut();
+            match &mut borrow.inner.items[i].value {
+                YamlNode::Mapping(m) => m.style = new_style,
+                YamlNode::Sequence(s) => s.style = new_style,
+                _ => {} // scalar / null / alias — silently ignored
+            }
+        }
+        // Also sync the Python-side object stored in the parent list so that
+        // extract_yaml_node (which reads inner.style from the child object) sees the change.
+        let py_val = slf.as_super().get_item(i)?;
+        if let Ok(bound_m) = py_val.cast::<PyYamlMapping>() {
+            bound_m.borrow_mut().inner.style = new_style;
+        } else if let Ok(bound_s) = py_val.cast::<PyYamlSequence>() {
+            bound_s.borrow_mut().inner.style = new_style;
+        }
+        Ok(())
+    }
+
+    /// Set the scalar style for the item at *idx*.
+    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+    fn scalar_style(&mut self, idx: isize, style: &str) -> PyResult<()> {
+        let new_style = match style {
+            "plain" => ScalarStyle::Plain,
+            "single" => ScalarStyle::SingleQuoted,
+            "double" => ScalarStyle::DoubleQuoted,
+            "literal" => ScalarStyle::Literal,
+            "folded" => ScalarStyle::Folded,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown style {other:?}; expected plain/single/double/literal/folded"
+                )));
+            }
+        };
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        if let YamlNode::Scalar(s) = &mut self.inner.items[i].value {
+            s.style = new_style;
+        }
+        Ok(())
+    }
+
+    /// Read or write the number of blank lines emitted before the item at *idx*.
+    /// `blank_lines_before(idx)` returns the current count (``int``).
+    /// `blank_lines_before(idx, n)` sets it; values are clamped to 0–255.
+    #[pyo3(signature = (idx, *args))]
+    fn blank_lines_before(
+        &mut self,
+        py: Python<'_>,
+        idx: isize,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        match args.len() {
+            0 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                Ok((self.inner.items[i].blank_lines_before as u32)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            }
+            1 => {
+                let i = resolve_seq_idx(idx, self.inner.items.len())?;
+                let n: u32 = args.get_item(0)?.extract()?;
+                self.inner.items[i].blank_lines_before = n.min(255) as u8;
+                Ok(py.None())
+            }
+            _ => Err(PyRuntimeError::new_err(
+                "blank_lines_before takes 1 or 2 positional arguments",
+            )),
+        }
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
@@ -1990,6 +2232,7 @@ fn get_tag_directives_flag(obj: &Bound<'_, PyAny>) -> Vec<(String, String)> {
 fn emit_doc_to_string(
     doc: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
+    indent: usize,
 ) -> PyResult<String> {
     let node = extract_yaml_node(doc, schema)?;
     Ok(emit_docs(
@@ -1998,34 +2241,37 @@ fn emit_doc_to_string(
         &[get_explicit_end_flag(doc)],
         &[get_yaml_version_flag(doc)],
         &[get_tag_directives_flag(doc)],
+        indent,
     ))
 }
 
 #[pyfunction]
-#[pyo3(signature = (doc, stream, *, schema=None))]
+#[pyo3(signature = (doc, stream, *, schema=None, indent=2))]
 fn dump(
     doc: &Bound<'_, PyAny>,
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
+    indent: usize,
 ) -> PyResult<()> {
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    write_to_stream(stream, &emit_doc_to_string(doc, sb)?)
+    write_to_stream(stream, &emit_doc_to_string(doc, sb, indent)?)
 }
 
 #[pyfunction]
-#[pyo3(signature = (doc, *, schema=None))]
-fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>) -> PyResult<String> {
+#[pyo3(signature = (doc, *, schema=None, indent=2))]
+fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    emit_doc_to_string(doc, sb)
+    emit_doc_to_string(doc, sb, indent)
 }
 
 #[pyfunction]
-#[pyo3(signature = (docs, stream, *, schema=None))]
+#[pyo3(signature = (docs, stream, *, schema=None, indent=2))]
 fn dump_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
+    indent: usize,
 ) -> PyResult<()> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
@@ -2038,15 +2284,19 @@ fn dump_all(
     let versions: Vec<Option<(u8, u8)>> = items.iter().map(|i| get_yaml_version_flag(i)).collect();
     let tags: Vec<Vec<(String, String)>> =
         items.iter().map(|i| get_tag_directives_flag(i)).collect();
-    write_to_stream(stream, &emit_docs(&nodes, &starts, &ends, &versions, &tags))
+    write_to_stream(
+        stream,
+        &emit_docs(&nodes, &starts, &ends, &versions, &tags, indent),
+    )
 }
 
 #[pyfunction]
-#[pyo3(signature = (docs, *, schema=None))]
+#[pyo3(signature = (docs, *, schema=None, indent=2))]
 fn dumps_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
+    indent: usize,
 ) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
@@ -2059,7 +2309,7 @@ fn dumps_all(
     let versions: Vec<Option<(u8, u8)>> = items.iter().map(|i| get_yaml_version_flag(i)).collect();
     let tags: Vec<Vec<(String, String)>> =
         items.iter().map(|i| get_tag_directives_flag(i)).collect();
-    Ok(emit_docs(&nodes, &starts, &ends, &versions, &tags))
+    Ok(emit_docs(&nodes, &starts, &ends, &versions, &tags, indent))
 }
 
 /// The yarutsk module.
