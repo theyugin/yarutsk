@@ -74,13 +74,12 @@ Specifically preserved:
 pip install yarutsk
 ```
 
-To build from source (requires Rust 1.85+):
+To build from source (requires Rust 1.85+ and [uv](https://github.com/astral-sh/uv)):
 
 ```bash
-pip install maturin
 git clone --recurse-submodules https://github.com/theyugin/yarutsk
 cd yarutsk
-maturin develop
+make setup
 ```
 
 ## API
@@ -224,6 +223,30 @@ doc["bg"]                              # Color(255, 0, 128)
 yarutsk.dumps(doc, schema=schema)      # 'bg: !color 255,0,128\n'
 ```
 
+#### Controlling style from a dumper
+
+A dumper's second return value can be a `YamlScalar`, `YamlMapping`, or `YamlSequence` to control emitted style. The tag from the first return value is stamped on top:
+
+```python
+class Color:
+    def __init__(self, r, g, b): self.r, self.g, self.b = r, g, b
+
+schema = yarutsk.Schema()
+schema.add_loader("!color", lambda s: Color(*[int(x) for x in s.split(",")]))
+
+# Emit the value double-quoted
+schema.add_dumper(Color, lambda c: (
+    "!color",
+    yarutsk.YamlScalar(f"{c.r},{c.g},{c.b}", style="double"),
+))
+
+doc = yarutsk.loads("bg: placeholder\n")
+doc["bg"] = Color(255, 0, 128)
+yarutsk.dumps(doc, schema=schema)      # 'bg: !color "255,0,128"\n'
+```
+
+Similarly, returning a `YamlMapping(style="flow")` or `YamlSequence(style="flow")` from a dumper emits the container in flow style.
+
 #### Overriding built-in tags
 
 Registering a loader for `!!int`, `!!float`, `!!bool`, `!!null`, or `!!str` bypasses the built-in coercion. The callable receives the **raw YAML string** rather than the already-converted Python value:
@@ -265,9 +288,49 @@ doc.explicit_start = False
 doc.explicit_end   = False
 ```
 
+`YamlScalar` can also be constructed directly to control how a value is emitted when assigned into a mapping or sequence:
+
+```python
+import yarutsk
+
+doc = yarutsk.loads("x: placeholder\n")
+
+# Assign a double-quoted string
+doc["x"] = yarutsk.YamlScalar("hello", style="double")
+yarutsk.dumps(doc)                     # 'x: "hello"\n'
+
+# Assign a plain string with a custom tag
+doc["x"] = yarutsk.YamlScalar("42", tag="!!str")
+yarutsk.dumps(doc)                     # 'x: !!str 42\n'
+```
+
+Constructor signature: `YamlScalar(value, *, style="plain", tag=None)`
+
+- `value` — a Python primitive: `bool`, `int`, `float`, `str`, or `None`
+- `style` — `"plain"` (default), `"single"`, `"double"`, `"literal"`, `"folded"`
+- `tag` — YAML tag string, e.g. `"!!str"`, `"!mytag"`, or `None`
+
 ### YamlMapping
 
-`YamlMapping` is a subclass of `dict` with insertion-ordered keys. All standard dict operations work directly:
+`YamlMapping` is a subclass of `dict` with insertion-ordered keys. It can be constructed directly with a style and optional tag:
+
+```python
+# Create a flow-style mapping and populate it
+m = yarutsk.YamlMapping(style="flow")
+m["x"] = 1
+m["y"] = 2
+
+doc = yarutsk.loads("point: placeholder\n")
+doc["point"] = m
+yarutsk.dumps(doc)                     # 'point: {x: 1, y: 2}\n'
+```
+
+Constructor signature: `YamlMapping(*, style="block", tag=None)`
+
+- `style` — `"block"` (default) or `"flow"`
+- `tag` — YAML tag string, or `None`
+
+All standard dict operations work directly:
 
 ```python
 # Standard dict interface (inherited)
@@ -317,9 +380,16 @@ node = doc.node("key")                # KeyError if absent
 # Scalar style shortcut (equivalent to: doc.node("key").style = "single")
 doc.scalar_style("key", "single")     # 'plain'|'single'|'double'|'literal'|'folded'
 
+# Assign a styled scalar in one expression using YamlScalar
+doc["key"] = yarutsk.YamlScalar("value", style="double")
+
 # Container style (read from source; also settable to switch block ↔ flow)
 doc.style                              # -> 'block' | 'flow'
 doc.style = "flow"                     # emit as {key: value, ...}
+
+# Assign a styled nested container using YamlMapping / YamlSequence
+doc["nested"] = yarutsk.YamlMapping(style="flow")
+doc["nested"]["x"] = 1
 
 # Blank lines before a key (1-arg = get, 2-arg = set)
 doc.blank_lines_before("key")         # -> int
@@ -336,7 +406,26 @@ doc.sort_keys(recursive=True)          # also sort all nested mappings
 
 ### YamlSequence
 
-`YamlSequence` is a subclass of `list`. All standard list operations work directly:
+`YamlSequence` is a subclass of `list`. It can be constructed directly with a style and optional tag:
+
+```python
+# Create a flow-style sequence
+s = yarutsk.YamlSequence(style="flow")
+s.append(1)
+s.append(2)
+s.append(3)
+
+doc = yarutsk.loads("values: placeholder\n")
+doc["values"] = s
+yarutsk.dumps(doc)                     # 'values: [1, 2, 3]\n'
+```
+
+Constructor signature: `YamlSequence(*, style="block", tag=None)`
+
+- `style` — `"block"` (default) or `"flow"`
+- `tag` — YAML tag string, or `None`
+
+All standard list operations work directly:
 
 ```python
 # Standard list interface (inherited)
@@ -382,6 +471,9 @@ doc.explicit_end   = True
 
 # Scalar style shortcut (equivalent to: doc.node(idx).style = "single")
 doc.scalar_style(0, "double")         # 'plain'|'single'|'double'|'literal'|'folded'
+
+# Assign a styled scalar in one expression using YamlScalar
+doc[0] = yarutsk.YamlScalar("item", style="single")
 
 # Container style
 doc.style                              # -> 'block' | 'flow'
@@ -458,9 +550,7 @@ seq[99]                      # IndexError
 Compare load, dump, and round-trip performance against PyYAML and ruamel.yaml across small, medium, and large inputs:
 
 ```bash
-uv sync --group benchmark
-uv run maturin develop --release
-uv run pytest benchmarks/ -v --benchmark-sort=name
+make bench
 ```
 
 ## Running tests
@@ -472,18 +562,28 @@ You need Rust 1.85+ and Python 3.12+ with [uv](https://github.com/astral-sh/uv).
 git clone --recurse-submodules https://github.com/theyugin/yarutsk
 cd yarutsk
 
-# 2. Create a virtual environment and install dev dependencies
-uv sync --group dev
+# 2. Install dependencies and build
+make setup
 
-# 3. Build the extension in dev (debug) mode
-uv run maturin develop
-
-# 4. Run the suites
-uv run pytest tests/ --ignore=tests/test_yaml_suite.py -v  # core library tests
-uv run pytest tests/test_yaml_suite.py -q                   # yaml-test-suite compliance
+# 3. Run the suites
+make test        # core library tests (fast)
+make test-all    # all tests including yaml-test-suite compliance
 ```
 
 `test_yaml_suite.py` requires the `yaml-test-suite` submodule. Tests that fail due to known YAML normalisation differences are marked `xfail` and do not count as failures.
+
+Other useful targets:
+
+```bash
+make build          # debug build
+make build-release  # optimised build
+make lint           # ruff + cargo clippy
+make fmt            # auto-format Python and Rust
+make typecheck      # mypy strict check on stubs
+make test-roundtrip # round-trip fidelity tests only
+```
+
+Run `make help` for the full list.
 
 ## Internals
 

@@ -1,6 +1,7 @@
 """Tests for the Schema custom loader/dumper registry."""
 
 import datetime
+from textwrap import dedent
 
 import yarutsk
 
@@ -40,12 +41,26 @@ class TestCustomMappingType:
         self.schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
 
     def test_load_mapping_tag(self) -> None:
-        doc = yarutsk.loads("origin: !point\n  x: 0\n  y: 0\n", schema=self.schema)
+        doc = yarutsk.loads(
+            dedent("""\
+                origin: !point
+                  x: 0
+                  y: 0
+            """),
+            schema=self.schema,
+        )
         assert isinstance(doc["origin"], Point)
         assert doc["origin"] == Point(0, 0)
 
     def test_dump_custom_object(self) -> None:
-        doc = yarutsk.loads("origin: !point\n  x: 1\n  y: 2\n", schema=self.schema)
+        doc = yarutsk.loads(
+            dedent("""\
+                origin: !point
+                  x: 1
+                  y: 2
+            """),
+            schema=self.schema,
+        )
         out = yarutsk.dumps(doc, schema=self.schema)
         assert "!point" in out
         assert "x: 1" in out
@@ -60,7 +75,11 @@ class TestCustomMappingType:
         assert "y: 4" in out
 
     def test_roundtrip(self) -> None:
-        src = "origin: !point\n  x: 0\n  y: 0\n"
+        src = dedent("""\
+            origin: !point
+              x: 0
+              y: 0
+        """)
         doc = yarutsk.loads(src, schema=self.schema)
         out = yarutsk.dumps(doc, schema=self.schema)
         doc2 = yarutsk.loads(out, schema=self.schema)
@@ -69,7 +88,13 @@ class TestCustomMappingType:
 
     def test_dump_items_in_sequence(self) -> None:
         doc = yarutsk.loads(
-            "points:\n  - !point\n    x: 1\n    y: 2\n", schema=self.schema
+            dedent("""\
+                points:
+                  - !point
+                    x: 1
+                    y: 2
+            """),
+            schema=self.schema,
         )
         doc["points"].append(Point(3, 4))
         out = yarutsk.dumps(doc, schema=self.schema)
@@ -354,7 +379,14 @@ class TestMutableMappingCustomTypes:
         assert "y: 0" in out
 
     def test_setitem_overwrite_existing_key(self) -> None:
-        doc = yarutsk.loads("origin: !point\n  x: 1\n  y: 2\n", schema=self.schema)
+        doc = yarutsk.loads(
+            dedent("""\
+                origin: !point
+                  x: 1
+                  y: 2
+            """),
+            schema=self.schema,
+        )
         doc["origin"] = Point(9, 9)
         out = yarutsk.dumps(doc, schema=self.schema)
         assert "x: 9" in out
@@ -362,7 +394,12 @@ class TestMutableMappingCustomTypes:
         assert "x: 1" not in out
 
     def test_setitem_multiple_custom_values(self) -> None:
-        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+            b: 2
+        """)
+        )
         doc["a"] = Point(1, 2)
         doc["b"] = Point(3, 4)
         out = yarutsk.dumps(doc, schema=self.schema)
@@ -394,7 +431,12 @@ class TestMutableMappingCustomTypes:
         assert "x: 99" not in out
 
     def test_nested_mapping_custom_value(self) -> None:
-        doc = yarutsk.loads("config:\n  debug: true\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            config:
+              debug: true
+        """)
+        )
         doc["config"]["pos"] = Point(7, 8)
         out = yarutsk.dumps(doc, schema=self.schema)
         assert "!point" in out
@@ -427,7 +469,13 @@ class TestMutableSequenceCustomTypes:
 
     def test_append_multiple_custom(self) -> None:
         doc = yarutsk.loads(
-            "points:\n  - !point\n    x: 0\n    y: 0\n", schema=self.schema
+            dedent("""\
+                points:
+                  - !point
+                    x: 0
+                    y: 0
+            """),
+            schema=self.schema,
         )
         doc["points"].append(Point(1, 2))
         doc["points"].append(Point(3, 4))
@@ -436,7 +484,13 @@ class TestMutableSequenceCustomTypes:
 
     def test_setitem_replaces_custom(self) -> None:
         doc = yarutsk.loads(
-            "points:\n  - !point\n    x: 1\n    y: 2\n", schema=self.schema
+            dedent("""\
+                points:
+                  - !point
+                    x: 1
+                    y: 2
+            """),
+            schema=self.schema,
         )
         doc["points"][0] = Point(9, 9)
         out = yarutsk.dumps(doc, schema=self.schema)
@@ -445,7 +499,13 @@ class TestMutableSequenceCustomTypes:
 
     def test_insert_custom(self) -> None:
         doc = yarutsk.loads(
-            "points:\n  - !point\n    x: 1\n    y: 2\n", schema=self.schema
+            dedent("""\
+                points:
+                  - !point
+                    x: 1
+                    y: 2
+            """),
+            schema=self.schema,
         )
         doc["points"].insert(0, Point(0, 0))
         out = yarutsk.dumps(doc, schema=self.schema)
@@ -458,7 +518,14 @@ class TestMutableSequenceCustomTypes:
         assert out.count("!point") == 2
 
     def test_top_level_sequence_append(self) -> None:
-        doc = yarutsk.loads("- !point\n  x: 0\n  y: 0\n", schema=self.schema)
+        doc = yarutsk.loads(
+            dedent("""\
+                - !point
+                  x: 0
+                  y: 0
+            """),
+            schema=self.schema,
+        )
         doc.append(Point(5, 6))
         out = yarutsk.dumps(doc, schema=self.schema)
         assert out.count("!point") == 2
@@ -466,7 +533,13 @@ class TestMutableSequenceCustomTypes:
 
     def test_roundtrip_after_append(self) -> None:
         doc = yarutsk.loads(
-            "points:\n  - !point\n    x: 0\n    y: 0\n", schema=self.schema
+            dedent("""\
+                points:
+                  - !point
+                    x: 0
+                    y: 0
+            """),
+            schema=self.schema,
         )
         doc["points"].append(Point(7, 8))
         out = yarutsk.dumps(doc, schema=self.schema)
@@ -475,7 +548,13 @@ class TestMutableSequenceCustomTypes:
         assert doc2["points"][1] == Point(7, 8)
 
     def test_mixed_native_and_custom_in_sequence(self) -> None:
-        doc = yarutsk.loads("items:\n  - 1\n  - 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            items:
+              - 1
+              - 2
+        """)
+        )
         doc["items"].append(Point(3, 4))
         out = yarutsk.dumps(doc, schema=self.schema)
         assert "- 1" in out

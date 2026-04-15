@@ -840,6 +840,31 @@ fn sort_mapping(
     Ok(())
 }
 
+// ─── Style-parsing helpers ────────────────────────────────────────────────────
+
+fn parse_scalar_style(style: &str) -> PyResult<ScalarStyle> {
+    match style {
+        "plain" => Ok(ScalarStyle::Plain),
+        "single" => Ok(ScalarStyle::SingleQuoted),
+        "double" => Ok(ScalarStyle::DoubleQuoted),
+        "literal" => Ok(ScalarStyle::Literal),
+        "folded" => Ok(ScalarStyle::Folded),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown style {other:?}; expected plain/single/double/literal/folded"
+        ))),
+    }
+}
+
+fn parse_container_style(style: &str) -> PyResult<ContainerStyle> {
+    match style {
+        "block" => Ok(ContainerStyle::Block),
+        "flow" => Ok(ContainerStyle::Flow),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown style {other:?}; expected \"block\" or \"flow\""
+        ))),
+    }
+}
+
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
 /// A YAML scalar document node (int, float, bool, str, or null).
@@ -859,6 +884,37 @@ pub struct PyYamlScalar {
 
 #[pymethods]
 impl PyYamlScalar {
+    /// Create a new ``YamlScalar`` from a Python primitive value.
+    ///
+    /// *value* must be ``str``, ``int``, ``float``, ``bool``, or ``None``.
+    /// *style* controls the quoting style when serialized; defaults to ``"plain"``.
+    /// *tag* is an optional YAML tag string (e.g. ``"!mytag"``).
+    #[new]
+    #[pyo3(signature = (value, *, style = "plain", tag = None))]
+    fn new(value: &Bound<'_, PyAny>, style: &str, tag: Option<&str>) -> PyResult<Self> {
+        let node = py_primitive_to_scalar(value).ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "YamlScalar value must be a Python primitive (str, int, float, bool, or None)",
+            )
+        })?;
+        let scalar_style = parse_scalar_style(style)?;
+        let inner = match node {
+            YamlNode::Scalar(mut s) => {
+                s.style = scalar_style;
+                s.tag = tag.map(str::to_owned);
+                YamlNode::Scalar(s)
+            }
+            other => other,
+        };
+        Ok(PyYamlScalar {
+            inner,
+            explicit_start: false,
+            explicit_end: false,
+            yaml_version: None,
+            tag_directives: vec![],
+        })
+    }
+
     /// The Python primitive value of this scalar.
     #[getter]
     fn value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -905,18 +961,7 @@ impl PyYamlScalar {
 
     #[setter]
     fn set_style(&mut self, style: &str) -> PyResult<()> {
-        let new_style = match style {
-            "plain" => ScalarStyle::Plain,
-            "single" => ScalarStyle::SingleQuoted,
-            "double" => ScalarStyle::DoubleQuoted,
-            "literal" => ScalarStyle::Literal,
-            "folded" => ScalarStyle::Folded,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected plain/single/double/literal/folded"
-                )));
-            }
-        };
+        let new_style = parse_scalar_style(style)?;
         if let YamlNode::Scalar(s) = &mut self.inner {
             s.style = new_style;
         }
@@ -1006,14 +1051,26 @@ pub struct PyYamlMapping {
 #[pymethods]
 impl PyYamlMapping {
     #[new]
-    fn new() -> Self {
-        PyYamlMapping {
-            inner: types::YamlMapping::new(),
+    #[pyo3(signature = (*, style = "block", tag = None))]
+    fn new(style: &str, tag: Option<&str>) -> PyResult<Self> {
+        let mut inner = types::YamlMapping::new();
+        inner.style = parse_container_style(style)?;
+        inner.tag = tag.map(str::to_owned);
+        Ok(PyYamlMapping {
+            inner,
             explicit_start: false,
             explicit_end: false,
             yaml_version: None,
             tag_directives: vec![],
-        }
+        })
+    }
+
+    // Intercept __init__ so that Python does not forward style/tag kwargs to
+    // dict.__init__, which would otherwise insert them as dict entries.
+    #[pyo3(signature = (*, style = "block", tag = None))]
+    #[allow(unused_variables)]
+    fn __init__(_slf: &Bound<'_, Self>, style: &str, tag: Option<&str>) -> PyResult<()> {
+        Ok(())
     }
 
     // ── Mutations (must sync parent dict) ────────────────────────────────────
@@ -1327,15 +1384,7 @@ impl PyYamlMapping {
 
     #[setter]
     fn set_style(&mut self, style: &str) -> PyResult<()> {
-        self.inner.style = match style {
-            "block" => ContainerStyle::Block,
-            "flow" => ContainerStyle::Flow,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected \"block\" or \"flow\""
-                )));
-            }
-        };
+        self.inner.style = parse_container_style(style)?;
         Ok(())
     }
 
@@ -1533,14 +1582,26 @@ pub struct PyYamlSequence {
 #[pymethods]
 impl PyYamlSequence {
     #[new]
-    fn new() -> Self {
-        PyYamlSequence {
-            inner: types::YamlSequence::new(),
+    #[pyo3(signature = (*, style = "block", tag = None))]
+    fn new(style: &str, tag: Option<&str>) -> PyResult<Self> {
+        let mut inner = types::YamlSequence::new();
+        inner.style = parse_container_style(style)?;
+        inner.tag = tag.map(str::to_owned);
+        Ok(PyYamlSequence {
+            inner,
             explicit_start: false,
             explicit_end: false,
             yaml_version: None,
             tag_directives: vec![],
-        }
+        })
+    }
+
+    // Intercept __init__ so that Python does not forward style/tag kwargs to
+    // list.__init__, which would otherwise try to iterate them as sequence items.
+    #[pyo3(signature = (*, style = "block", tag = None))]
+    #[allow(unused_variables)]
+    fn __init__(_slf: &Bound<'_, Self>, style: &str, tag: Option<&str>) -> PyResult<()> {
+        Ok(())
     }
 
     // ── Mutations (must sync parent list) ────────────────────────────────────
@@ -1893,15 +1954,7 @@ impl PyYamlSequence {
 
     #[setter]
     fn set_style(&mut self, style: &str) -> PyResult<()> {
-        self.inner.style = match style {
-            "block" => ContainerStyle::Block,
-            "flow" => ContainerStyle::Flow,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected \"block\" or \"flow\""
-                )));
-            }
-        };
+        self.inner.style = parse_container_style(style)?;
         Ok(())
     }
 

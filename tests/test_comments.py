@@ -1,17 +1,11 @@
 """Tests for comment preservation, edge cases, and mutations."""
 
 import io
+from textwrap import dedent
 
 import pytest
 
-try:
-    import yarutsk
-
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestCommentPreservation:
@@ -23,12 +17,23 @@ class TestCommentPreservation:
         assert doc.comment_inline("name") == "inline comment"
 
     def test_leading_comment_preserved(self):
-        content = io.StringIO("# Leading comment\nname: John")
+        content = io.StringIO(
+            dedent("""\
+            # Leading comment
+            name: John
+        """)
+        )
         doc = yarutsk.load(content)
         assert doc.comment_before("name") == "Leading comment"
 
     def test_multiple_leading_comments(self):
-        content = io.StringIO("# Line 1\n# Line 2\nname: John")
+        content = io.StringIO(
+            dedent("""\
+            # Line 1
+            # Line 2
+            name: John
+        """)
+        )
         doc = yarutsk.load(content)
         before = doc.comment_before("name")
         assert "Line 1" in before
@@ -75,26 +80,55 @@ class TestCommentEdgeCases:
 
     def test_inline_on_null_value(self):
         """Comment on a key whose value is null (bare `key:`)."""
-        doc = yarutsk.load(io.StringIO("key:  # empty\nother: x"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            key:  # empty
+            other: x
+        """)
+            )
+        )
         assert doc.comment_inline("key") == "empty"
         assert doc.comment_before("other") is None
 
     def test_inline_only_on_last_key_in_block(self):
         """Inline comment on the last key of a mapping."""
-        doc = yarutsk.load(io.StringIO("a: 1\nb: 2  # last"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            a: 1
+            b: 2  # last
+        """)
+            )
+        )
         assert doc.comment_inline("a") is None
         assert doc.comment_inline("b") == "last"
 
     def test_multiple_keys_each_has_own_inline(self):
         """Every key in a multi-key mapping gets its own inline comment."""
-        doc = yarutsk.load(io.StringIO("a: 1  # c1\nb: 2  # c2\nc: 3  # c3"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            a: 1  # c1
+            b: 2  # c2
+            c: 3  # c3
+        """)
+            )
+        )
         assert doc.comment_inline("a") == "c1"
         assert doc.comment_inline("b") == "c2"
         assert doc.comment_inline("c") == "c3"
 
     def test_inline_does_not_bleed_to_next_key(self):
         """An inline comment on key N is not treated as before-comment for key N+1."""
-        doc = yarutsk.load(io.StringIO("a: 1  # only-a\nb: 2"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            a: 1  # only-a
+            b: 2
+        """)
+            )
+        )
         assert doc.comment_inline("a") == "only-a"
         assert doc.comment_before("b") is None
 
@@ -102,13 +136,28 @@ class TestCommentEdgeCases:
 
     def test_before_comment_on_second_key(self):
         """A comment between two keys is attached to the second key."""
-        doc = yarutsk.load(io.StringIO("a: 1\n# before b\nb: 2"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            a: 1
+            # before b
+            b: 2
+        """)
+            )
+        )
         assert doc.comment_before("a") is None
         assert doc.comment_before("b") == "before b"
 
     def test_before_comment_on_every_key(self):
         """Each key can carry its own before-comment."""
-        yaml = "# c-a\na: 1\n# c-b\nb: 2\n# c-c\nc: 3"
+        yaml = dedent("""\
+            # c-a
+            a: 1
+            # c-b
+            b: 2
+            # c-c
+            c: 3
+        """)
         doc = yarutsk.load(io.StringIO(yaml))
         assert doc.comment_before("a") == "c-a"
         assert doc.comment_before("b") == "c-b"
@@ -116,16 +165,42 @@ class TestCommentEdgeCases:
 
     def test_before_comment_blank_line_between_comment_and_key(self):
         """A blank line between the comment and the key still associates them."""
-        doc = yarutsk.load(io.StringIO("# header\n\nkey: val"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            # header
+
+            key: val
+        """)
+            )
+        )
         assert doc.comment_before("key") == "header"
 
     def test_multiple_blank_lines_dont_lose_comment(self):
-        doc = yarutsk.load(io.StringIO("# note\n\n\nkey: val"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            # note
+
+
+            key: val
+        """)
+            )
+        )
         assert doc.comment_before("key") == "note"
 
     def test_multi_line_before_comment_joined(self):
         """Multiple consecutive comment lines are joined with newline."""
-        doc = yarutsk.load(io.StringIO("# L1\n# L2\n# L3\nkey: val"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            # L1
+            # L2
+            # L3
+            key: val
+        """)
+            )
+        )
         before = doc.comment_before("key")
         assert before == "L1\nL2\nL3"
 
@@ -133,17 +208,36 @@ class TestCommentEdgeCases:
 
     def test_inline_on_nested_key_not_outer(self):
         """An inline comment on a nested value is on the inner key, not the outer."""
-        doc = yarutsk.load(io.StringIO("outer:\n  inner: val  # deep"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            outer:
+              inner: val  # deep
+        """)
+            )
+        )
         assert doc["outer"].comment_inline("inner") == "deep"
         assert doc.comment_inline("outer") is None
 
     def test_before_comment_on_nested_key(self):
         """A comment before an indented key belongs to that key."""
-        doc = yarutsk.load(io.StringIO("outer:\n  # before inner\n  inner: val"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            outer:
+              # before inner
+              inner: val
+        """)
+            )
+        )
         assert doc["outer"].comment_before("inner") == "before inner"
 
     def test_inline_on_deeply_nested_key(self):
-        yaml = "l1:\n  l2:\n    l3: v  # deep inline"
+        yaml = dedent("""\
+            l1:
+              l2:
+                l3: v  # deep inline
+        """)
         doc = yarutsk.load(io.StringIO(yaml))
         assert doc["l1"]["l2"].comment_inline("l3") == "deep inline"
 
@@ -151,7 +245,12 @@ class TestCommentEdgeCases:
 
     def test_before_comment_on_sequence_item_round_trips(self):
         """A before-comment on a sequence item survives a dump/load cycle."""
-        yaml = "items:\n  # first item\n  - foo\n  - bar"
+        yaml = dedent("""\
+            items:
+              # first item
+              - foo
+              - bar
+        """)
         doc = yarutsk.load(io.StringIO(yaml))
         out = io.StringIO()
         yarutsk.dump(doc, out)
@@ -162,7 +261,13 @@ class TestCommentEdgeCases:
 
     def test_append_then_comment_survives_dump(self):
         """Appending an item and adding a comment on the new item round-trips correctly."""
-        doc = yarutsk.loads("items:\n  - foo\n  - bar")
+        doc = yarutsk.loads(
+            dedent("""\
+            items:
+              - foo
+              - bar
+        """)
+        )
         items = doc["items"]
         items.append("baz")
         items.comment_inline(2, "newly added")
@@ -175,7 +280,13 @@ class TestCommentEdgeCases:
 
     def test_nested_mapping_mutation_then_comment_survives_dump(self):
         """Mutating a nested mapping and adding a comment on it round-trips correctly."""
-        doc = yarutsk.loads("server:\n  host: localhost\n  port: 5432")
+        doc = yarutsk.loads(
+            dedent("""\
+            server:
+              host: localhost
+              port: 5432
+        """)
+        )
         server = doc["server"]
         server["port"] = 5433
         server.comment_inline("port", "changed")
@@ -188,7 +299,14 @@ class TestCommentEdgeCases:
 
     def test_inline_on_sequence_item_does_not_attach_to_parent_key(self):
         """Inline comment on a sequence item is NOT on the mapping key above."""
-        doc = yarutsk.load(io.StringIO("items:\n  - foo  # item comment"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            items:
+              - foo  # item comment
+        """)
+            )
+        )
         assert doc.comment_inline("items") is None
 
     # ── whitespace preservation in comment text ───────────────────────────────
@@ -203,7 +321,15 @@ class TestCommentEdgeCases:
 
     def test_multiline_before_comment_round_trips(self):
         """Multi-line before-comment round-trips through dump/load."""
-        doc = yarutsk.load(io.StringIO("# line one\n# line two\nkey: val"))
+        doc = yarutsk.load(
+            io.StringIO(
+                dedent("""\
+            # line one
+            # line two
+            key: val
+        """)
+            )
+        )
         out = io.StringIO()
         yarutsk.dump(doc, out)
         doc2 = yarutsk.load(io.StringIO(out.getvalue()))
@@ -237,7 +363,12 @@ class TestCommentMutations:
 
     def test_overwrite_before_comment(self):
         """Calling comment_before twice keeps only the latest text."""
-        doc = yarutsk.loads("# original\nkey: val")
+        doc = yarutsk.loads(
+            dedent("""\
+            # original
+            key: val
+        """)
+        )
         doc.comment_before("key", "updated")
         out = yarutsk.dumps(doc)
         assert "# updated" in out
@@ -252,7 +383,12 @@ class TestCommentMutations:
 
     def test_clear_before_comment_with_none(self):
         """comment_before(key, None) removes the comment from output."""
-        doc = yarutsk.loads("# remove me\nkey: val")
+        doc = yarutsk.loads(
+            dedent("""\
+            # remove me
+            key: val
+        """)
+        )
         doc.comment_before("key", None)
         out = yarutsk.dumps(doc)
         assert "#" not in out
@@ -261,7 +397,12 @@ class TestCommentMutations:
 
     def test_inline_and_before_on_same_key(self):
         """A key can carry both an inline and a before-comment simultaneously."""
-        doc = yarutsk.loads("# above\nkey: val  # beside")
+        doc = yarutsk.loads(
+            dedent("""\
+            # above
+            key: val  # beside
+        """)
+        )
         assert doc.comment_before("key") == "above"
         assert doc.comment_inline("key") == "beside"
         out = yarutsk.dumps(doc)
@@ -288,7 +429,12 @@ class TestCommentMutations:
 
     def test_before_comment_survives_value_change(self):
         """Changing a value via __setitem__ preserves the existing before-comment."""
-        doc = yarutsk.loads("# db port\nport: 5432")
+        doc = yarutsk.loads(
+            dedent("""\
+            # db port
+            port: 5432
+        """)
+        )
         doc["port"] = 5433
         out = yarutsk.dumps(doc)
         assert "5433" in out
@@ -305,7 +451,13 @@ class TestCommentMutations:
         assert "# gone" not in out
 
     def test_comment_gone_after_pop(self):
-        doc = yarutsk.loads("a: 1\n# before b\nb: 2")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+            # before b
+            b: 2
+        """)
+        )
         doc.pop("b")
         out = yarutsk.dumps(doc)
         assert "before b" not in out
@@ -347,7 +499,13 @@ class TestCommentSequenceMutations:
     # ── comment_* on sequence indices ────────────────────────────────────
 
     def test_set_inline_on_sequence_item(self):
-        doc = yarutsk.loads("- a\n- b\n- c")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+            - c
+        """)
+        )
         doc.comment_inline(1, "middle")
         out = yarutsk.dumps(doc)
         assert "# middle" in out
@@ -355,7 +513,13 @@ class TestCommentSequenceMutations:
         assert doc2.comment_inline(1) == "middle"
 
     def test_set_before_on_sequence_item(self):
-        doc = yarutsk.loads("- a\n- b\n- c")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+            - c
+        """)
+        )
         doc.comment_before(2, "last item")
         out = yarutsk.dumps(doc)
         assert "# last item" in out
@@ -363,14 +527,24 @@ class TestCommentSequenceMutations:
         assert doc2.comment_before(2) == "last item"
 
     def test_overwrite_inline_on_sequence_item(self):
-        doc = yarutsk.loads("- a  # old\n- b")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a  # old
+            - b
+        """)
+        )
         doc.comment_inline(0, "new")
         out = yarutsk.dumps(doc)
         assert "# new" in out
         assert "old" not in out
 
     def test_clear_inline_on_sequence_item(self):
-        doc = yarutsk.loads("- a  # remove\n- b")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a  # remove
+            - b
+        """)
+        )
         doc.comment_inline(0, None)
         out = yarutsk.dumps(doc)
         assert "#" not in out
@@ -379,13 +553,23 @@ class TestCommentSequenceMutations:
 
     def test_insert_shifts_item_with_comment(self):
         """insert(0, …) shifts existing items; the comment travels with them."""
-        doc = yarutsk.loads("- a\n- b  # on b")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b  # on b
+        """)
+        )
         doc.insert(0, "z")
         assert doc[2] == "b"
         assert doc.comment_inline(2) == "on b"
 
     def test_insert_new_item_has_no_comment(self):
-        doc = yarutsk.loads("- a\n- b")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+        """)
+        )
         doc.insert(1, "new")
         assert doc.comment_inline(1) is None
         assert doc.comment_before(1) is None
@@ -393,14 +577,26 @@ class TestCommentSequenceMutations:
     # ── pop() removes comment ────────────────────────────────────────────────
 
     def test_pop_removes_comment_from_output(self):
-        doc = yarutsk.loads("- a  # first\n- b\n- c")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a  # first
+            - b
+            - c
+        """)
+        )
         doc.pop(0)
         out = yarutsk.dumps(doc)
         assert "# first" not in out
 
     def test_pop_shifts_remaining_comments(self):
         """After pop(0), what was item 1 is now item 0 and keeps its comment."""
-        doc = yarutsk.loads("- a\n- b  # on b\n- c")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b  # on b
+            - c
+        """)
+        )
         doc.pop(0)
         assert doc[0] == "b"
         assert doc.comment_inline(0) == "on b"
@@ -408,7 +604,13 @@ class TestCommentSequenceMutations:
     # ── reverse() keeps comments with their items ────────────────────────────
 
     def test_reverse_keeps_comments_with_items(self):
-        doc = yarutsk.loads("- a  # first\n- b\n- c  # last")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a  # first
+            - b
+            - c  # last
+        """)
+        )
         doc.reverse()
         assert doc[0] == "c"
         assert doc.comment_inline(0) == "last"
@@ -422,70 +624,157 @@ class TestBlankLines:
     # ── YamlMapping ──────────────────────────────────────────────────────────
 
     def test_mapping_blank_lines_before_roundtrip(self):
-        src = "a: 1\n\n\nb: 2\n"
+        src = dedent("""\
+            a: 1
+
+
+            b: 2
+        """)
         doc = yarutsk.loads(src)
         assert doc.blank_lines_before("a") == 0
         assert doc.blank_lines_before("b") == 2
         assert yarutsk.dumps(doc) == src
 
     def test_mapping_blank_lines_before_set(self):
-        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+            b: 2
+        """)
+        )
         doc.blank_lines_before("b", 1)
-        assert yarutsk.dumps(doc) == "a: 1\n\nb: 2\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            a: 1
+
+            b: 2
+        """)
 
     def test_mapping_blank_lines_before_clear(self):
-        doc = yarutsk.loads("a: 1\n\nb: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+
+            b: 2
+        """)
+        )
         doc.blank_lines_before("b", 0)
-        assert yarutsk.dumps(doc) == "a: 1\nb: 2\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            a: 1
+            b: 2
+        """)
 
     def test_mapping_blank_lines_before_key_error(self):
-        doc = yarutsk.loads("a: 1\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+        """)
+        )
         with pytest.raises(KeyError):
             doc.blank_lines_before("missing")
 
     def test_mapping_trailing_blank_lines_roundtrip(self):
-        src = "a: 1\nb: 2\n\n\n"
+        src = dedent("""\
+            a: 1
+            b: 2
+
+
+        """)
         doc = yarutsk.loads(src)
         assert doc.trailing_blank_lines == 2
         assert yarutsk.dumps(doc) == src
 
     def test_mapping_trailing_blank_lines_set(self):
-        doc = yarutsk.loads("a: 1\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+        """)
+        )
         doc.trailing_blank_lines = 2
-        assert yarutsk.dumps(doc) == "a: 1\n\n\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            a: 1
+
+
+        """)
 
     def test_mapping_trailing_blank_lines_clear(self):
-        doc = yarutsk.loads("a: 1\n\n\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+
+
+        """)
+        )
         doc.trailing_blank_lines = 0
-        assert yarutsk.dumps(doc) == "a: 1\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            a: 1
+        """)
 
     # ── YamlSequence ─────────────────────────────────────────────────────────
 
     def test_sequence_blank_lines_before_roundtrip(self):
-        src = "- 1\n\n\n- 2\n"
+        src = dedent("""\
+            - 1
+
+
+            - 2
+        """)
         doc = yarutsk.loads(src)
         assert doc.blank_lines_before(0) == 0
         assert doc.blank_lines_before(1) == 2
         assert yarutsk.dumps(doc) == src
 
     def test_sequence_blank_lines_before_set(self):
-        doc = yarutsk.loads("- 1\n- 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+        """)
+        )
         doc.blank_lines_before(1, 1)
-        assert yarutsk.dumps(doc) == "- 1\n\n- 2\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            - 1
+
+            - 2
+        """)
 
     def test_sequence_blank_lines_before_negative_index(self):
-        doc = yarutsk.loads("- 1\n- 2\n- 3\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+            - 3
+        """)
+        )
         assert doc.blank_lines_before(-1) == 0
         doc.blank_lines_before(-1, 2)
-        assert yarutsk.dumps(doc) == "- 1\n- 2\n\n\n- 3\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            - 1
+            - 2
+
+
+            - 3
+        """)
 
     def test_sequence_trailing_blank_lines_roundtrip(self):
-        src = "- 1\n- 2\n\n"
+        src = dedent("""\
+            - 1
+            - 2
+
+        """)
         doc = yarutsk.loads(src)
         assert doc.trailing_blank_lines == 1
         assert yarutsk.dumps(doc) == src
 
     def test_sequence_trailing_blank_lines_set(self):
-        doc = yarutsk.loads("- 1\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+        """)
+        )
         doc.trailing_blank_lines = 3
-        assert yarutsk.dumps(doc) == "- 1\n\n\n\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            - 1
+
+
+
+        """)

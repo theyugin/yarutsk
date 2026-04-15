@@ -1,17 +1,10 @@
 """Tests for YAML serialization: dump, dump_all, multi-document, empty docs."""
 
 import io
+from textwrap import dedent
 
-import pytest
 
-try:
-    import yarutsk
-
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestSerialization:
@@ -109,9 +102,17 @@ class TestDumpDumpAll:
 class TestMultiDocument:
     """Test multi-document YAML support."""
 
-    MULTI_DOC = (
-        "---\nname: Alice\nage: 30\n---\nname: Bob\nage: 25\n---\nname: Carol\nage: 35"
-    )
+    MULTI_DOC = dedent("""\
+        ---
+        name: Alice
+        age: 30
+        ---
+        name: Bob
+        age: 25
+        ---
+        name: Carol
+        age: 35
+    """)
 
     def test_load_all_returns_list(self):
         docs = yarutsk.load_all(io.StringIO(self.MULTI_DOC))
@@ -165,7 +166,13 @@ class TestMultiDocument:
         assert docs[1]["name"] == "Bob"
 
     def test_mixed_types_across_docs(self):
-        yaml = "---\na: 1\n---\n- x\n- y"
+        yaml = dedent("""\
+            ---
+            a: 1
+            ---
+            - x
+            - y
+        """)
         docs = yarutsk.load_all(io.StringIO(yaml))
         assert len(docs) == 2
         assert docs[0]["a"] == 1
@@ -179,7 +186,12 @@ class TestMultiDocument:
         assert doc2.to_dict() == 42
 
     def test_comments_preserved_across_docs(self):
-        yaml = "---\nkey: val  # doc1 comment\n---\nother: data  # doc2 comment"
+        yaml = dedent("""\
+            ---
+            key: val  # doc1 comment
+            ---
+            other: data  # doc2 comment
+        """)
         docs = yarutsk.load_all(io.StringIO(yaml))
         assert docs[0].comment_inline("key") == "doc1 comment"
         assert docs[1].comment_inline("other") == "doc2 comment"
@@ -312,34 +324,94 @@ class TestIndent:
     """Configurable indentation via the indent= keyword argument."""
 
     def test_default_is_two_spaces(self):
-        doc = yarutsk.loads("a:\n  b: 1\n")
-        assert yarutsk.dumps(doc) == "a:\n  b: 1\n"
+        doc = yarutsk.loads(
+            dedent("""\
+            a:
+              b: 1
+        """)
+        )
+        assert yarutsk.dumps(doc) == dedent("""\
+            a:
+              b: 1
+        """)
 
     def test_four_space_indent(self):
-        doc = yarutsk.loads("a:\n  b: 1\n")
-        assert yarutsk.dumps(doc, indent=4) == "a:\n    b: 1\n"
+        doc = yarutsk.loads(
+            dedent("""\
+            a:
+              b: 1
+        """)
+        )
+        assert yarutsk.dumps(doc, indent=4) == dedent("""\
+            a:
+                b: 1
+        """)
 
     def test_one_space_indent(self):
-        doc = yarutsk.loads("a:\n  b: 1\n")
-        assert yarutsk.dumps(doc, indent=1) == "a:\n b: 1\n"
+        doc = yarutsk.loads(
+            dedent("""\
+            a:
+              b: 1
+        """)
+        )
+        assert yarutsk.dumps(doc, indent=1) == dedent("""\
+            a:
+             b: 1
+        """)
 
     def test_deeply_nested(self):
-        doc = yarutsk.loads("a:\n  b:\n    c: 1\n")
-        assert yarutsk.dumps(doc, indent=4) == "a:\n    b:\n        c: 1\n"
+        doc = yarutsk.loads(
+            dedent("""\
+            a:
+              b:
+                c: 1
+        """)
+        )
+        assert yarutsk.dumps(doc, indent=4) == dedent("""\
+            a:
+                b:
+                    c: 1
+        """)
 
     def test_sequence_indent(self):
-        doc = yarutsk.loads("items:\n  - a\n  - b\n")
-        assert yarutsk.dumps(doc, indent=4) == "items:\n    - a\n    - b\n"
+        doc = yarutsk.loads(
+            dedent("""\
+            items:
+              - a
+              - b
+        """)
+        )
+        assert yarutsk.dumps(doc, indent=4) == dedent("""\
+            items:
+                - a
+                - b
+        """)
 
     def test_comments_preserved_with_indent(self):
-        doc = yarutsk.loads("a:\n  # comment\n  b: 1\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a:
+              # comment
+              b: 1
+        """)
+        )
         out = yarutsk.dumps(doc, indent=4)
         assert "# comment" in out
         assert "    b: 1" in out
 
     def test_dumps_all_indent(self):
-        d1 = yarutsk.loads("a:\n  b: 1\n")
-        d2 = yarutsk.loads("x:\n  y: 2\n")
+        d1 = yarutsk.loads(
+            dedent("""\
+            a:
+              b: 1
+        """)
+        )
+        d2 = yarutsk.loads(
+            dedent("""\
+            x:
+              y: 2
+        """)
+        )
         out = yarutsk.dumps_all([d1, d2], indent=4)
         assert "    b: 1" in out
         assert "    y: 2" in out
@@ -347,16 +419,34 @@ class TestIndent:
     def test_dump_to_stream_indent(self):
         import io
 
-        doc = yarutsk.loads("k:\n  v: 1\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            k:
+              v: 1
+        """)
+        )
         stream = io.StringIO()
         yarutsk.dump(doc, stream, indent=4)
-        assert stream.getvalue() == "k:\n    v: 1\n"
+        assert stream.getvalue() == dedent("""\
+            k:
+                v: 1
+        """)
 
     def test_dump_all_to_stream_indent(self):
         import io
 
-        d1 = yarutsk.loads("a:\n  b: 1\n")
-        d2 = yarutsk.loads("x:\n  y: 2\n")
+        d1 = yarutsk.loads(
+            dedent("""\
+            a:
+              b: 1
+        """)
+        )
+        d2 = yarutsk.loads(
+            dedent("""\
+            x:
+              y: 2
+        """)
+        )
         stream = io.StringIO()
         yarutsk.dump_all([d1, d2], stream, indent=4)
         out = stream.getvalue()
@@ -371,7 +461,15 @@ class TestIndent:
         the first pass — i.e. the round-trip is idempotent once a specific width
         is chosen.
         """
-        src = "a:\n  b:\n    c: 1\n  d: 2\nitems:\n  - x\n  - y\n"
+        src = dedent("""\
+            a:
+              b:
+                c: 1
+              d: 2
+            items:
+              - x
+              - y
+        """)
         doc = yarutsk.loads(src)
         first = yarutsk.dumps(doc, indent=4)
         doc2 = yarutsk.loads(first)
@@ -382,7 +480,11 @@ class TestIndent:
         """Loading 2-space-indented YAML and re-dumping with indent=4 changes
         only the whitespace, not the data.
         """
-        src = "a:\n  b: 1\n  c: 2\n"
+        src = dedent("""\
+            a:
+              b: 1
+              c: 2
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc, indent=4)
         assert "    b: 1" in out
@@ -395,7 +497,12 @@ class TestIndent:
         """Loading 4-space-indented YAML and re-dumping with the default (2-space)
         produces 2-space output, but all values survive intact.
         """
-        src = "a:\n    b: 1\n    c:\n        d: true\n"
+        src = dedent("""\
+            a:
+                b: 1
+                c:
+                    d: true
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert "  b: 1" in out

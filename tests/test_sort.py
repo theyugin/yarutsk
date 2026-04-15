@@ -1,25 +1,11 @@
 """Tests for key sorting functionality in yarutsk."""
 
 import io
-import os
-import sys
-from typing import Any
+from textwrap import dedent
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-yarutsk: Any = None
-
-try:
-    import yarutsk as _yarutsk
-
-    yarutsk = _yarutsk
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestKeySorting:
@@ -27,7 +13,13 @@ class TestKeySorting:
 
     def test_sort_keys_default(self):
         """Default alphabetical sort."""
-        content = io.StringIO("z: 1\na: 2\nm: 3")
+        content = io.StringIO(
+            dedent("""\
+            z: 1
+            a: 2
+            m: 3
+        """)
+        )
         doc = yarutsk.load(content)
 
         assert list(doc.keys()) == ["z", "a", "m"]
@@ -37,7 +29,13 @@ class TestKeySorting:
 
     def test_sort_keys_custom_function(self):
         """Sort with custom key function."""
-        content = io.StringIO("banana: 1\napple: 2\ncherry: 3")
+        content = io.StringIO(
+            dedent("""\
+            banana: 1
+            apple: 2
+            cherry: 3
+        """)
+        )
         doc = yarutsk.load(content)
 
         doc.sort_keys(key=lambda k: len(k))
@@ -45,7 +43,13 @@ class TestKeySorting:
 
     def test_sort_keys_reverse(self):
         """Reverse alphabetical sort."""
-        content = io.StringIO("a: 1\nb: 2\nc: 3")
+        content = io.StringIO(
+            dedent("""\
+            a: 1
+            b: 2
+            c: 3
+        """)
+        )
         doc = yarutsk.load(content)
 
         doc.sort_keys(reverse=True)
@@ -133,14 +137,26 @@ m: 3  # m comment
 
     def test_sort_keys_reverse_custom(self):
         """Reverse sort with custom key function."""
-        content = io.StringIO("banana: 1\napple: 2\ncherry: 3")
+        content = io.StringIO(
+            dedent("""\
+            banana: 1
+            apple: 2
+            cherry: 3
+        """)
+        )
         doc = yarutsk.load(content)
         doc.sort_keys(key=lambda k: len(k), reverse=True)
         assert list(doc.keys()) == ["cherry", "banana", "apple"]
 
     def test_sort_sequence_reverse(self):
         """Reverse-sort a sequence."""
-        content = io.StringIO("- a\n- c\n- b")
+        content = io.StringIO(
+            dedent("""\
+            - a
+            - c
+            - b
+        """)
+        )
         doc = yarutsk.load(content)
         doc.sort(reverse=True)
         assert doc[0] == "c"
@@ -156,7 +172,14 @@ m: 3  # m comment
 
     def test_sort_not_recursive_by_default(self):
         """sort_keys does not recurse unless asked."""
-        content = io.StringIO("z: 1\na:\n  m: 1\n  b: 2")
+        content = io.StringIO(
+            dedent("""\
+            z: 1
+            a:
+              m: 1
+              b: 2
+        """)
+        )
         doc = yarutsk.load(content)
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "z"]
@@ -164,7 +187,13 @@ m: 3  # m comment
 
     def test_sort_then_insert(self):
         """New keys inserted after sort go to the end."""
-        content = io.StringIO("z: 1\na: 2\nm: 3")
+        content = io.StringIO(
+            dedent("""\
+            z: 1
+            a: 2
+            m: 3
+        """)
+        )
         doc = yarutsk.load(content)
         doc.sort_keys()
         doc["b"] = 4

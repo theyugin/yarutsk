@@ -18,7 +18,29 @@ _Scalar = int | float | bool | str | None
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
 
 class YamlScalar:
-    """A YAML scalar document node (int, float, bool, str, or null)."""
+    """A YAML scalar document node (int, float, bool, str, or null).
+
+    Can be constructed directly to create a styled scalar for assignment or
+    use in a Schema dumper::
+
+        doc["key"] = yarutsk.YamlScalar("hello", style="double")
+        schema.add_dumper(MyType, lambda obj: ("!mytag", yarutsk.YamlScalar(str(obj), style="single")))
+    """
+
+    def __init__(
+        self,
+        value: "_Scalar",
+        *,
+        style: str = "plain",
+        tag: str | None = None,
+    ) -> None:
+        """Create a scalar with the given primitive value, quoting style, and optional tag.
+
+        *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+        Raises ``TypeError`` if *value* is not a Python primitive.
+        Raises ``ValueError`` for an unknown *style*.
+        """
+        ...
 
     @property
     def value(self) -> "_Scalar":
@@ -81,7 +103,26 @@ class YamlMapping(dict[str, Any]):
     - Comment access/mutation methods
     - ``sort_keys()`` for in-place key sorting
     - ``to_dict()`` for deep conversion to a plain Python dict
+
+    Can be constructed directly to create a styled mapping::
+
+        m = yarutsk.YamlMapping(style="flow")
+        m["x"] = 1
+        m["y"] = 2
+        doc["point"] = m
     """
+
+    def __init__(
+        self,
+        *,
+        style: Literal["block", "flow"] = "block",
+        tag: str | None = None,
+    ) -> None:
+        """Create an empty mapping with the given container style and optional tag.
+
+        Raises ``ValueError`` for an unknown *style*.
+        """
+        ...
 
     @property
     def explicit_start(self) -> bool:
@@ -142,6 +183,14 @@ class YamlMapping(dict[str, Any]):
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+        """
+        ...
+
+    def container_style(self, key: str, style: Literal["block", "flow"]) -> None:
+        """Set the container style for the nested mapping or sequence at *key*.
+        *style* must be ``"block"`` or ``"flow"``.
+        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+        Silently ignored if the value at *key* is not a mapping or sequence.
         """
         ...
 
@@ -212,7 +261,25 @@ class YamlSequence(list[Any]):
     - Comment access/mutation methods (addressed by integer index)
     - ``sort()`` override that preserves comment metadata
     - ``to_dict()`` for deep conversion to a plain Python list
+
+    Can be constructed directly to create a styled sequence::
+
+        s = yarutsk.YamlSequence(style="flow")
+        s.extend([1, 2, 3])
+        doc["items"] = s
     """
+
+    def __init__(
+        self,
+        *,
+        style: Literal["block", "flow"] = "block",
+        tag: str | None = None,
+    ) -> None:
+        """Create an empty sequence with the given container style and optional tag.
+
+        Raises ``ValueError`` for an unknown *style*.
+        """
+        ...
 
     @property
     def explicit_start(self) -> bool:
@@ -267,6 +334,14 @@ class YamlSequence(list[Any]):
         """Set the scalar quoting style for the item at *idx*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+        """
+        ...
+
+    def container_style(self, idx: int, style: Literal["block", "flow"]) -> None:
+        """Set the container style for the nested mapping or sequence at *idx*.
+        *style* must be ``"block"`` or ``"flow"``.
+        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+        Silently ignored if the item at *idx* is not a mapping or sequence.
         """
         ...
 
@@ -368,6 +443,13 @@ class Schema:
         wins. The callable receives the Python object and must return a 2-tuple
         ``(tag: str, data)``, where *data* is a scalar, dict, or list that will
         be serialized as the node body.
+
+        To control the emitted YAML style, pass a ``YamlScalar``, ``YamlMapping``,
+        or ``YamlSequence`` as *data* — style and tag metadata on the node are
+        preserved, and the *tag* from the tuple is applied on top::
+
+            schema.add_dumper(MyType, lambda obj: ("!mytag", yarutsk.YamlScalar(str(obj), style="double")))
+            schema.add_dumper(Point, lambda p: ("!point", yarutsk.YamlMapping(style="flow")))
         """
         ...
 

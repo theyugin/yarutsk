@@ -2,15 +2,9 @@
 alias expansion, tags, and explicit document markers."""
 
 import pytest
+from textwrap import dedent
 
-try:
-    import yarutsk
-
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestRoundTripScalarStyles:
@@ -47,7 +41,11 @@ class TestRoundTripScalarStyles:
         assert isinstance(doc2["key"], str)
 
     def test_literal_block_style_preserved(self):
-        src = "text: |\n  line one\n  line two\n"
+        src = dedent("""\
+            text: |
+              line one
+              line two
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert "|\n" in out
@@ -55,7 +53,10 @@ class TestRoundTripScalarStyles:
         assert doc2["text"] == "line one\nline two\n"
 
     def test_folded_block_style_preserved(self):
-        src = "text: >\n  folded line\n"
+        src = dedent("""\
+            text: >
+              folded line
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert ">\n" in out
@@ -85,7 +86,13 @@ class TestRoundTripScalarStyles:
 
     def test_scalar_style_attribute(self):
         """YamlScalar.style attribute reflects the source quoting style."""
-        doc = yarutsk.loads("a: plain\nb: 'single'\nc: \"double\"")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: plain
+            b: 'single'
+            c: "double"
+        """)
+        )
         assert doc.node("a").style == "plain"
         assert doc.node("b").style == "single"
         assert doc.node("c").style == "double"
@@ -129,7 +136,11 @@ class TestRoundTripContainerStyles:
         assert doc2["point"]["y"] == 2
 
     def test_block_sequence_stays_block(self):
-        src = "items:\n  - a\n  - b\n"
+        src = dedent("""\
+            items:
+              - a
+              - b
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert "- a" in out
@@ -137,7 +148,11 @@ class TestRoundTripContainerStyles:
         assert "[" not in out
 
     def test_block_mapping_stays_block(self):
-        src = "nested:\n  x: 1\n  y: 2\n"
+        src = dedent("""\
+            nested:
+              x: 1
+              y: 2
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert "{" not in out
@@ -171,7 +186,11 @@ class TestRoundTripContainerStyles:
 
     def test_nested_flow_in_block_roundtrips(self):
         """A block mapping with a flow sequence value round-trips correctly."""
-        src = "name: demo\ntags: [x, y]\ncount: 3\n"
+        src = dedent("""\
+            name: demo
+            tags: [x, y]
+            count: 3
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
@@ -184,20 +203,29 @@ class TestRoundTripAliasExpansion:
     """Aliases are expanded in-place at load time (no *name in output)."""
 
     def test_alias_expands_to_value(self):
-        src = "default: &base 42\nactual: *base\n"
+        src = dedent("""\
+            default: &base 42
+            actual: *base
+        """)
         doc = yarutsk.loads(src)
         assert doc["actual"] == 42
 
     def test_alias_expands_independently(self):
         """Mutations to expanded alias do not affect the anchor site."""
-        src = "a: &anchor {x: 1}\nb: *anchor\n"
+        src = dedent("""\
+            a: &anchor {x: 1}
+            b: *anchor
+        """)
         doc = yarutsk.loads(src)
         doc["b"]["x"] = 99
         assert doc["a"]["x"] == 1
 
     def test_alias_roundtrips_as_value(self):
         """Aliases are preserved in output: *name round-trips faithfully."""
-        src = "base: &b hello\ncopy: *b\n"
+        src = dedent("""\
+            base: &b hello
+            copy: *b
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         assert out == src
@@ -206,17 +234,33 @@ class TestRoundTripAliasExpansion:
 
     def test_merge_key_expands(self):
         """YAML merge keys (<<: *anchor) expand the referenced mapping."""
-        src = "defaults: &def\n  timeout: 30\n  retries: 3\nservice:\n  <<: *def\n  name: api\n"
+        src = dedent("""\
+            defaults: &def
+              timeout: 30
+              retries: 3
+            service:
+              <<: *def
+              name: api
+        """)
         doc = yarutsk.loads(src)
         assert doc["service"]["name"] == "api"
 
     def test_sequence_alias_expands(self):
-        src = "orig: &items\n  - a\n  - b\ncopy: *items\n"
+        src = dedent("""\
+            orig: &items
+              - a
+              - b
+            copy: *items
+        """)
         doc = yarutsk.loads(src)
         assert list(doc["copy"]) == ["a", "b"]
 
     def test_alias_dump_is_reloadable(self):
-        src = "x: &v 100\ny: *v\nz: *v\n"
+        src = dedent("""\
+            x: &v 100
+            y: *v
+            z: *v
+        """)
         doc = yarutsk.loads(src)
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
@@ -271,7 +315,12 @@ class TestRoundTripTagAccess:
         assert doc.tag == "!!map"
 
     def test_set_tag_on_sequence(self):
-        doc = yarutsk.loads("- 1\n- 2")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+        """)
+        )
         doc.tag = "!!seq"
         assert doc.tag == "!!seq"
 
@@ -290,9 +339,19 @@ class TestExplicitDocumentMarker:
         assert yarutsk.dumps(doc) == "---\nkey: value\n"
 
     def test_marker_preserved_on_sequence(self):
-        doc = yarutsk.loads("---\n- a\n- b")
+        doc = yarutsk.loads(
+            dedent("""\
+            ---
+            - a
+            - b
+        """)
+        )
         assert doc.explicit_start
-        assert yarutsk.dumps(doc) == "---\n- a\n- b\n"
+        assert yarutsk.dumps(doc) == dedent("""\
+            ---
+            - a
+            - b
+        """)
 
     def test_marker_preserved_on_scalar(self):
         doc = yarutsk.loads("---\n42")
@@ -302,12 +361,19 @@ class TestExplicitDocumentMarker:
         assert yarutsk.loads(out) == 42
 
     def test_marker_roundtrips(self):
-        src = "---\nname: Alice\nage: 30\n"
+        src = dedent("""\
+            ---
+            name: Alice
+            age: 30
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_no_marker_roundtrips(self):
-        src = "name: Alice\nage: 30\n"
+        src = dedent("""\
+            name: Alice
+            age: 30
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
@@ -325,7 +391,12 @@ class TestExplicitDocumentMarker:
         assert yarutsk.dumps(doc) == "key: value\n"
 
     def test_multiline_value_with_marker(self):
-        src = "---\ntext: |\n  line one\n  line two\n"
+        src = dedent("""\
+            ---
+            text: |
+              line one
+              line two
+        """)
         doc = yarutsk.loads(src)
         assert doc.explicit_start
         out = yarutsk.dumps(doc)
@@ -338,42 +409,84 @@ class TestBlankLinePreservation:
     """Blank lines between mapping entries and sequence items are preserved."""
 
     def test_single_blank_line_between_keys(self):
-        src = "a: 1\n\nb: 2\n"
+        src = dedent("""\
+            a: 1
+
+            b: 2
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_multiple_blank_lines_between_keys(self):
-        src = "a: 1\n\n\nb: 2\n"
+        src = dedent("""\
+            a: 1
+
+
+            b: 2
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_no_blank_lines_unaffected(self):
-        src = "a: 1\nb: 2\nc: 3\n"
+        src = dedent("""\
+            a: 1
+            b: 2
+            c: 3
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_blank_lines_between_some_keys(self):
-        src = "a: 1\nb: 2\n\nc: 3\nd: 4\n"
+        src = dedent("""\
+            a: 1
+            b: 2
+
+            c: 3
+            d: 4
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_blank_line_with_comment(self):
-        src = "x: 1\n\n# note\ny: 2\n"
+        src = dedent("""\
+            x: 1
+
+            # note
+            y: 2
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_blank_lines_in_sequence(self):
-        src = "- a\n\n- b\n\n\n- c\n"
+        src = dedent("""\
+            - a
+
+            - b
+
+
+            - c
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_blank_lines_in_nested_mapping(self):
-        src = "outer:\n  a: 1\n\n  b: 2\n"
+        src = dedent("""\
+            outer:
+              a: 1
+
+              b: 2
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
     def test_blank_lines_between_top_and_nested(self):
-        src = "section1:\n  x: 1\n\nsection2:\n  y: 2\n"
+        src = dedent("""\
+            section1:
+              x: 1
+
+            section2:
+              y: 2
+        """)
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
@@ -483,7 +596,12 @@ class TestNonCanonicalScalarForms:
 
     def test_non_canonical_in_sequence(self):
         """Non-canonical scalars inside a sequence are preserved."""
-        src = "- yes\n- no\n- ~\n- 0xFF\n"
+        src = dedent("""\
+            - yes
+            - no
+            - ~
+            - 0xFF
+        """)
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
 
@@ -530,12 +648,21 @@ class TestTagRoundTrip:
         assert "!!" in yarutsk.dumps(doc)
 
     def test_tag_on_multiple_keys(self):
-        src = "a: !!str 1\nb: !!str 2\n"
+        src = dedent("""\
+            a: !!str 1
+            b: !!str 2
+        """)
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
     def test_tag_on_top_level_sequence_accessible(self):
         """Tag on a top-level block sequence is parsed and accessible via get_tag()."""
-        doc = yarutsk.loads("!!python/tuple\n- 1\n- 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            !!python/tuple
+            - 1
+            - 2
+        """)
+        )
         assert doc.tag is not None
         assert list(doc) == [1, 2]
 
@@ -552,54 +679,86 @@ class TestAnchorAliasRoundTrip:
     """Anchors (&name) and aliases (*name) are preserved through load → dump."""
 
     def test_scalar_anchor_and_alias(self):
-        src = "x: &anchor value\ny: *anchor\n"
+        src = dedent("""\
+            x: &anchor value
+            y: *anchor
+        """)
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
     def test_alias_value_is_accessible(self):
-        src = "x: &anchor value\ny: *anchor\n"
+        src = dedent("""\
+            x: &anchor value
+            y: *anchor
+        """)
         doc = yarutsk.loads(src)
         assert doc["y"] == "value"
 
     def test_integer_anchor_and_alias(self):
-        src = "base: &n 42\ncopy: *n\n"
+        src = dedent("""\
+            base: &n 42
+            copy: *n
+        """)
         doc = yarutsk.loads(src)
         assert doc["copy"] == 42
         assert yarutsk.dumps(doc) == src
 
     def test_multiple_aliases_same_anchor(self):
-        src = "x: &v 100\ny: *v\nz: *v\n"
+        src = dedent("""\
+            x: &v 100
+            y: *v
+            z: *v
+        """)
         doc = yarutsk.loads(src)
         assert doc["y"] == 100
         assert doc["z"] == 100
         assert yarutsk.dumps(doc) == src
 
     def test_flow_sequence_anchor(self):
-        src = "items: &mylist [1, 2, 3]\nref: *mylist\n"
+        src = dedent("""\
+            items: &mylist [1, 2, 3]
+            ref: *mylist
+        """)
         doc = yarutsk.loads(src)
         assert list(doc["ref"]) == [1, 2, 3]
         assert yarutsk.dumps(doc) == src
 
     def test_block_mapping_anchor(self):
-        src = "base: &base\n  a: 1\n  b: 2\nchild: *base\n"
+        src = dedent("""\
+            base: &base
+              a: 1
+              b: 2
+            child: *base
+        """)
         doc = yarutsk.loads(src)
         assert doc["child"]["a"] == 1
         assert yarutsk.dumps(doc) == src
 
     def test_block_sequence_anchor(self):
-        src = "orig: &items\n  - a\n  - b\ncopy: *items\n"
+        src = dedent("""\
+            orig: &items
+              - a
+              - b
+            copy: *items
+        """)
         doc = yarutsk.loads(src)
         assert list(doc["copy"]) == ["a", "b"]
         assert yarutsk.dumps(doc) == src
 
     def test_anchor_mutation_does_not_affect_alias(self):
         """Mutations to the anchor site do not affect the alias (they are independent)."""
-        src = "a: &anchor {x: 1}\nb: *anchor\n"
+        src = dedent("""\
+            a: &anchor {x: 1}
+            b: *anchor
+        """)
         doc = yarutsk.loads(src)
         doc["b"]["x"] = 99
         assert doc["a"]["x"] == 1
 
     def test_alias_dump_is_reloadable(self):
-        src = "x: &anchor value\ny: *anchor\n"
+        src = dedent("""\
+            x: &anchor value
+            y: *anchor
+        """)
         doc2 = yarutsk.loads(yarutsk.dumps(yarutsk.loads(src)))
         assert doc2["y"] == "value"
 
@@ -632,14 +791,24 @@ class TestExplicitEndMarker:
         assert "..." not in yarutsk.dumps(doc)
 
     def test_both_markers_together(self):
-        src = "---\na: 1\n...\n"
+        src = dedent("""\
+            ---
+            a: 1
+            ...
+        """)
         doc = yarutsk.loads(src)
         assert doc.explicit_start
         assert doc.explicit_end
         assert yarutsk.dumps(doc) == src
 
     def test_explicit_end_multidoc(self):
-        src = "---\na: 1\n...\n---\nb: 2\n"
+        src = dedent("""\
+            ---
+            a: 1
+            ...
+            ---
+            b: 2
+        """)
         docs = yarutsk.loads_all(src)
         assert docs[0].explicit_end
         assert not docs[1].explicit_end
@@ -666,7 +835,11 @@ class TestKeyMetadataRoundTrip:
 
     def test_alias_as_key_preserved(self):
         """*alias used as a mapping key round-trips as an explicit-key form."""
-        src = "anchor: &ak value\n? *ak\n: other\n"
+        src = dedent("""\
+            anchor: &ak value
+            ? *ak
+            : other
+        """)
         out = yarutsk.dumps(yarutsk.loads(src))
         doc2 = yarutsk.loads(out)
         assert "anchor" in doc2
@@ -686,7 +859,12 @@ class TestBinaryTagRoundTrip:
 
     def test_binary_with_whitespace_in_value(self):
         # YAML binary values may contain whitespace (e.g. line-wrapped base64)
-        doc = yarutsk.loads("data: !!binary aGVs\n  bG8=\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            data: !!binary aGVs
+              bG8=
+        """)
+        )
         assert doc["data"] == b"hello"
 
     def test_binary_dump_from_bytes(self):
@@ -750,7 +928,12 @@ class TestContainerStyle:
     # ── YamlMapping ──────────────────────────────────────────────────────────
 
     def test_mapping_block_style_default(self):
-        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+            b: 2
+        """)
+        )
         assert doc.style == "block"
 
     def test_mapping_flow_style_roundtrip(self):
@@ -759,7 +942,12 @@ class TestContainerStyle:
         assert yarutsk.dumps(doc) == "{a: 1, b: 2}\n"
 
     def test_mapping_block_to_flow(self):
-        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: 1
+            b: 2
+        """)
+        )
         doc.style = "flow"
         out = yarutsk.dumps(doc)
         assert out.startswith("{")
@@ -781,7 +969,12 @@ class TestContainerStyle:
     # ── YamlSequence ─────────────────────────────────────────────────────────
 
     def test_sequence_block_style_default(self):
-        doc = yarutsk.loads("- 1\n- 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+        """)
+        )
         assert doc.style == "block"
 
     def test_sequence_flow_style_roundtrip(self):
@@ -790,7 +983,12 @@ class TestContainerStyle:
         assert yarutsk.dumps(doc) == "[1, 2, 3]\n"
 
     def test_sequence_block_to_flow(self):
-        doc = yarutsk.loads("- 1\n- 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+        """)
+        )
         doc.style = "flow"
         out = yarutsk.dumps(doc)
         assert out.startswith("[")
@@ -852,7 +1050,13 @@ class TestContainerStyleSetter:
     # ── nested mappings inside a mapping ─────────────────────────────────────
 
     def test_mapping_nested_mapping_set_to_flow(self):
-        doc = yarutsk.loads("k:\n  a: 1\n  b: 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            k:
+              a: 1
+              b: 2
+        """)
+        )
         assert doc.node("k").style == "block"
         doc.container_style("k", "flow")
         out = yarutsk.dumps(doc)
@@ -867,7 +1071,12 @@ class TestContainerStyleSetter:
     # ── nested containers inside a sequence ──────────────────────────────────
 
     def test_sequence_item_set_to_flow(self):
-        doc = yarutsk.loads("- - a\n  - b\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - - a
+              - b
+        """)
+        )
         assert doc.node(0).style == "block"
         doc.container_style(0, "flow")
         out = yarutsk.dumps(doc)
@@ -881,7 +1090,12 @@ class TestContainerStyleSetter:
         assert "- a\n" in out
 
     def test_sequence_container_style_negative_index(self):
-        doc = yarutsk.loads("- [a, b]\n- [c, d]\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - [a, b]
+            - [c, d]
+        """)
+        )
         doc.container_style(-1, "block")
         out = yarutsk.dumps(doc)
         assert "[a, b]" in out  # first unchanged

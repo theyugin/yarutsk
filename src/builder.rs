@@ -722,13 +722,14 @@ mod tests {
 
     /// Full round-trip: parse `src`, emit, assert output == `src`.
     fn rt(src: &str) {
-        let out_data = parse_str(src).expect("parse failed");
+        let out_data = parse_str(src, None).expect("parse failed");
         let out = emit_docs(
             &out_data.docs,
             &out_data.doc_explicit,
             &out_data.doc_explicit_end,
             &out_data.doc_yaml_version,
             &out_data.doc_tag_directives,
+            2,
         );
         assert_eq!(
             out, src,
@@ -738,7 +739,7 @@ mod tests {
 
     /// Parse `src` and return the single top-level document node.
     fn parse_one(src: &str) -> YamlNode {
-        let mut out = parse_str(src).expect("parse failed");
+        let mut out = parse_str(src, None).expect("parse failed");
         assert_eq!(out.docs.len(), 1, "expected exactly one document");
         out.docs.remove(0)
     }
@@ -747,7 +748,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_no_docs() {
-        let out = parse_str("").unwrap();
+        let out = parse_str("", None).unwrap();
         assert!(out.docs.is_empty());
         assert!(out.doc_explicit.is_empty());
         assert!(out.doc_explicit_end.is_empty());
@@ -755,7 +756,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_produces_no_docs() {
-        let out = parse_str("   \n  \n").unwrap();
+        let out = parse_str("   \n  \n", None).unwrap();
         assert!(out.docs.is_empty());
     }
 
@@ -1078,7 +1079,7 @@ mod tests {
     #[test]
     fn unknown_alias_returns_error() {
         // An alias that has no anchor should produce a parse error (strict YAML compliance)
-        let result = parse_str("*noanchor\n");
+        let result = parse_str("*noanchor\n", None);
         assert!(result.is_err(), "expected error for undefined alias");
     }
 
@@ -1150,25 +1151,25 @@ mod tests {
 
     #[test]
     fn explicit_start_marker_recorded() {
-        let out = parse_str("---\na: 1\n").unwrap();
+        let out = parse_str("---\na: 1\n", None).unwrap();
         assert_eq!(out.doc_explicit, [true]);
     }
 
     #[test]
     fn no_explicit_start_without_dashes() {
-        let out = parse_str("a: 1\n").unwrap();
+        let out = parse_str("a: 1\n", None).unwrap();
         assert_eq!(out.doc_explicit, [false]);
     }
 
     #[test]
     fn explicit_end_marker_recorded() {
-        let out = parse_str("a: 1\n...\n").unwrap();
+        let out = parse_str("a: 1\n...\n", None).unwrap();
         assert_eq!(out.doc_explicit_end, [true]);
     }
 
     #[test]
     fn both_markers_recorded() {
-        let out = parse_str("---\na: 1\n...\n").unwrap();
+        let out = parse_str("---\na: 1\n...\n", None).unwrap();
         assert_eq!(out.doc_explicit, [true]);
         assert_eq!(out.doc_explicit_end, [true]);
     }
@@ -1177,7 +1178,7 @@ mod tests {
 
     #[test]
     fn two_docs_parsed() {
-        let out = parse_str("---\na: 1\n---\nb: 2\n").unwrap();
+        let out = parse_str("---\na: 1\n---\nb: 2\n", None).unwrap();
         assert_eq!(out.docs.len(), 2);
         assert_eq!(out.doc_explicit, [true, true]);
         assert_eq!(out.doc_explicit_end, [false, false]);
@@ -1390,7 +1391,7 @@ mod tests {
 
     #[test]
     fn invalid_yaml_returns_error() {
-        let result = parse_str(": bad :\n  - broken");
+        let result = parse_str(": bad :\n  - broken", None);
         // Just check it doesn't panic; error type doesn't matter
         let _ = result;
     }

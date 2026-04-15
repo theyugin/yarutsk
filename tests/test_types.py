@@ -1,16 +1,10 @@
 """Tests for YAML type coercion: quoted lookalikes, special floats, block scalars,
 special-character strings."""
 
-import pytest
+from textwrap import dedent
 
-try:
-    import yarutsk
 
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestQuotedTypeLookalikes:
@@ -110,21 +104,33 @@ class TestBlockScalars:
     """Literal | and folded > block scalars."""
 
     def test_literal_block_preserves_newlines(self):
-        yaml = "text: |\n  line one\n  line two\n"
+        yaml = dedent("""\
+            text: |
+              line one
+              line two
+        """)
         doc = yarutsk.loads(yaml)
         assert "line one" in doc["text"]
         assert "line two" in doc["text"]
         assert "\n" in doc["text"]
 
     def test_folded_block_is_string(self):
-        yaml = "text: >\n  folded\n  text\n"
+        yaml = dedent("""\
+            text: >
+              folded
+              text
+        """)
         doc = yarutsk.loads(yaml)
         assert isinstance(doc["text"], str)
         assert "folded" in doc["text"]
 
     def test_literal_block_value_is_string(self):
         """Block scalar value is a plain Python str after loading."""
-        yaml = "text: |\n  hello\n  world\n"
+        yaml = dedent("""\
+            text: |
+              hello
+              world
+        """)
         doc = yarutsk.loads(yaml)
         assert isinstance(doc["text"], str)
         assert doc["text"].startswith("hello")

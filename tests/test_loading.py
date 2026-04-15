@@ -1,17 +1,11 @@
 """Tests for YAML loading: basic parsing, type preservation, insertion order."""
 
 import io
+from textwrap import dedent
 
 import pytest
 
-try:
-    import yarutsk
-
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
-
-pytestmark = pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk module not built")
+import yarutsk
 
 
 class TestBasicLoading:
@@ -19,14 +13,24 @@ class TestBasicLoading:
 
     def test_load_from_stringio(self):
         """Test loading from StringIO."""
-        content = io.StringIO("name: John\nage: 30")
+        content = io.StringIO(
+            dedent("""\
+            name: John
+            age: 30
+        """)
+        )
         doc = yarutsk.load(content)
         assert doc["name"] == "John"
         assert doc["age"] == 30
 
     def test_load_from_bytesio(self):
         """Test loading from BytesIO."""
-        content = io.BytesIO(b"name: John\nage: 30")
+        content = io.BytesIO(
+            dedent("""\
+            name: John
+            age: 30
+        """).encode()
+        )
         doc = yarutsk.load(content)
         assert doc["name"] == "John"
         assert doc["age"] == 30
@@ -130,7 +134,12 @@ class TestTypePreservation:
 
     def test_empty_quoted_strings_in_sequence(self):
         """Empty quoted strings inside a sequence are preserved as empty strings."""
-        doc = yarutsk.loads("- \"\"\n- ''")
+        doc = yarutsk.loads(
+            dedent("""\
+            - ""
+            - ''
+        """)
+        )
         assert doc[0] == ""
         assert doc[1] == ""
         assert isinstance(doc[0], str)
@@ -138,14 +147,25 @@ class TestTypePreservation:
 
     def test_empty_quoted_vs_bare_null(self):
         """Bare empty value and ~ are null; quoted empty is an empty string."""
-        doc = yarutsk.loads('bare:\nnull_tilde: ~\nquoted: ""')
+        doc = yarutsk.loads(
+            dedent("""\
+            bare:
+            null_tilde: ~
+            quoted: ""
+        """)
+        )
         assert doc["bare"] is None
         assert doc["null_tilde"] is None
         assert doc["quoted"] == ""
 
     def test_empty_quoted_round_trips(self):
         """Empty quoted string survives a dump/load cycle as an empty string."""
-        doc = yarutsk.loads("a: \"\"\nb: ''")
+        doc = yarutsk.loads(
+            dedent("""\
+            a: ""
+            b: ''
+        """)
+        )
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
         assert doc2["a"] == ""
@@ -157,13 +177,24 @@ class TestInsertionOrderPreservation:
 
     def test_order_preserved_on_load(self):
         """Keys appear in same order as input YAML."""
-        content = io.StringIO("z: 1\na: 2\nm: 3")
+        content = io.StringIO(
+            dedent("""\
+            z: 1
+            a: 2
+            m: 3
+        """)
+        )
         doc = yarutsk.load(content)
         assert list(doc.keys()) == ["z", "a", "m"]
 
     def test_order_preserved_on_insert(self):
         """New keys appended at end."""
-        content = io.StringIO("a: 1\nb: 2")
+        content = io.StringIO(
+            dedent("""\
+            a: 1
+            b: 2
+        """)
+        )
         doc = yarutsk.load(content)
         doc["z"] = 3
         assert list(doc.keys()) == ["a", "b", "z"]
@@ -181,7 +212,13 @@ outer:
 
     def test_round_trip_order(self):
         """Order preserved through parse-modify-serialize cycle."""
-        content = io.StringIO("z: 1\na: 2\nm: 3")
+        content = io.StringIO(
+            dedent("""\
+            z: 1
+            a: 2
+            m: 3
+        """)
+        )
         doc = yarutsk.load(content)
         doc["b"] = 4
         output = io.StringIO()

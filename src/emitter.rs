@@ -1272,28 +1272,28 @@ mod tests {
     #[test]
     fn emit_single_doc_no_markers() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[false], &[false], &[None], &[vec![]]);
+        let out = emit_docs(&[m], &[false], &[false], &[None], &[vec![]], 2);
         assert_eq!(out, "a: 1\n");
     }
 
     #[test]
     fn emit_single_doc_with_start_marker() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[true], &[false], &[None], &[vec![]]);
+        let out = emit_docs(&[m], &[true], &[false], &[None], &[vec![]], 2);
         assert_eq!(out, "---\na: 1\n");
     }
 
     #[test]
     fn emit_single_doc_with_end_marker() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[false], &[true], &[None], &[vec![]]);
+        let out = emit_docs(&[m], &[false], &[true], &[None], &[vec![]], 2);
         assert_eq!(out, "a: 1\n...\n");
     }
 
     #[test]
     fn emit_single_doc_with_both_markers() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[true], &[true], &[None], &[vec![]]);
+        let out = emit_docs(&[m], &[true], &[true], &[None], &[vec![]], 2);
         assert_eq!(out, "---\na: 1\n...\n");
     }
 
@@ -1309,6 +1309,7 @@ mod tests {
             &[false, false],
             &[None, None],
             &[vec![], vec![]],
+            2,
         );
         assert!(
             out.starts_with("---\n"),
@@ -1322,7 +1323,7 @@ mod tests {
 
     #[test]
     fn emit_empty_docs_slice() {
-        let out = emit_docs(&[], &[], &[], &[], &[]);
+        let out = emit_docs(&[], &[], &[], &[], &[], 2);
         assert_eq!(out, "");
     }
 
@@ -1518,7 +1519,7 @@ mod tests {
             )]);
             let mut out = String::new();
             emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
-            let re_parsed = crate::builder::parse_str(&out).expect("re-parse failed");
+            let re_parsed = crate::builder::parse_str(&out, None).expect("re-parse failed");
             let re_docs = re_parsed.docs;
             if let YamlNode::Mapping(m2) = &re_docs[0] {
                 if let YamlNode::Scalar(s) = &m2.entries["text"].value {

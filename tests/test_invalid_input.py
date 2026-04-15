@@ -12,6 +12,7 @@ Covers:
 """
 
 import io
+from textwrap import dedent
 
 import pytest
 
@@ -33,7 +34,12 @@ class TestMalformedYaml:
     def test_tab_indentation(self):
         # YAML forbids tabs as indentation characters
         with pytest.raises(RuntimeError, match="[Pp]arse"):
-            yarutsk.loads("key:\n\tvalue: 1")
+            yarutsk.loads(
+                dedent("""\
+                key:
+                \tvalue: 1
+            """)
+            )
 
     def test_unclosed_flow_mapping(self):
         with pytest.raises(RuntimeError, match="[Pp]arse"):
@@ -46,11 +52,24 @@ class TestMalformedYaml:
     def test_invalid_block_mapping_indentation(self):
         # Second key less-indented than first value would be a parse error
         with pytest.raises(RuntimeError, match="[Pp]arse"):
-            yarutsk.loads("a:\n  b: 1\n c: 2")
+            yarutsk.loads(
+                dedent("""\
+                a:
+                  b: 1
+                 c: 2
+            """)
+            )
 
     def test_loads_all_malformed(self):
         with pytest.raises(RuntimeError, match="[Pp]arse"):
-            yarutsk.loads_all("---\ngood: 1\n---\nbad: 'unclosed")
+            yarutsk.loads_all(
+                dedent("""\
+                ---
+                good: 1
+                ---
+                bad: 'unclosed
+            """)
+            )
 
     def test_load_stream_malformed(self):
         with pytest.raises(RuntimeError, match="[Pp]arse"):
@@ -80,7 +99,12 @@ class TestInvalidDumpTypes:
             yarutsk.dumps(doc)
 
     def test_nested_object_in_sequence_raises(self):
-        doc = yarutsk.loads("- 1\n- 2\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - 1
+            - 2
+        """)
+        )
         doc.append(object())
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dumps(doc)
@@ -299,12 +323,22 @@ class TestDumpsAllInvalidDocs:
 
 class TestBadCommentAndStyleArgs:
     def test_comment_inline_out_of_range_index_raises(self):
-        doc = yarutsk.loads("- a\n- b\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+        """)
+        )
         with pytest.raises(IndexError):
             doc.comment_inline(99, "note")
 
     def test_comment_before_out_of_range_index_raises(self):
-        doc = yarutsk.loads("- a\n- b\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+        """)
+        )
         with pytest.raises(IndexError):
             doc.comment_before(99, "note")
 
@@ -321,7 +355,12 @@ class TestBadCommentAndStyleArgs:
     def test_comment_inline_read_out_of_range_raises(self):
         # Reading a comment at an out-of-bounds index raises IndexError,
         # consistent with __getitem__ semantics.
-        doc = yarutsk.loads("- a\n- b\n")
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - b
+        """)
+        )
         with pytest.raises(IndexError):
             doc.comment_inline(99)
 

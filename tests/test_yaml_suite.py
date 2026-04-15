@@ -20,12 +20,7 @@ from pathlib import Path
 
 import pytest
 
-try:
-    import yarutsk
-
-    HAS_YARUTSK = True
-except ImportError:
-    HAS_YARUTSK = False
+import yarutsk
 
 SUITE_DIR = Path(__file__).parent.parent / "yaml-test-suite"
 SRC_DIR = SUITE_DIR / "src"
@@ -104,7 +99,7 @@ def _load_test_cases() -> list:
                 test.get("note") or file_skip or "skipped by test-suite metadata"
             )
 
-            marks = [pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk not built")]
+            marks = []
             if should_skip:
                 marks.append(pytest.mark.skip(reason=skip_reason))
             if should_fail:
@@ -147,7 +142,6 @@ def yaml_test_case(request):
 # ── Test classes ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.skipif(not HAS_YARUTSK, reason="yarutsk not built")
 class TestYamlSuite:
     """Run yaml-test-suite tests against yarutsk."""
 

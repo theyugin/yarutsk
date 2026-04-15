@@ -1,0 +1,620 @@
+"""Tests for the YamlScalar / YamlMapping / YamlSequence styled constructors.
+
+Covers:
+- All constructor arguments (value types, styles, tags, errors)
+- Style/tag are readable back after construction
+- Dump output reflects the requested style
+- Styled values survive assignment into loaded documents (mapping and sequence)
+- All mutation entry-points: __setitem__, append, insert, extend, update, setdefault
+- Dumper protocol: returning styled nodes from add_dumper callbacks
+- Tag precedence: tuple tag overrides any tag already set on the node
+- to_dict / __eq__ / __repr__ on YamlScalar
+- Tag on YamlMapping / YamlSequence appears in dump output
+"""
+
+from textwrap import dedent
+
+import pytest
+import yarutsk
+
+
+# ── YamlScalar construction ───────────────────────────────────────────────────
+
+
+class TestYamlScalarConstruction:
+    def test_str_default(self):
+        s = yarutsk.YamlScalar("hello")
+        assert s.value == "hello"
+        assert s.style == "plain"
+        assert s.tag is None
+
+    def test_int_value(self):
+        s = yarutsk.YamlScalar(42)
+        assert s.value == 42
+
+    def test_float_value(self):
+        s = yarutsk.YamlScalar(3.14)
+        assert s.value == 3.14
+
+    def test_bool_true(self):
+        s = yarutsk.YamlScalar(True)
+        assert s.value is True
+
+    def test_bool_false(self):
+        s = yarutsk.YamlScalar(False)
+        assert s.value is False
+
+    def test_none_value(self):
+        s = yarutsk.YamlScalar(None)
+        assert s.value is None
+
+    def test_all_scalar_styles(self):
+        for style in ("plain", "single", "double", "literal", "folded"):
+            s = yarutsk.YamlScalar("text", style=style)
+            assert s.style == style
+
+    def test_tag_kwarg(self):
+        s = yarutsk.YamlScalar("v", tag="!mytag")
+        assert s.tag == "!mytag"
+
+    def test_tag_and_style_together(self):
+        s = yarutsk.YamlScalar("v", style="double", tag="!x")
+        assert s.style == "double"
+        assert s.tag == "!x"
+
+    def test_tag_none_explicit(self):
+        s = yarutsk.YamlScalar("v", tag=None)
+        assert s.tag is None
+
+    def test_rejects_list(self):
+        with pytest.raises(TypeError):
+            yarutsk.YamlScalar([1, 2])  # type: ignore[arg-type]
+
+    def test_rejects_dict(self):
+        with pytest.raises(TypeError):
+            yarutsk.YamlScalar({"a": 1})  # type: ignore[arg-type]
+
+    def test_rejects_unknown_style(self):
+        with pytest.raises(ValueError, match="unknown style"):
+            yarutsk.YamlScalar("v", style="bold")
+
+    def test_style_mutable_after_construction(self):
+        s = yarutsk.YamlScalar("v", style="plain")
+        s.style = "double"
+        assert s.style == "double"
+
+    def test_tag_mutable_after_construction(self):
+        s = yarutsk.YamlScalar("v")
+        s.tag = "!foo"
+        assert s.tag == "!foo"
+        s.tag = None
+        assert s.tag is None
+
+
+class TestYamlScalarEquality:
+    def test_eq_primitive(self):
+        assert yarutsk.YamlScalar("hello") == "hello"
+        assert yarutsk.YamlScalar(42) == 42
+        assert yarutsk.YamlScalar(True) == True  # noqa: E712
+        assert yarutsk.YamlScalar(None) == None  # noqa: E711
+
+    def test_eq_other_scalar(self):
+        assert yarutsk.YamlScalar("x") == yarutsk.YamlScalar("x")
+
+    def test_neq_different_value(self):
+        assert yarutsk.YamlScalar("a") != yarutsk.YamlScalar("b")
+
+    def test_neq_different_type(self):
+        assert yarutsk.YamlScalar(1) != "1"
+
+
+class TestYamlScalarReprAndToDict:
+    def test_repr(self):
+        r = repr(yarutsk.YamlScalar("hi"))
+        assert "YamlScalar" in r
+        assert "hi" in r
+
+    def test_to_dict_returns_primitive(self):
+        assert yarutsk.YamlScalar("x").to_dict() == "x"
+        assert yarutsk.YamlScalar(7).to_dict() == 7
+        assert yarutsk.YamlScalar(None).to_dict() is None
+
+
+# ── YamlScalar dump output ────────────────────────────────────────────────────
+
+
+class TestYamlScalarDumpStyle:
+    def _doc_with(self, val):
+        doc = yarutsk.YamlMapping()
+        doc["k"] = val
+        return yarutsk.dumps(doc)
+
+    def test_plain_style(self):
+        assert self._doc_with(yarutsk.YamlScalar("hello", style="plain")) == dedent("""\
+            k: hello
+        """)
+
+    def test_double_style(self):
+        assert self._doc_with(yarutsk.YamlScalar("hello", style="double")) == dedent("""\
+            k: "hello"
+        """)
+
+    def test_single_style(self):
+        assert self._doc_with(yarutsk.YamlScalar("hello", style="single")) == dedent("""\
+            k: 'hello'
+        """)
+
+    def test_literal_style(self):
+        out = self._doc_with(yarutsk.YamlScalar("a\nb\n", style="literal"))
+        assert "|" in out
+
+    def test_folded_style(self):
+        out = self._doc_with(yarutsk.YamlScalar("a b c d", style="folded"))
+        assert ">" in out
+
+    def test_tag_in_output(self):
+        out = self._doc_with(yarutsk.YamlScalar("42", tag="!myint"))
+        assert "!myint" in out
+        assert "42" in out
+
+    def test_double_style_empty_string(self):
+        out = self._doc_with(yarutsk.YamlScalar("", style="double"))
+        assert '""' in out
+
+    def test_int_style_not_quoted(self):
+        # The emitter emits int/float/bool/null scalars in their native form
+        # regardless of the requested style; only str values get quoted.
+        assert self._doc_with(yarutsk.YamlScalar(42, style="double")) == dedent("""\
+            k: 42
+        """)
+
+
+# ── YamlMapping construction ──────────────────────────────────────────────────
+
+
+class TestYamlMappingConstruction:
+    def test_default_style(self):
+        m = yarutsk.YamlMapping()
+        assert m.style == "block"
+        assert m.tag is None
+        assert len(m) == 0
+
+    def test_flow_style(self):
+        m = yarutsk.YamlMapping(style="flow")
+        assert m.style == "flow"
+
+    def test_block_style_explicit(self):
+        m = yarutsk.YamlMapping(style="block")
+        assert m.style == "block"
+
+    def test_tag_kwarg(self):
+        m = yarutsk.YamlMapping(tag="!mymap")
+        assert m.tag == "!mymap"
+
+    def test_tag_and_style(self):
+        m = yarutsk.YamlMapping(style="flow", tag="!pt")
+        assert m.style == "flow"
+        assert m.tag == "!pt"
+
+    def test_rejects_unknown_style(self):
+        with pytest.raises(ValueError, match="unknown style"):
+            yarutsk.YamlMapping(style="sideways")
+
+    def test_is_dict_subclass(self):
+        m = yarutsk.YamlMapping()
+        assert isinstance(m, dict)
+
+    def test_supports_dict_operations(self):
+        m = yarutsk.YamlMapping(style="flow")
+        m["a"] = 1
+        m["b"] = 2
+        assert m["a"] == 1
+        assert list(m.keys()) == ["a", "b"]
+
+
+class TestYamlMappingDumpStyle:
+    def test_flow_mapping_emits_braces(self):
+        m = yarutsk.YamlMapping(style="flow")
+        m["x"] = 1
+        m["y"] = 2
+        doc = yarutsk.YamlMapping()
+        doc["p"] = m
+        out = yarutsk.dumps(doc)
+        assert "{" in out
+        assert "x: 1" in out
+
+    def test_block_mapping_no_braces(self):
+        m = yarutsk.YamlMapping(style="block")
+        m["x"] = 1
+        doc = yarutsk.YamlMapping()
+        doc["p"] = m
+        out = yarutsk.dumps(doc)
+        assert "{" not in out
+
+    def test_tag_on_nested_mapping_in_output(self):
+        m = yarutsk.YamlMapping(tag="!maptag")
+        m["a"] = 1
+        doc = yarutsk.YamlMapping()
+        doc["v"] = m
+        out = yarutsk.dumps(doc)
+        assert "!maptag" in out
+
+    def test_top_level_flow_mapping(self):
+        m = yarutsk.YamlMapping(style="flow")
+        m["x"] = 1
+        out = yarutsk.dumps(m)
+        assert "{" in out
+
+    def test_style_preserved_after_setitem_roundtrip(self):
+        doc = yarutsk.loads(
+            dedent("""\
+            outer:
+              x: 1
+        """)
+        )
+        nested = yarutsk.YamlMapping(style="flow")
+        nested["x"] = 1
+        doc["outer"] = nested
+        assert "{" in yarutsk.dumps(doc)
+
+
+# ── YamlSequence construction ─────────────────────────────────────────────────
+
+
+class TestYamlSequenceConstruction:
+    def test_default_style(self):
+        s = yarutsk.YamlSequence()
+        assert s.style == "block"
+        assert s.tag is None
+        assert len(s) == 0
+
+    def test_flow_style(self):
+        s = yarutsk.YamlSequence(style="flow")
+        assert s.style == "flow"
+
+    def test_tag_kwarg(self):
+        s = yarutsk.YamlSequence(tag="!myseq")
+        assert s.tag == "!myseq"
+
+    def test_tag_and_style(self):
+        s = yarutsk.YamlSequence(style="flow", tag="!xs")
+        assert s.style == "flow"
+        assert s.tag == "!xs"
+
+    def test_rejects_unknown_style(self):
+        with pytest.raises(ValueError, match="unknown style"):
+            yarutsk.YamlSequence(style="zigzag")
+
+    def test_is_list_subclass(self):
+        s = yarutsk.YamlSequence()
+        assert isinstance(s, list)
+
+    def test_supports_list_operations(self):
+        s = yarutsk.YamlSequence(style="flow")
+        s.extend([1, 2, 3])
+        assert list(s) == [1, 2, 3]
+
+
+class TestYamlSequenceDumpStyle:
+    def test_flow_sequence_emits_brackets(self):
+        s = yarutsk.YamlSequence(style="flow")
+        s.extend([1, 2, 3])
+        doc = yarutsk.YamlMapping()
+        doc["nums"] = s
+        out = yarutsk.dumps(doc)
+        assert "[" in out
+
+    def test_block_sequence_no_brackets(self):
+        s = yarutsk.YamlSequence(style="block")
+        s.extend([1, 2])
+        doc = yarutsk.YamlMapping()
+        doc["nums"] = s
+        out = yarutsk.dumps(doc)
+        assert "[" not in out
+
+    def test_tag_on_nested_sequence_in_output(self):
+        s = yarutsk.YamlSequence(tag="!seqtag")
+        s.append(1)
+        doc = yarutsk.YamlMapping()
+        doc["v"] = s
+        out = yarutsk.dumps(doc)
+        assert "!seqtag" in out
+
+    def test_top_level_flow_sequence(self):
+        s = yarutsk.YamlSequence(style="flow")
+        s.extend([1, 2])
+        out = yarutsk.dumps(s)
+        assert "[" in out
+
+    def test_style_preserved_after_setitem_roundtrip(self):
+        doc = yarutsk.loads(
+            dedent("""\
+            items:
+              - 1
+              - 2
+        """)
+        )
+        seq = yarutsk.YamlSequence(style="flow")
+        seq.extend([1, 2])
+        doc["items"] = seq
+        assert "[" in yarutsk.dumps(doc)
+
+
+# ── Assignment paths for styled scalars ───────────────────────────────────────
+
+
+class TestStyledScalarAssignmentPaths:
+    """All the ways a styled YamlScalar can enter a mapping or sequence."""
+
+    def test_mapping_setitem_new_key(self):
+        doc = yarutsk.loads("a: 1")
+        doc["b"] = yarutsk.YamlScalar("hi", style="double")
+        assert '"hi"' in yarutsk.dumps(doc)
+
+    def test_mapping_setitem_overwrite(self):
+        doc = yarutsk.loads("a: old")
+        doc["a"] = yarutsk.YamlScalar("new", style="single")
+        assert "'new'" in yarutsk.dumps(doc)
+
+    def test_mapping_update(self):
+        doc = yarutsk.loads("a: 1")
+        doc.update({"b": yarutsk.YamlScalar("x", style="double")})
+        assert '"x"' in yarutsk.dumps(doc)
+
+    def test_mapping_setdefault_inserts(self):
+        doc = yarutsk.loads("a: 1")
+        result = doc.setdefault("b", yarutsk.YamlScalar("y", style="single"))
+        assert result == "y"
+        assert "'y'" in yarutsk.dumps(doc)
+
+    def test_mapping_setdefault_does_not_overwrite(self):
+        doc = yarutsk.loads("a: existing")
+        doc.setdefault("a", yarutsk.YamlScalar("ignored", style="double"))
+        assert '"ignored"' not in yarutsk.dumps(doc)
+
+    def test_sequence_setitem(self):
+        doc = yarutsk.loads(
+            dedent("""\
+            - hello
+            - world
+        """)
+        )
+        doc[0] = yarutsk.YamlScalar("replaced", style="double")
+        assert '"replaced"' in yarutsk.dumps(doc)
+
+    def test_sequence_append(self):
+        doc = yarutsk.loads("- a")
+        doc.append(yarutsk.YamlScalar("b", style="single"))
+        assert "'b'" in yarutsk.dumps(doc)
+
+    def test_sequence_insert(self):
+        doc = yarutsk.loads(
+            dedent("""\
+            - a
+            - c
+        """)
+        )
+        doc.insert(1, yarutsk.YamlScalar("b", style="double"))
+        assert '"b"' in yarutsk.dumps(doc)
+
+    def test_sequence_extend(self):
+        doc = yarutsk.loads("[]")
+        doc.extend(
+            [
+                yarutsk.YamlScalar("x", style="single"),
+                yarutsk.YamlScalar("y", style="double"),
+            ]
+        )
+        out = yarutsk.dumps(doc)
+        assert "'x'" in out
+        assert '"y"' in out
+
+    def test_nested_mapping_value(self):
+        doc = yarutsk.loads(
+            dedent("""\
+            outer:
+              a: 1
+        """)
+        )
+        doc["outer"]["a"] = yarutsk.YamlScalar("styled", style="double")
+        assert '"styled"' in yarutsk.dumps(doc)
+
+
+# ── Assignment paths for styled containers ────────────────────────────────────
+
+
+class TestStyledContainerAssignmentPaths:
+    def test_mapping_setitem_flow_mapping(self):
+        doc = yarutsk.loads("p: placeholder")
+        m = yarutsk.YamlMapping(style="flow")
+        m["x"] = 1
+        doc["p"] = m
+        assert "{" in yarutsk.dumps(doc)
+
+    def test_mapping_setitem_flow_sequence(self):
+        doc = yarutsk.loads("items: placeholder")
+        s = yarutsk.YamlSequence(style="flow")
+        s.extend([1, 2])
+        doc["items"] = s
+        assert "[" in yarutsk.dumps(doc)
+
+    def test_sequence_append_flow_mapping(self):
+        doc = yarutsk.loads("[]")
+        m = yarutsk.YamlMapping(style="flow")
+        m["k"] = "v"
+        doc.append(m)
+        assert "{" in yarutsk.dumps(doc)
+
+    def test_sequence_append_flow_sequence(self):
+        doc = yarutsk.loads("[]")
+        inner = yarutsk.YamlSequence(style="flow")
+        inner.extend([1, 2])
+        doc.append(inner)
+        assert "[" in yarutsk.dumps(doc)
+
+    def test_mapping_update_with_styled_container(self):
+        doc = yarutsk.loads("a: 1")
+        m = yarutsk.YamlMapping(style="flow")
+        m["x"] = 9
+        doc.update({"sub": m})
+        assert "{" in yarutsk.dumps(doc)
+
+
+# ── Dumper protocol with styled nodes ────────────────────────────────────────
+
+
+class TestDumperWithStyledNodes:
+    """Dumper returns (tag, styled_node); style and tag must both appear."""
+
+    def test_scalar_style_and_tuple_tag(self):
+        class Foo:
+            def __init__(self, v):
+                self.v = v
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(
+            Foo, lambda obj: ("!foo", yarutsk.YamlScalar(str(obj.v), style="double"))
+        )
+        doc = yarutsk.YamlMapping()
+        doc["x"] = Foo("bar")
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "!foo" in out
+        assert '"bar"' in out
+
+    def test_mapping_style_and_tuple_tag(self):
+        class Point:
+            def __init__(self, x, y):
+                self.x, self.y = x, y
+
+        def dump(p):
+            m = yarutsk.YamlMapping(style="flow")
+            m["x"] = p.x
+            m["y"] = p.y
+            return ("!point", m)
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(Point, dump)
+        doc = yarutsk.YamlMapping()
+        doc["p"] = Point(1, 2)
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "!point" in out
+        assert "{" in out
+        assert "x: 1" in out
+
+    def test_sequence_style_and_tuple_tag(self):
+        class Bag:
+            def __init__(self, items):
+                self.items = items
+
+        def dump(b):
+            s = yarutsk.YamlSequence(style="flow")
+            s.extend(b.items)
+            return ("!bag", s)
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(Bag, dump)
+        doc = yarutsk.YamlMapping()
+        doc["b"] = Bag([1, 2, 3])
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "!bag" in out
+        assert "[" in out
+
+    def test_tuple_tag_overrides_node_tag(self):
+        """Tag from the (tag, data) tuple takes precedence over any tag set on the node."""
+
+        class Bar:
+            pass
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(
+            Bar,
+            lambda obj: ("!tuple-tag", yarutsk.YamlScalar("v", tag="!node-tag")),
+        )
+        doc = yarutsk.YamlMapping()
+        doc["x"] = Bar()
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "!tuple-tag" in out
+        assert "!node-tag" not in out
+
+    def test_dumper_block_mapping(self):
+        class Cfg:
+            pass
+
+        def dump(c):
+            m = yarutsk.YamlMapping(style="block")
+            m["debug"] = True
+            return ("!cfg", m)
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(Cfg, dump)
+        doc = yarutsk.YamlMapping()
+        doc["c"] = Cfg()
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "!cfg" in out
+        assert "{" not in out
+        assert "debug" in out
+
+    def test_dumper_scalar_single_quoted(self):
+        class Name:
+            def __init__(self, v):
+                self.v = v
+
+        schema = yarutsk.Schema()
+        schema.add_dumper(
+            Name, lambda obj: ("!name", yarutsk.YamlScalar(obj.v, style="single"))
+        )
+        doc = yarutsk.YamlMapping()
+        doc["n"] = Name("alice")
+        out = yarutsk.dumps(doc, schema=schema)
+        assert "'alice'" in out
+        assert "!name" in out
+
+
+# ── Tag on mapping / sequence appears in dump ─────────────────────────────────
+
+
+class TestConstructorTagInOutput:
+    def test_mapping_tag_nested(self):
+        m = yarutsk.YamlMapping(tag="!cfg")
+        m["debug"] = True
+        doc = yarutsk.YamlMapping()
+        doc["settings"] = m
+        assert "!cfg" in yarutsk.dumps(doc)
+
+    def test_sequence_tag_nested(self):
+        s = yarutsk.YamlSequence(tag="!items")
+        s.extend([1, 2])
+        doc = yarutsk.YamlMapping()
+        doc["data"] = s
+        assert "!items" in yarutsk.dumps(doc)
+
+    def test_scalar_tag_nested(self):
+        doc = yarutsk.YamlMapping()
+        doc["v"] = yarutsk.YamlScalar("x", tag="!scalar-tag")
+        assert "!scalar-tag" in yarutsk.dumps(doc)
+
+
+class TestKnownLimitations:
+    """Document known emitter limitations so they don't become surprise failures."""
+
+    def test_top_level_mapping_tag_not_emitted(self):
+        # Tags on a top-level mapping document are currently not emitted.
+        # This is a pre-existing emitter limitation, not specific to constructors.
+        m = yarutsk.YamlMapping(tag="!top")
+        m["k"] = "v"
+        assert "!top" not in yarutsk.dumps(m)  # tag is silently dropped by the emitter
+
+    def test_top_level_sequence_tag_not_emitted(self):
+        # Same limitation for top-level sequences.
+        s = yarutsk.YamlSequence(tag="!top")
+        s.append(1)
+        assert "!top" not in yarutsk.dumps(s)
+
+    def test_non_string_scalar_style_not_applied(self):
+        # Requesting double-quoted style on an int/float/bool/null scalar
+        # is ignored; the emitter always emits their native representation.
+        doc = yarutsk.YamlMapping()
+        doc["k"] = yarutsk.YamlScalar(42, style="double")
+        assert yarutsk.dumps(doc) == dedent("""\
+            k: 42
+        """)
