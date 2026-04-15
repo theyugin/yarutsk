@@ -3,12 +3,15 @@
 Run with:
     pytest benchmarks/ -v --benchmark-sort=name
 
-Groups:
-    load_small / load_medium / load_large
-    dump_small / dump_medium / dump_large
-    roundtrip_small / roundtrip_medium / roundtrip_large
+Or for per-group histograms:
+    make bench-compare
 
-Each group has one function per library:
+Groups (one histogram each):
+    load / small     load / medium     load / large
+    dump / small     dump / medium     dump / large
+    roundtrip / small  roundtrip / medium  roundtrip / large
+
+Each group contains one entry per library:
     yarutsk, pyyaml, ruamel_safe, ruamel_rt
 
 Libraries that are not installed are skipped automatically.
@@ -158,8 +161,6 @@ for _i in range(200):
         f"    score: {_score}",
     ]
 LARGE = "\n".join(_LARGE_LINES) + "\n"
-
-# Cleanup temporaries
 del _LARGE_LINES, _NAMES, _CITIES, _i, _n, _suffix, _age, _city, _active, _score
 
 
@@ -176,72 +177,7 @@ def _ruamel_dump(instance, obj) -> str:
     return buf.getvalue()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LOAD — small
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_load_small_yarutsk(benchmark):
-    benchmark(yarutsk.loads, SMALL)
-
-
-def test_load_small_pyyaml(benchmark):
-    benchmark(yaml.safe_load, SMALL)
-
-
-def test_load_small_ruamel_safe(benchmark):
-    benchmark(_ruamel_load, _ruamel_safe, SMALL)
-
-
-def test_load_small_ruamel_rt(benchmark):
-    benchmark(_ruamel_load, _ruamel_rt, SMALL)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOAD — medium
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_load_medium_yarutsk(benchmark):
-    benchmark(yarutsk.loads, MEDIUM)
-
-
-def test_load_medium_pyyaml(benchmark):
-    benchmark(yaml.safe_load, MEDIUM)
-
-
-def test_load_medium_ruamel_safe(benchmark):
-    benchmark(_ruamel_load, _ruamel_safe, MEDIUM)
-
-
-def test_load_medium_ruamel_rt(benchmark):
-    benchmark(_ruamel_load, _ruamel_rt, MEDIUM)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOAD — large
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_load_large_yarutsk(benchmark):
-    benchmark(yarutsk.loads, LARGE)
-
-
-def test_load_large_pyyaml(benchmark):
-    benchmark(yaml.safe_load, LARGE)
-
-
-def test_load_large_ruamel_safe(benchmark):
-    benchmark(_ruamel_load, _ruamel_safe, LARGE)
-
-
-def test_load_large_ruamel_rt(benchmark):
-    benchmark(_ruamel_load, _ruamel_rt, LARGE)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DUMP — pre-parse objects once at module level
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Pre-parsed objects for dump benchmarks ────────────────────────────────────
 
 _obj_small_yarutsk = yarutsk.loads(SMALL)
 _obj_medium_yarutsk = yarutsk.loads(MEDIUM)
@@ -259,73 +195,7 @@ _obj_small_ruamel_rt = _ruamel_rt.load(io.StringIO(SMALL))
 _obj_medium_ruamel_rt = _ruamel_rt.load(io.StringIO(MEDIUM))
 _obj_large_ruamel_rt = _ruamel_rt.load(io.StringIO(LARGE))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DUMP — small
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_dump_small_yarutsk(benchmark):
-    benchmark(yarutsk.dumps, _obj_small_yarutsk)
-
-
-def test_dump_small_pyyaml(benchmark):
-    benchmark(yaml.dump, _obj_small_pyyaml)
-
-
-def test_dump_small_ruamel_safe(benchmark):
-    benchmark(_ruamel_dump, _ruamel_safe, _obj_small_ruamel_safe)
-
-
-def test_dump_small_ruamel_rt(benchmark):
-    benchmark(_ruamel_dump, _ruamel_rt, _obj_small_ruamel_rt)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DUMP — medium
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_dump_medium_yarutsk(benchmark):
-    benchmark(yarutsk.dumps, _obj_medium_yarutsk)
-
-
-def test_dump_medium_pyyaml(benchmark):
-    benchmark(yaml.dump, _obj_medium_pyyaml)
-
-
-def test_dump_medium_ruamel_safe(benchmark):
-    benchmark(_ruamel_dump, _ruamel_safe, _obj_medium_ruamel_safe)
-
-
-def test_dump_medium_ruamel_rt(benchmark):
-    benchmark(_ruamel_dump, _ruamel_rt, _obj_medium_ruamel_rt)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DUMP — large
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def test_dump_large_yarutsk(benchmark):
-    benchmark(yarutsk.dumps, _obj_large_yarutsk)
-
-
-def test_dump_large_pyyaml(benchmark):
-    benchmark(yaml.dump, _obj_large_pyyaml)
-
-
-def test_dump_large_ruamel_safe(benchmark):
-    benchmark(_ruamel_dump, _ruamel_safe, _obj_large_ruamel_safe)
-
-
-def test_dump_large_ruamel_rt(benchmark):
-    benchmark(_ruamel_dump, _ruamel_rt, _obj_large_ruamel_rt)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ROUND-TRIP (load + dump in one benchmark call)
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Round-trip helpers ────────────────────────────────────────────────────────
 
 
 def _rt_yarutsk(text: str) -> str:
@@ -344,49 +214,262 @@ def _rt_ruamel_rt(text: str) -> str:
     return _ruamel_dump(_ruamel_rt, _ruamel_load(_ruamel_rt, text))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# LOAD — small
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_load_small_yarutsk(benchmark):
+    benchmark.group = "load / small"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.loads, SMALL)
+
+
+def test_load_small_pyyaml(benchmark):
+    benchmark.group = "load / small"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.safe_load, SMALL)
+
+
+def test_load_small_ruamel_safe(benchmark):
+    benchmark.group = "load / small"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_load, _ruamel_safe, SMALL)
+
+
+def test_load_small_ruamel_rt(benchmark):
+    benchmark.group = "load / small"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_load, _ruamel_rt, SMALL)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOAD — medium
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_load_medium_yarutsk(benchmark):
+    benchmark.group = "load / medium"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.loads, MEDIUM)
+
+
+def test_load_medium_pyyaml(benchmark):
+    benchmark.group = "load / medium"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.safe_load, MEDIUM)
+
+
+def test_load_medium_ruamel_safe(benchmark):
+    benchmark.group = "load / medium"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_load, _ruamel_safe, MEDIUM)
+
+
+def test_load_medium_ruamel_rt(benchmark):
+    benchmark.group = "load / medium"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_load, _ruamel_rt, MEDIUM)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOAD — large
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_load_large_yarutsk(benchmark):
+    benchmark.group = "load / large"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.loads, LARGE)
+
+
+def test_load_large_pyyaml(benchmark):
+    benchmark.group = "load / large"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.safe_load, LARGE)
+
+
+def test_load_large_ruamel_safe(benchmark):
+    benchmark.group = "load / large"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_load, _ruamel_safe, LARGE)
+
+
+def test_load_large_ruamel_rt(benchmark):
+    benchmark.group = "load / large"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_load, _ruamel_rt, LARGE)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DUMP — small
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_dump_small_yarutsk(benchmark):
+    benchmark.group = "dump / small"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.dumps, _obj_small_yarutsk)
+
+
+def test_dump_small_pyyaml(benchmark):
+    benchmark.group = "dump / small"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.dump, _obj_small_pyyaml)
+
+
+def test_dump_small_ruamel_safe(benchmark):
+    benchmark.group = "dump / small"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_dump, _ruamel_safe, _obj_small_ruamel_safe)
+
+
+def test_dump_small_ruamel_rt(benchmark):
+    benchmark.group = "dump / small"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_dump, _ruamel_rt, _obj_small_ruamel_rt)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DUMP — medium
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_dump_medium_yarutsk(benchmark):
+    benchmark.group = "dump / medium"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.dumps, _obj_medium_yarutsk)
+
+
+def test_dump_medium_pyyaml(benchmark):
+    benchmark.group = "dump / medium"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.dump, _obj_medium_pyyaml)
+
+
+def test_dump_medium_ruamel_safe(benchmark):
+    benchmark.group = "dump / medium"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_dump, _ruamel_safe, _obj_medium_ruamel_safe)
+
+
+def test_dump_medium_ruamel_rt(benchmark):
+    benchmark.group = "dump / medium"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_dump, _ruamel_rt, _obj_medium_ruamel_rt)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DUMP — large
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_dump_large_yarutsk(benchmark):
+    benchmark.group = "dump / large"
+    benchmark.name = "yarutsk"
+    benchmark(yarutsk.dumps, _obj_large_yarutsk)
+
+
+def test_dump_large_pyyaml(benchmark):
+    benchmark.group = "dump / large"
+    benchmark.name = "pyyaml"
+    benchmark(yaml.dump, _obj_large_pyyaml)
+
+
+def test_dump_large_ruamel_safe(benchmark):
+    benchmark.group = "dump / large"
+    benchmark.name = "ruamel_safe"
+    benchmark(_ruamel_dump, _ruamel_safe, _obj_large_ruamel_safe)
+
+
+def test_dump_large_ruamel_rt(benchmark):
+    benchmark.group = "dump / large"
+    benchmark.name = "ruamel_rt"
+    benchmark(_ruamel_dump, _ruamel_rt, _obj_large_ruamel_rt)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUND-TRIP — small
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 def test_roundtrip_small_yarutsk(benchmark):
+    benchmark.group = "roundtrip / small"
+    benchmark.name = "yarutsk"
     benchmark(_rt_yarutsk, SMALL)
 
 
 def test_roundtrip_small_pyyaml(benchmark):
+    benchmark.group = "roundtrip / small"
+    benchmark.name = "pyyaml"
     benchmark(_rt_pyyaml, SMALL)
 
 
 def test_roundtrip_small_ruamel_safe(benchmark):
+    benchmark.group = "roundtrip / small"
+    benchmark.name = "ruamel_safe"
     benchmark(_rt_ruamel_safe, SMALL)
 
 
 def test_roundtrip_small_ruamel_rt(benchmark):
+    benchmark.group = "roundtrip / small"
+    benchmark.name = "ruamel_rt"
     benchmark(_rt_ruamel_rt, SMALL)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUND-TRIP — medium
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 def test_roundtrip_medium_yarutsk(benchmark):
+    benchmark.group = "roundtrip / medium"
+    benchmark.name = "yarutsk"
     benchmark(_rt_yarutsk, MEDIUM)
 
 
 def test_roundtrip_medium_pyyaml(benchmark):
+    benchmark.group = "roundtrip / medium"
+    benchmark.name = "pyyaml"
     benchmark(_rt_pyyaml, MEDIUM)
 
 
 def test_roundtrip_medium_ruamel_safe(benchmark):
+    benchmark.group = "roundtrip / medium"
+    benchmark.name = "ruamel_safe"
     benchmark(_rt_ruamel_safe, MEDIUM)
 
 
 def test_roundtrip_medium_ruamel_rt(benchmark):
+    benchmark.group = "roundtrip / medium"
+    benchmark.name = "ruamel_rt"
     benchmark(_rt_ruamel_rt, MEDIUM)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUND-TRIP — large
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 def test_roundtrip_large_yarutsk(benchmark):
+    benchmark.group = "roundtrip / large"
+    benchmark.name = "yarutsk"
     benchmark(_rt_yarutsk, LARGE)
 
 
 def test_roundtrip_large_pyyaml(benchmark):
+    benchmark.group = "roundtrip / large"
+    benchmark.name = "pyyaml"
     benchmark(_rt_pyyaml, LARGE)
 
 
 def test_roundtrip_large_ruamel_safe(benchmark):
+    benchmark.group = "roundtrip / large"
+    benchmark.name = "ruamel_safe"
     benchmark(_rt_ruamel_safe, LARGE)
 
 
 def test_roundtrip_large_ruamel_rt(benchmark):
+    benchmark.group = "roundtrip / large"
+    benchmark.name = "ruamel_rt"
     benchmark(_rt_ruamel_rt, LARGE)

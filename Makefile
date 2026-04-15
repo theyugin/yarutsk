@@ -73,11 +73,18 @@ test-roundtrip:
 
 bench: build-release
 	uv sync --group benchmark
-	$(PYTEST) benchmarks/ --benchmark-only -q --override-ini="python_files=bench_*.py"
+	$(PYTEST) benchmarks/ --benchmark-only -q \
+	    --benchmark-group-by=group \
+	    --benchmark-sort=name \
+	    --override-ini="python_files=bench_*.py"
 
 bench-compare: build-release
 	uv sync --group benchmark
-	$(PYTEST) benchmarks/ --benchmark-only --benchmark-histogram --override-ini="python_files=bench_*.py"
+	$(PYTEST) benchmarks/ --benchmark-only \
+	    --benchmark-group-by=group \
+	    --benchmark-histogram=histograms/bench \
+	    --benchmark-sort=name \
+	    --override-ini="python_files=bench_*.py"
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 
