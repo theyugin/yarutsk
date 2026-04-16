@@ -16,6 +16,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use types::*;
 
+pyo3::create_exception!(yarutsk, YarutskError, pyo3::exceptions::PyException);
+pyo3::create_exception!(yarutsk, ParseError, YarutskError);
+pyo3::create_exception!(yarutsk, LoaderError, YarutskError);
+pyo3::create_exception!(yarutsk, DumperError, YarutskError);
+
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 /// Tags for which the builder skips coercion when a loader is registered.
@@ -148,8 +153,15 @@ fn scalar_to_py_with_tag(
                 .and_then(|t| sr.loaders.get(t).map(|f| f.clone_ref(py)))
         };
         if let Some(loader_fn) = loader {
+            let tag_name = s.tag.as_deref().unwrap_or("?");
             let default_val = scalar_to_py(py, &s.value)?;
-            return loader_fn.bind(py).call1((default_val,)).map(|v| v.unbind());
+            return loader_fn
+                .bind(py)
+                .call1((default_val,))
+                .map(|v| v.unbind())
+                .map_err(|e| {
+                    LoaderError::new_err(format!("Schema loader for tag '{tag_name}' raised: {e}"))
+                });
         }
     }
     match s.tag.as_deref() {
@@ -294,7 +306,13 @@ fn apply_loader(
             sr.loaders.get(t).map(|f| f.clone_ref(py))
         };
         if let Some(loader_fn) = loader {
-            return loader_fn.bind(py).call1((py_obj,)).map(|v| v.unbind());
+            return loader_fn
+                .bind(py)
+                .call1((py_obj,))
+                .map(|v| v.unbind())
+                .map_err(|e| {
+                    LoaderError::new_err(format!("Schema loader for tag '{t}' raised: {e}"))
+                });
         }
     }
     Ok(py_obj)
@@ -337,8 +355,19 @@ fn py_to_node(obj: &Bound<'_, PyAny>, schema: Option<&Bound<'_, Schema>>) -> PyR
             })
         };
         if let Some((_, dumper_fn)) = match_result {
-            let call_result = dumper_fn.bind(obj.py()).call1((obj,))?;
-            let (tag, data): (String, Bound<'_, PyAny>) = call_result.extract()?;
+            let type_name = obj
+                .get_type()
+                .qualname()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "?".to_string());
+            let call_result = dumper_fn.bind(obj.py()).call1((obj,)).map_err(|e| {
+                DumperError::new_err(format!("Schema dumper for {type_name} raised: {e}"))
+            })?;
+            let (tag, data): (String, Bound<'_, PyAny>) = call_result.extract().map_err(|e| {
+                DumperError::new_err(format!(
+                    "Schema dumper for {type_name} must return (tag, data) tuple: {e}"
+                ))
+            })?;
             let mut node = py_to_node(&data, schema)?;
             match &mut node {
                 YamlNode::Scalar(s) => s.tag = Some(tag),
@@ -762,8 +791,7 @@ fn write_to_stream(stream: &Bound<'_, PyAny>, text: &str) -> PyResult<()> {
 
 fn parse_text(text: &str, schema: Option<&Schema>) -> PyResult<ParseOutput> {
     let policy = schema.and_then(Schema::tag_policy);
-    parse_str(text, policy.as_ref())
-        .map_err(|e| PyRuntimeError::new_err(format!("Parse error: {e}")))
+    parse_str(text, policy.as_ref()).map_err(|e| ParseError::new_err(e.to_string()))
 }
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
@@ -2368,6 +2396,10 @@ fn dumps_all(
 /// The yarutsk module.
 #[pymodule]
 fn yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("YarutskError", m.py().get_type::<YarutskError>())?;
+    m.add("ParseError", m.py().get_type::<ParseError>())?;
+    m.add("LoaderError", m.py().get_type::<LoaderError>())?;
+    m.add("DumperError", m.py().get_type::<DumperError>())?;
     m.add_class::<Schema>()?;
     m.add_class::<PyYamlScalar>()?;
     m.add_class::<PyYamlMapping>()?;

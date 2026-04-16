@@ -3,6 +3,8 @@
 import datetime
 from textwrap import dedent
 
+import pytest
+
 import yarutsk
 
 
@@ -560,3 +562,82 @@ class TestMutableSequenceCustomTypes:
         assert "- 1" in out
         assert "- 2" in out
         assert "!point" in out
+
+
+# ── Schema error handling ─────────────────────────────────────────────────────
+
+
+class TestSchemaErrors:
+    def test_loader_receives_mapping_raises_loader_error(self) -> None:
+        schema = yarutsk.Schema()
+        schema.add_loader("!color", lambda s: s.split(","))  # expects str, gets mapping
+
+        with pytest.raises(yarutsk.LoaderError) as exc_info:
+            yarutsk.loads(
+                "bg: !color\n  r: 255\n  g: 0\n  b: 128\n",
+                schema=schema,
+            )
+        assert "!color" in str(exc_info.value)
+
+    def test_loader_receives_sequence_raises_loader_error(self) -> None:
+        schema = yarutsk.Schema()
+        schema.add_loader(
+            "!color", lambda s: s.split(",")
+        )  # expects str, gets sequence
+
+        with pytest.raises(yarutsk.LoaderError) as exc_info:
+            yarutsk.loads(
+                "bg: !color\n  - 255\n  - 0\n  - 128\n",
+                schema=schema,
+            )
+        assert "!color" in str(exc_info.value)
+
+    def test_loader_raises_on_valid_input(self) -> None:
+        schema = yarutsk.Schema()
+        schema.add_loader(
+            "!boom", lambda s: (_ for _ in ()).throw(ValueError("intentional"))
+        )
+
+        with pytest.raises(yarutsk.LoaderError) as exc_info:
+            yarutsk.loads("x: !boom value\n", schema=schema)
+        assert "!boom" in str(exc_info.value)
+
+    def test_dumper_raises_loader_error(self) -> None:
+        schema = yarutsk.Schema()
+        schema.add_dumper(
+            Point, lambda p: (_ for _ in ()).throw(RuntimeError("dump fail"))
+        )
+
+        doc = yarutsk.loads("x: placeholder\n")
+        doc["x"] = Point(1, 2)
+        with pytest.raises(yarutsk.DumperError) as exc_info:
+            yarutsk.dumps(doc, schema=schema)
+        assert "Point" in str(exc_info.value)
+
+    def test_dumper_returns_wrong_type_raises_dumper_error(self) -> None:
+        schema = yarutsk.Schema()
+        schema.add_dumper(Point, lambda p: "not-a-tuple")  # must return (tag, data)
+
+        doc = yarutsk.loads("x: placeholder\n")
+        doc["x"] = Point(1, 2)
+        with pytest.raises(yarutsk.DumperError) as exc_info:
+            yarutsk.dumps(doc, schema=schema)
+        assert "Point" in str(exc_info.value)
+        assert "tuple" in str(exc_info.value)
+
+    def test_parse_error_raises_parse_error(self) -> None:
+        with pytest.raises(yarutsk.ParseError):
+            yarutsk.loads("{bad yaml: [}")
+
+    def test_hierarchy_loader_error_is_yarutsk_error(self) -> None:
+        assert issubclass(yarutsk.LoaderError, yarutsk.YarutskError)
+
+    def test_hierarchy_dumper_error_is_yarutsk_error(self) -> None:
+        assert issubclass(yarutsk.DumperError, yarutsk.YarutskError)
+
+    def test_hierarchy_parse_error_is_yarutsk_error(self) -> None:
+        assert issubclass(yarutsk.ParseError, yarutsk.YarutskError)
+
+    def test_catch_with_base_exception(self) -> None:
+        with pytest.raises(yarutsk.YarutskError):
+            yarutsk.loads("{bad yaml: [}")

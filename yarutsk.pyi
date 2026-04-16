@@ -17,6 +17,38 @@ _Scalar = int | float | bool | str | None
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
 
+class YarutskError(Exception):
+    """Base exception for all yarutsk errors."""
+
+    ...
+
+class ParseError(YarutskError):
+    """Raised when the YAML input cannot be parsed.
+
+    The message includes the error description plus byte offset, line, and column
+    from the scanner (e.g. ``"did not find expected key at byte 10 line 3 column 1"``).
+    """
+
+    ...
+
+class LoaderError(YarutskError):
+    """Raised when a schema loader callable raises an exception.
+
+    The message includes the tag name and the original exception, e.g.:
+    ``"Schema loader for tag '!color' raised: AttributeError: ..."``
+    """
+
+    ...
+
+class DumperError(YarutskError):
+    """Raised when a schema dumper callable raises an exception, or when it
+    returns something other than a ``(tag, data)`` tuple.
+
+    The message includes the Python type name and the original exception.
+    """
+
+    ...
+
 class YamlScalar:
     """A YAML scalar document node (int, float, bool, str, or null).
 

@@ -24,16 +24,16 @@ import yarutsk
 
 class TestMalformedYaml:
     def test_unclosed_single_quote(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("x: 'unclosed")
 
     def test_unclosed_double_quote(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads('x: "unclosed')
 
     def test_tab_indentation(self):
         # YAML forbids tabs as indentation characters
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads(
                 dedent("""\
                 key:
@@ -42,16 +42,16 @@ class TestMalformedYaml:
             )
 
     def test_unclosed_flow_mapping(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("{foo: bar")
 
     def test_unclosed_flow_sequence(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("[1, 2, 3")
 
     def test_invalid_block_mapping_indentation(self):
         # Second key less-indented than first value would be a parse error
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads(
                 dedent("""\
                 a:
@@ -61,7 +61,7 @@ class TestMalformedYaml:
             )
 
     def test_loads_all_malformed(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.loads_all(
                 dedent("""\
                 ---
@@ -72,7 +72,7 @@ class TestMalformedYaml:
             )
 
     def test_load_stream_malformed(self):
-        with pytest.raises(RuntimeError, match="[Pp]arse"):
+        with pytest.raises(yarutsk.ParseError):
             yarutsk.load(io.StringIO("x: 'unclosed"))
 
 
@@ -157,7 +157,7 @@ class TestSchemaDumperErrors:
         schema.add_dumper(_Opaque, lambda x: "not-a-tuple")
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
     def test_dumper_returns_1_tuple(self):
@@ -165,7 +165,7 @@ class TestSchemaDumperErrors:
         schema.add_dumper(_Opaque, lambda x: ("!tag",))
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
-        with pytest.raises((RuntimeError, TypeError, ValueError)):
+        with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
     def test_dumper_returns_3_tuple(self):
@@ -173,7 +173,7 @@ class TestSchemaDumperErrors:
         schema.add_dumper(_Opaque, lambda x: ("!tag", "data", "extra"))
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
-        with pytest.raises((RuntimeError, TypeError, ValueError)):
+        with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
     def test_dumper_returns_non_serializable_data(self):
@@ -194,7 +194,7 @@ class TestSchemaDumperErrors:
         schema.add_dumper(_Opaque, bad_dumper)
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
-        with pytest.raises(ValueError, match="dumper exploded"):
+        with pytest.raises(yarutsk.DumperError, match="dumper exploded"):
             yarutsk.dumps(doc, schema=schema)
 
     def test_no_dumper_registered_raises(self):
@@ -214,7 +214,7 @@ class TestSchemaLoaderErrors:
             raise ValueError("loader exploded")
 
         schema.add_loader("!boom", bad_loader)
-        with pytest.raises(ValueError, match="loader exploded"):
+        with pytest.raises(yarutsk.LoaderError, match="loader exploded"):
             yarutsk.loads("x: !boom whatever\n", schema=schema)
 
     def test_loader_returning_unserializable_object_is_stored(self):

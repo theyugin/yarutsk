@@ -511,16 +511,51 @@ yarutsk focuses on **round-trip fidelity**: if you need to edit a config file an
 
 ## Error handling
 
+yarutsk defines a small exception hierarchy rooted at `YarutskError`:
+
+```
+Exception
+└── YarutskError         # base for all library errors
+    ├── ParseError       # malformed YAML input
+    ├── LoaderError      # schema loader callable raised
+    └── DumperError      # schema dumper raised or returned wrong type
+```
+
 ```python
 import yarutsk
 
-# Malformed YAML → ValueError
+# Malformed YAML → yarutsk.ParseError
+# Message includes the error description and source position (line, column).
 try:
     yarutsk.loads("key: [unclosed")
-except ValueError as e:
-    print(e)   # scan error: ...
+except yarutsk.ParseError as e:
+    print(e)   # while parsing a flow sequence, expected ',' or ']' at byte ...
 
-# Unsupported Python type → TypeError
+# Catch any library error with the base class
+try:
+    yarutsk.loads("key: [unclosed")
+except yarutsk.YarutskError as e:
+    print(e)
+
+# Schema loader raises → yarutsk.LoaderError
+# Message includes the tag name so you know which loader misbehaved.
+schema = yarutsk.Schema()
+schema.add_loader("!color", lambda s: s.split(","))  # expects str
+try:
+    yarutsk.loads("bg: !color\n  r: 255\n  g: 0\n  b: 128\n", schema=schema)
+except yarutsk.LoaderError as e:
+    print(e)   # Schema loader for tag '!color' raised: AttributeError: ...
+
+# Schema dumper raises or returns the wrong type → yarutsk.DumperError
+# Message includes the Python type name.
+schema = yarutsk.Schema()
+schema.add_dumper(MyType, lambda x: "not-a-tuple")  # must return (tag, data)
+try:
+    yarutsk.dumps(doc, schema=schema)
+except yarutsk.DumperError as e:
+    print(e)   # Schema dumper for MyType must return (tag, data) tuple: ...
+
+# Unsupported Python type (no schema dumper registered) → TypeError
 try:
     yarutsk.dumps({"key": {1, 2}})  # sets are not supported
 except TypeError as e:
