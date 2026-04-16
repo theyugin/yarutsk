@@ -7,7 +7,8 @@ use core::builder;
 use core::emitter::emit_docs;
 use core::types::YamlNode;
 use py::convert::{
-    DocMeta, extract_yaml_node, node_to_doc, parse_text, read_stream, write_to_stream,
+    DocMeta, clear_anchor_state, extract_yaml_node, init_anchor_state, node_to_doc, parse_text,
+    read_stream, write_to_stream,
 };
 use py::py_mapping::PyYamlMapping;
 use py::py_scalar::PyYamlScalar;
@@ -92,7 +93,10 @@ fn emit_doc_to_string(
     schema: Option<&Bound<'_, Schema>>,
     indent: usize,
 ) -> PyResult<String> {
-    let node = extract_yaml_node(doc, schema)?;
+    init_anchor_state(doc);
+    let node_result = extract_yaml_node(doc, schema);
+    clear_anchor_state();
+    let node = node_result?;
     Ok(emit_docs(
         std::slice::from_ref(&node),
         &[get_explicit_start_flag(doc)],
@@ -219,7 +223,12 @@ fn dump_all(
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
     let nodes: Vec<YamlNode> = items
         .iter()
-        .map(|i| extract_yaml_node(i, sb))
+        .map(|i| {
+            init_anchor_state(i);
+            let node = extract_yaml_node(i, sb);
+            clear_anchor_state();
+            node
+        })
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
@@ -244,7 +253,12 @@ fn dumps_all(
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
     let nodes: Vec<YamlNode> = items
         .iter()
-        .map(|i| extract_yaml_node(i, sb))
+        .map(|i| {
+            init_anchor_state(i);
+            let node = extract_yaml_node(i, sb);
+            clear_anchor_state();
+            node
+        })
         .collect::<PyResult<_>>()?;
     let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
     let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();

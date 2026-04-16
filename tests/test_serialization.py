@@ -3,6 +3,7 @@
 import io
 from textwrap import dedent
 
+import pytest
 
 import yarutsk
 
@@ -508,3 +509,193 @@ class TestIndent:
         doc2 = yarutsk.loads(out)
         assert doc2["a"]["b"] == 1
         assert doc2["a"]["c"]["d"] is True
+
+
+class TestAutoAnchor:
+    """Auto-anchor emission for plain Python dicts/lists with shared identity or cycles.
+
+    When a plain Python dict, list, or tuple appears more than once in the
+    object graph (by identity), dumps() automatically assigns it an anchor
+    and emits aliases for subsequent references — matching PyYAML and
+    ruamel.yaml behaviour.
+    """
+
+    # ── shared object (two references, same identity) ─────────────────────────
+
+    def test_shared_dict_gets_anchor_and_alias(self):
+        shared = {"x": 1}
+        out = yarutsk.dumps({"a": shared, "b": shared})
+        assert "&id001" in out
+        assert "*id001" in out
+
+    def test_shared_dict_first_occurrence_is_anchor(self):
+        shared = {"x": 1}
+        out = yarutsk.dumps({"a": shared, "b": shared})
+        # anchor must appear before alias in the output
+        assert out.index("&id001") < out.index("*id001")
+
+    def test_shared_list_gets_anchor_and_alias(self):
+        shared = [1, 2, 3]
+        out = yarutsk.dumps({"a": shared, "b": shared})
+        assert "&id001" in out
+        assert "*id001" in out
+
+    def test_shared_tuple_gets_anchor_and_alias(self):
+        shared = (10, 20)
+        out = yarutsk.dumps({"a": shared, "b": shared})
+        assert "&id001" in out
+        assert "*id001" in out
+
+    def test_multiple_shared_objects_numbered_sequentially(self):
+        o1 = {"x": 1}
+        o2 = {"y": 2}
+        out = yarutsk.dumps({"a": o1, "b": o1, "c": o2, "d": o2})
+        assert "&id001" in out
+        assert "*id001" in out
+        assert "&id002" in out
+        assert "*id002" in out
+
+    def test_unshared_object_has_no_anchor(self):
+        out = yarutsk.dumps({"a": {"x": 1}, "b": {"x": 2}})
+        assert "&id" not in out
+        assert "*id" not in out
+
+    # ── self-referential (cyclic) structures ──────────────────────────────────
+
+    def test_recursive_dict_emits_anchor_and_alias(self):
+        d: dict = {}
+        d["self"] = d
+        out = yarutsk.dumps(d)
+        assert "&id001" in out
+        assert "*id001" in out
+
+    def test_recursive_dict_output_is_valid_yaml(self):
+        d: dict = {}
+        d["self"] = d
+        out = yarutsk.dumps(d)
+        # The output must be parseable YAML
+        doc = yarutsk.loads(out)
+        assert doc is not None
+
+    def test_recursive_list_emits_anchor_and_alias(self):
+        lst: list = [1, 2]
+        lst.append(lst)
+        out = yarutsk.dumps(lst)
+        assert "&id001" in out
+        assert "*id001" in out
+
+    def test_recursive_list_output_is_valid_yaml(self):
+        lst: list = [1, 2]
+        lst.append(lst)
+        out = yarutsk.dumps(lst)
+        doc = yarutsk.loads(out)
+        assert doc is not None
+
+    def test_cross_cycle_emits_anchor_and_alias(self):
+        a: dict = {}
+        b: dict = {}
+        a["next"] = b
+        b["prev"] = a
+        out = yarutsk.dumps(a)
+        assert "&id001" in out
+        assert "*id001" in out
+
+    # ── dump() stream variant ────────────────────────────────────────────────
+
+    def test_dump_stream_shared_object(self):
+        shared = {"x": 1}
+        buf = io.StringIO()
+        yarutsk.dump({"a": shared, "b": shared}, buf)
+        out = buf.getvalue()
+        assert "&id001" in out
+        assert "*id001" in out
+
+    # ── per-document scope: no cross-document anchors ────────────────────────
+
+    def test_cross_doc_shared_object_no_cross_doc_anchor(self):
+        shared = {"x": 1}
+        out = yarutsk.dumps_all([{"a": shared}, {"b": shared}])
+        # Each document serializes the object independently
+        assert out.count("x: 1") == 2
+        # No alias should appear (anchor scope is per-document)
+        assert "*id" not in out
+
+    # ── from_dict / from_list still raise on cycles ──────────────────────────
+
+    def test_from_dict_raises_on_recursive_dict(self):
+        d: dict = {}
+        d["self"] = d
+        with pytest.raises(ValueError, match="recursive"):
+            yarutsk.YamlMapping.from_dict(d)
+
+    def test_from_list_raises_on_recursive_list(self):
+        lst: list = [1]
+        lst.append(lst)
+        with pytest.raises(ValueError, match="recursive"):
+            yarutsk.YamlSequence.from_list(lst)
+
+    # ── tagged / anchored PyYamlMapping / PyYamlSequence ────────────────────
+    #
+    # The auto-anchor prepass only handles plain Python dicts/lists/tuples.
+    # PyYamlMapping and PyYamlSequence carry their own Rust inner model and
+    # are serialized verbatim — they are never auto-anchored or de-duplicated,
+    # even when the same Python object is referenced more than once.
+
+    def test_shared_tagged_mapping_serialized_twice_no_auto_anchor(self):
+        # Same PyYamlMapping Python object referenced from two plain-dict keys:
+        # no deduplication, both keys serialize the full node with its tag.
+        tagged = yarutsk.loads("!!mytype\nx: 1\n")
+        out = yarutsk.dumps({"a": tagged, "b": tagged})
+        assert "&id" not in out
+        assert "*id" not in out
+        assert out.count("!!mytype") == 2
+        assert out.count("x: 1") == 2
+
+    def test_shared_tagged_sequence_serialized_twice_no_auto_anchor(self):
+        tagged = yarutsk.loads("!!myseq\n- 1\n- 2\n")
+        out = yarutsk.dumps({"a": tagged, "b": tagged})
+        assert "&id" not in out
+        assert "*id" not in out
+        assert out.count("!!myseq") == 2
+
+    def test_yaml_mapping_existing_anchor_emitted_per_occurrence(self):
+        # A loaded mapping with its own anchor (&myanchor) is serialized as-is
+        # each time it appears; no alias is injected.  Both occurrences carry
+        # the anchor name — duplicate anchors are technically valid YAML
+        # (the last definition wins) and our loader handles them correctly.
+        anchored = yarutsk.loads("&myanchor\nx: 1\n")
+        out = yarutsk.dumps({"a": anchored, "b": anchored})
+        assert out.count("&myanchor") == 2
+        assert "*myanchor" not in out
+        # Round-trip must succeed
+        doc = yarutsk.loads(out)
+        assert doc["b"]["x"] == 1
+
+    def test_yaml_mapping_self_assignment_uses_snapshot(self):
+        # Assigning a PyYamlMapping to one of its own keys stores a *snapshot*
+        # of the mapping at the moment of assignment (before the new key is
+        # visible), so no true cycle is created and the output is finite.
+        m = yarutsk.loads("key: value\n")
+        m["self"] = m  # snapshot: captures {'key': 'value'}, not the full m
+        out = yarutsk.dumps(m)
+        # No anchor/alias: the self-reference was broken at assignment time
+        assert "&id" not in out
+        assert "*id" not in out
+        # The inner snapshot has only the original key
+        doc = yarutsk.loads(out)
+        assert doc["self"]["key"] == "value"
+        assert "self" not in doc["self"]
+
+    def test_plain_dict_with_tagged_value_and_self_reference(self):
+        # A plain dict that is self-referential AND contains a tagged
+        # PyYamlMapping as a value: the plain dict gets auto-anchored,
+        # the tagged inner value is serialized normally.
+        tagged = yarutsk.loads("!!mytype\nz: 9\n")
+        d: dict = {}
+        d["inner"] = tagged
+        d["self"] = d
+        out = yarutsk.dumps(d)
+        assert "&id001" in out  # plain dict anchored
+        assert "*id001" in out  # self-ref becomes alias
+        assert "!!mytype" in out  # tag preserved on inner value
+        assert "z: 9" in out

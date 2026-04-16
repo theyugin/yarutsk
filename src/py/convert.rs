@@ -1,5 +1,8 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -11,6 +14,163 @@ use super::schema::Schema;
 use crate::core::builder::{ParseOutput, parse_str};
 use crate::core::types::*;
 use crate::{DumperError, LoaderError, ParseError};
+
+// ─── Cycle detection ─────────────────────────────────────────────────────────
+
+// Thread-local set of Python object pointer IDs currently on the serialisation
+// call stack.  Used to detect self-referential dicts/lists/tuples before they
+// overflow the Rust stack.
+thread_local! {
+    static CYCLE_GUARD: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+/// RAII guard: inserts *ptr* into `CYCLE_GUARD` on creation and removes it on
+/// drop, even if the enclosing function returns an error.
+struct CycleGuard(usize);
+
+impl CycleGuard {
+    /// Returns `Some(guard)` if *ptr* was not already in the set (safe to
+    /// recurse), or `None` if a cycle is detected.
+    fn enter(ptr: usize) -> Option<Self> {
+        CYCLE_GUARD.with(|s| {
+            if s.borrow_mut().insert(ptr) {
+                Some(CycleGuard(ptr))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Drop for CycleGuard {
+    fn drop(&mut self) {
+        CYCLE_GUARD.with(|s| {
+            s.borrow_mut().remove(&self.0);
+        });
+    }
+}
+
+// ─── Auto-anchor state ───────────────────────────────────────────────────────
+
+struct AnchorEmitState {
+    /// Plain-container objects that appear more than once in a document.
+    /// Value: `None` = needs an anchor but name not yet assigned (first encounter);
+    ///        `Some(name)` = anchor already emitted (subsequent encounters → alias).
+    anchors: HashMap<usize, Option<String>>,
+    counter: usize,
+}
+
+impl AnchorEmitState {
+    fn next_name(&mut self) -> String {
+        self.counter += 1;
+        format!("id{:03}", self.counter)
+    }
+}
+
+thread_local! {
+    static ANCHOR_EMIT: RefCell<Option<AnchorEmitState>> = const { RefCell::new(None) };
+}
+
+/// Walk plain Python containers (dict/list/tuple), counting how many times each
+/// object identity appears.  Objects seen more than once — including objects that
+/// are their own ancestor (cycles) — will receive a YAML anchor during emit.
+///
+/// `PyYamlMapping`/`PyYamlSequence` are skipped: they clone `inner` on extract
+/// so Python-level cycles through them are impossible.
+fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
+    // Must check our custom types *before* PyDict/PyList — PyYamlMapping extends PyDict.
+    if obj.cast::<PyYamlMapping>().is_ok() || obj.cast::<PyYamlSequence>().is_ok() {
+        return;
+    }
+    let is_dict = obj.cast::<PyDict>().is_ok();
+    let is_list = !is_dict && obj.cast::<PyList>().is_ok();
+    let is_tuple = !is_dict && !is_list && obj.cast::<PyTuple>().is_ok();
+    if !is_dict && !is_list && !is_tuple {
+        return;
+    }
+    let ptr = obj.as_ptr() as usize;
+    let count = ref_count.entry(ptr).or_insert(0);
+    *count += 1;
+    if *count > 1 {
+        return; // already walked (or it's a back-edge / cycle) — don't recurse again
+    }
+    if is_dict {
+        if let Ok(d) = obj.cast::<PyDict>() {
+            for (_, v) in d.iter() {
+                prepass(&v, ref_count);
+            }
+        }
+    } else if is_list {
+        if let Ok(l) = obj.cast::<PyList>() {
+            for item in l.iter() {
+                prepass(&item, ref_count);
+            }
+        }
+    } else if let Ok(t) = obj.cast::<PyTuple>() {
+        for item in t.iter() {
+            prepass(&item, ref_count);
+        }
+    }
+}
+
+/// Initialise per-document anchor state.  Run the pre-pass over *doc* to find
+/// all plain containers that appear more than once, then store the result in the
+/// thread-local `ANCHOR_EMIT`.  Call `clear_anchor_state` when serialisation is
+/// complete.
+pub(crate) fn init_anchor_state(doc: &Bound<'_, PyAny>) {
+    let mut ref_count: HashMap<usize, usize> = HashMap::new();
+    prepass(doc, &mut ref_count);
+    let anchors = ref_count
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(ptr, _)| (ptr, None))
+        .collect();
+    ANCHOR_EMIT.with(|s| {
+        *s.borrow_mut() = Some(AnchorEmitState {
+            anchors,
+            counter: 0,
+        });
+    });
+}
+
+/// Clear the anchor state after serialising a document.
+pub(crate) fn clear_anchor_state() {
+    ANCHOR_EMIT.with(|s| {
+        *s.borrow_mut() = None;
+    });
+}
+
+/// Check whether *ptr* needs special anchor/alias treatment during emit.
+///
+/// Returns `(Some(alias_name), None)` if the object was already serialised
+/// and should be emitted as `*alias_name`.
+///
+/// Returns `(None, Some(anchor_name))` if this is the first encounter of a
+/// multi-ref object; the caller should attach `anchor_name` to the node.
+///
+/// Returns `(None, None)` if no anchor tracking is needed.
+fn check_anchor(ptr: usize) -> (Option<String>, Option<String>) {
+    ANCHOR_EMIT.with(|s| {
+        let mut borrow = s.borrow_mut();
+        if let Some(st) = borrow.as_mut()
+            && st.anchors.contains_key(&ptr)
+        {
+            // Clone the current slot value to avoid holding a borrow while
+            // we call `next_name` (which mutably borrows `st.counter`).
+            let current = st.anchors.get(&ptr).and_then(|v| v.clone());
+            match current {
+                Some(name) => return (Some(name), None), // emit alias
+                None => {
+                    // First encounter of a multi-ref object — assign anchor.
+                    let name = st.next_name();
+                    st.anchors.insert(ptr, Some(name.clone()));
+                    return (None, Some(name));
+                }
+            }
+        }
+        (None, None)
+    })
+}
 
 // ─── Scalar conversion ────────────────────────────────────────────────────────
 
@@ -294,6 +454,12 @@ pub(crate) fn py_to_node(
     // tuple / list → sequence (checked before bytes to prevent small-integer
     // collections being misinterpreted as Vec<u8> by PyO3's sequence extraction).
     if let Ok(t) = obj.cast::<PyTuple>() {
+        let ptr = obj.as_ptr() as usize;
+        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "cannot serialize a recursive structure: self-referential tuple detected",
+            )
+        })?;
         let mut seq = YamlSequence::new();
         for item in t.iter() {
             seq.items.push(plain_item(py_to_node(&item, schema)?));
@@ -301,6 +467,12 @@ pub(crate) fn py_to_node(
         return Ok(YamlNode::Sequence(seq));
     }
     if let Ok(l) = obj.cast::<PyList>() {
+        let ptr = obj.as_ptr() as usize;
+        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "cannot serialize a recursive structure: self-referential list detected",
+            )
+        })?;
         let mut seq = YamlSequence::new();
         for item in l.iter() {
             seq.items.push(plain_item(py_to_node(&item, schema)?));
@@ -340,6 +512,12 @@ pub(crate) fn py_to_node(
     // but we already handled it with extract::<PyYamlMapping>() above.
     // Plain list is already handled above before the bytes check.
     if let Ok(d) = obj.cast::<PyDict>() {
+        let ptr = obj.as_ptr() as usize;
+        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "cannot serialize a recursive structure: self-referential dict detected",
+            )
+        })?;
         let mut mapping = YamlMapping::new();
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
@@ -482,7 +660,18 @@ pub(crate) fn extract_yaml_node(
     // Uses extract_yaml_node recursively so nested YamlMapping/YamlSequence
     // objects inside the dict still preserve their metadata.
     if let Ok(d) = obj.cast::<PyDict>() {
+        let ptr = obj.as_ptr() as usize;
+        let (alias, anchor) = check_anchor(ptr);
+        if let Some(name) = alias {
+            return Ok(YamlNode::Alias {
+                name,
+                resolved: Box::new(YamlNode::Null),
+            });
+        }
         let mut mapping = YamlMapping::new();
+        if let Some(ref name) = anchor {
+            mapping.anchor = Some(name.clone());
+        }
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
             mapping
@@ -492,7 +681,18 @@ pub(crate) fn extract_yaml_node(
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
+        let ptr = obj.as_ptr() as usize;
+        let (alias, anchor) = check_anchor(ptr);
+        if let Some(name) = alias {
+            return Ok(YamlNode::Alias {
+                name,
+                resolved: Box::new(YamlNode::Null),
+            });
+        }
         let mut seq = YamlSequence::new();
+        if let Some(ref name) = anchor {
+            seq.anchor = Some(name.clone());
+        }
         for item in l.iter() {
             seq.items
                 .push(plain_item(extract_yaml_node(&item, schema)?));
@@ -500,7 +700,18 @@ pub(crate) fn extract_yaml_node(
         return Ok(YamlNode::Sequence(seq));
     }
     if let Ok(t) = obj.cast::<PyTuple>() {
+        let ptr = obj.as_ptr() as usize;
+        let (alias, anchor) = check_anchor(ptr);
+        if let Some(name) = alias {
+            return Ok(YamlNode::Alias {
+                name,
+                resolved: Box::new(YamlNode::Null),
+            });
+        }
         let mut seq = YamlSequence::new();
+        if let Some(ref name) = anchor {
+            seq.anchor = Some(name.clone());
+        }
         for item in t.iter() {
             seq.items
                 .push(plain_item(extract_yaml_node(&item, schema)?));
