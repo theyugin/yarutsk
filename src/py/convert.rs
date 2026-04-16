@@ -11,7 +11,7 @@ use super::py_mapping::PyYamlMapping;
 use super::py_scalar::PyYamlScalar;
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
-use crate::core::builder::{ParseOutput, parse_str};
+use crate::core::builder::{ParseOutput, parse_iter, parse_str};
 use crate::core::types::*;
 use crate::{DumperError, LoaderError, ParseError};
 
@@ -872,37 +872,33 @@ pub(crate) fn sequence_to_dict(py: Python<'_>, s: &YamlSequence) -> PyResult<Py<
     Ok(PyList::new(py, items)?.into_any().unbind())
 }
 
-// ─── Stream helpers ───────────────────────────────────────────────────────────
-
-pub(crate) fn read_stream(stream: &Bound<'_, PyAny>) -> PyResult<String> {
-    let content = stream.call_method0("read")?;
-    if let Ok(s) = content.extract::<String>() {
-        return Ok(s);
-    }
-    if let Ok(b) = content.extract::<Vec<u8>>() {
-        return String::from_utf8(b)
-            .map_err(|e| PyRuntimeError::new_err(format!("UTF-8 decode error: {e}")));
-    }
-    Err(PyRuntimeError::new_err(
-        "stream.read() must return str or bytes",
-    ))
-}
-
-pub(crate) fn write_to_stream(stream: &Bound<'_, PyAny>, text: &str) -> PyResult<()> {
-    if stream.call_method1("write", (text,)).is_ok() {
-        return Ok(());
-    }
-    stream
-        .call_method1("write", (text.as_bytes(),))
-        .map(|_| ())
-        .map_err(|e| PyRuntimeError::new_err(format!("Write error: {e}")))
-}
-
 // ─── Parse / emit helpers ─────────────────────────────────────────────────────
 
 pub(crate) fn parse_text(text: &str, schema: Option<&Schema>) -> PyResult<ParseOutput> {
     let policy = schema.and_then(Schema::tag_policy);
     parse_str(text, policy.as_ref()).map_err(|e| ParseError::new_err(e.to_string()))
+}
+
+pub(crate) fn parse_stream(
+    stream: &Bound<'_, PyAny>,
+    schema: Option<&Schema>,
+) -> PyResult<ParseOutput> {
+    use std::sync::{Arc, Mutex};
+
+    use super::streaming::{CharsSource, PyIoCharsIter};
+    let policy = schema.and_then(Schema::tag_policy);
+    let error_slot: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
+    let iter = PyIoCharsIter::new(stream.clone().unbind(), error_slot.clone());
+    let src = CharsSource::PyIo(iter);
+    let result = parse_iter(src, policy.as_ref());
+    // Check if the iterator stored an IO error (e.g. no read() method,
+    // read() returned wrong type, or invalid UTF-8 bytes).
+    if let Ok(mut guard) = error_slot.lock()
+        && let Some(err) = guard.take()
+    {
+        return Err(err);
+    }
+    result.map_err(ParseError::new_err)
 }
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────

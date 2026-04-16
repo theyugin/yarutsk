@@ -723,6 +723,22 @@ class Schema:
 
 # ── Module-level functions ────────────────────────────────────────────────────
 
+class YamlIter:
+    """Lazy document iterator returned by :func:`iter_load_all` and
+    :func:`iter_loads_all`.
+
+    Yields one document at a time via ``__next__``, never accumulating the
+    entire multi-document stream in memory.
+
+    Example::
+
+        for doc in yarutsk.iter_load_all(open("huge.yaml")):
+            process(doc)
+    """
+
+    def __iter__(self) -> "YamlIter": ...
+    def __next__(self) -> "YamlMapping | YamlSequence | YamlScalar": ...
+
 def load(
     stream: IO[str] | IO[bytes],
     *,
@@ -753,6 +769,24 @@ def loads_all(
     schema: Schema | None = None,
 ) -> "list[YamlMapping | YamlSequence | YamlScalar]":
     """Parse all YAML documents from a string, returning a list."""
+    ...
+
+def iter_load_all(
+    stream: IO[str] | IO[bytes],
+    *,
+    schema: Schema | None = None,
+) -> YamlIter:
+    """Return a lazy iterator that yields YAML documents from *stream* one at a
+    time without reading the entire file into memory first."""
+    ...
+
+def iter_loads_all(
+    text: str,
+    *,
+    schema: Schema | None = None,
+) -> YamlIter:
+    """Return a lazy iterator that yields YAML documents from *text* one at a
+    time."""
     ...
 
 def dump(

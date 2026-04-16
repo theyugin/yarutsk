@@ -231,14 +231,14 @@ class _NoReadStream:
 class _BadReadStream:
     """A stream whose read() returns an int."""
 
-    def read(self):
+    def read(self, n: int = -1) -> int:
         return 42
 
 
 class _NoneReadStream:
     """A stream whose read() returns None."""
 
-    def read(self):
+    def read(self, n: int = -1) -> None:
         return None
 
 

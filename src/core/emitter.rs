@@ -1,8 +1,37 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
 use std::borrow::Cow;
+use std::fmt::{self, Write as FmtWrite};
 
 use super::types::*;
+
+// ─── LastCharTracker ─────────────────────────────────────────────────────────
+
+/// A `fmt::Write` wrapper that remembers the last character written.
+/// Used to check whether a trailing `\n` needs to be appended.
+struct LastCharTracker<W> {
+    inner: W,
+    last: Option<char>,
+}
+
+impl<W: FmtWrite> LastCharTracker<W> {
+    fn new(inner: W) -> Self {
+        LastCharTracker { inner, last: None }
+    }
+
+    fn ends_with_newline(&self) -> bool {
+        self.last == Some('\n')
+    }
+}
+
+impl<W: FmtWrite> FmtWrite for LastCharTracker<W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if let Some(c) = s.chars().last() {
+            self.last = Some(c);
+        }
+        self.inner.write_str(s)
+    }
+}
 
 /// Format a stored tag for emission.
 ///
@@ -20,43 +49,49 @@ fn format_tag(tag: &str) -> Cow<'_, str> {
     }
 }
 
-/// Emit a YAML node to a string, with the given indentation level.
+/// Emit a YAML node to any `fmt::Write` sink, with the given indentation level.
 /// `step` is the per-level indentation increment (e.g. 2 or 4).
-pub fn emit_node(node: &YamlNode, indent: usize, step: usize, out: &mut String) {
+pub fn emit_node<W: FmtWrite>(
+    node: &YamlNode,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     match node {
-        YamlNode::Mapping(m) => emit_mapping(m, indent, step, out),
-        YamlNode::Sequence(s) => emit_sequence(s, indent, step, out),
+        YamlNode::Mapping(m) => emit_mapping(m, indent, step, out)?,
+        YamlNode::Sequence(s) => emit_sequence(s, indent, step, out)?,
         // Block scalars (`|` / `>`) are routed to `emit_block_scalar` so that
         // the indicator and indented content are always emitted correctly,
         // whether the scalar is a top-level document or a nested value.
-        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, step, None, out),
-        YamlNode::Scalar(s) => emit_scalar(s, out),
+        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, step, None, out)?,
+        YamlNode::Scalar(s) => emit_scalar(s, out)?,
         YamlNode::Null => {
-            out.push_str("null");
+            out.write_str("null")?;
         }
         YamlNode::Alias { name, .. } => {
-            out.push('*');
-            out.push_str(name);
+            out.write_char('*')?;
+            out.write_str(name)?;
         }
     }
+    Ok(())
 }
 
-/// Emit a full document list to a string.
+/// Emit a full document list to any `fmt::Write` sink.
 /// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
 /// `yaml_versions[i]` emits a `%YAML` directive before `---` when `Some`.
 /// `tag_directives[i]` emits `%TAG` directives before `---` when non-empty.
 /// `indent_step` is the per-level indentation increment (default: 2).
 /// Any slice may be shorter than `docs`; missing entries default to `false` / `None` / empty.
-pub fn emit_docs(
+pub fn emit_docs_to<W: FmtWrite>(
     docs: &[YamlNode],
     explicit_starts: &[bool],
     explicit_ends: &[bool],
     yaml_versions: &[Option<(u8, u8)>],
     tag_directives: &[Vec<(String, String)>],
     indent_step: usize,
-) -> String {
+    out: &mut W,
+) -> fmt::Result {
     let step = if indent_step == 0 { 2 } else { indent_step };
-    let mut out = String::with_capacity(256);
     for (i, doc) in docs.iter().enumerate() {
         let want_start = explicit_starts.get(i).copied().unwrap_or(false);
         let want_end = explicit_ends.get(i).copied().unwrap_or(false);
@@ -65,43 +100,76 @@ pub fn emit_docs(
         let has_directives = version.is_some() || !tags.is_empty();
         if has_directives || docs.len() > 1 || want_start {
             if let Some((major, minor)) = version {
-                out.push_str(&format!("%YAML {major}.{minor}\n"));
+                writeln!(out, "%YAML {major}.{minor}")?;
             }
             for (handle, prefix) in tags {
-                out.push_str(&format!("%TAG {handle} {prefix}\n"));
+                writeln!(out, "%TAG {handle} {prefix}")?;
             }
-            out.push_str("---\n");
+            out.write_str("---\n")?;
         }
-        emit_node(doc, 0, step, &mut out);
-        // Always ensure a trailing newline after document content (valid YAML convention).
-        if !out.ends_with('\n') {
-            out.push('\n');
+        // Use LastCharTracker to detect whether the node ended with a newline.
+        {
+            let mut tracker = LastCharTracker::new(&mut *out);
+            emit_node(doc, 0, step, &mut tracker)?;
+            if !tracker.ends_with_newline() {
+                tracker.write_char('\n')?;
+            }
         }
         if want_end {
-            out.push_str("...\n");
+            out.write_str("...\n")?;
         }
     }
+    Ok(())
+}
+
+/// Emit a full document list to a `String`.
+/// Convenience wrapper around [`emit_docs_to`] for callers that need a `String`.
+pub fn emit_docs(
+    docs: &[YamlNode],
+    explicit_starts: &[bool],
+    explicit_ends: &[bool],
+    yaml_versions: &[Option<(u8, u8)>],
+    tag_directives: &[Vec<(String, String)>],
+    indent_step: usize,
+) -> String {
+    let mut out = String::with_capacity(256);
+    emit_docs_to(
+        docs,
+        explicit_starts,
+        explicit_ends,
+        yaml_versions,
+        tag_directives,
+        indent_step,
+        &mut out,
+    )
+    .expect("writing to String is infallible");
     out
 }
 
 /// Append `"  # "` and the comment text to `out`, if the comment is present.
-fn push_inline_comment(comment: Option<&str>, out: &mut String) {
+fn push_inline_comment<W: FmtWrite>(comment: Option<&str>, out: &mut W) -> fmt::Result {
     if let Some(ci) = comment {
-        out.push_str("  # ");
-        out.push_str(ci);
+        out.write_str("  # ")?;
+        out.write_str(ci)?;
     }
+    Ok(())
 }
 
 /// Emit a block comment (lines prefixed with `# `) at the given indentation.
-fn emit_comment_before(comment: Option<&str>, indent: usize, out: &mut String) {
+fn emit_comment_before<W: FmtWrite>(
+    comment: Option<&str>,
+    indent: usize,
+    out: &mut W,
+) -> fmt::Result {
     if let Some(cb) = comment {
         for line in cb.lines() {
-            out.push_str(&indent_str(indent));
-            out.push_str("# ");
-            out.push_str(line);
-            out.push('\n');
+            out.write_str(&indent_str(indent))?;
+            out.write_str("# ")?;
+            out.write_str(line)?;
+            out.write_char('\n')?;
         }
     }
+    Ok(())
 }
 
 // 128 spaces covers any realistic YAML indentation depth.
@@ -118,46 +186,58 @@ fn indent_str(indent: usize) -> Cow<'static, str> {
 
 /// Emit `node` into `out` without a trailing newline.
 /// Used for scalar values that appear inline after `: ` or `- `.
-fn emit_node_inline(node: &YamlNode, indent: usize, step: usize, out: &mut String) {
-    let start = out.len();
-    emit_node(node, indent, step, out);
-    // Trim any trailing newline added by emit_node.
-    while out.len() > start && out.ends_with('\n') {
-        out.pop();
+fn emit_node_inline<W: FmtWrite>(
+    node: &YamlNode,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
+    // Emit to a temp buffer so we can strip any trailing newline before forwarding.
+    let mut tmp = String::new();
+    emit_node(node, indent, step, &mut tmp)?;
+    while tmp.ends_with('\n') {
+        tmp.pop();
     }
+    out.write_str(&tmp)
 }
 
 /// Emit a mapping key (alias / complex / block-scalar / plain scalar).
 /// The caller is responsible for pushing any leading indentation before this call.
-fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, step: usize, out: &mut String) {
+fn emit_mapping_key<W: FmtWrite>(
+    key: &str,
+    entry: &YamlEntry,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     // Alias key: `? *name\n: value` — explicit form avoids ambiguity with
     // `*alias:` being misinterpreted in block context by some parsers.
     if let Some(alias) = &entry.key_alias {
-        out.push_str("? *");
-        out.push_str(alias);
-        out.push('\n');
-        out.push_str(&indent_str(indent));
-        out.push(':');
+        out.write_str("? *")?;
+        out.write_str(alias)?;
+        out.write_char('\n')?;
+        out.write_str(&indent_str(indent))?;
+        out.write_char(':')?;
     } else if let Some(key_node) = &entry.key_node {
         // Complex (non-scalar) key: `? <key_node>\n: <value>`
-        out.push_str("? ");
+        out.write_str("? ")?;
         // For block collections, add a newline after `? ` so the content starts
         // on its own line at indent+step, avoiding `?   - item` ambiguity.
         match key_node.as_ref() {
             YamlNode::Sequence(s) if s.style == ContainerStyle::Block => {
-                out.push('\n');
-                emit_sequence(s, indent + step, step, out);
+                out.write_char('\n')?;
+                emit_sequence(s, indent + step, step, out)?;
             }
             YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
-                out.push('\n');
-                emit_mapping(m, indent + step, step, out);
+                out.write_char('\n')?;
+                emit_mapping(m, indent + step, step, out)?;
             }
             _ => {
-                emit_node(key_node, indent + step, step, out);
+                emit_node(key_node, indent + step, step, out)?;
             }
         }
-        out.push_str(&indent_str(indent));
-        out.push(':');
+        out.write_str(&indent_str(indent))?;
+        out.write_char(':')?;
     } else if matches!(entry.key_style, ScalarStyle::Literal | ScalarStyle::Folded) {
         // Block-scalar key: `? |\n  content\n: `
         let key_scalar = YamlScalar {
@@ -167,104 +247,115 @@ fn emit_mapping_key(key: &str, entry: &YamlEntry, indent: usize, step: usize, ou
             original: None,
             anchor: entry.key_anchor.clone(),
         };
-        out.push_str("? ");
-        emit_block_scalar(&key_scalar, indent + step, step, None, out);
-        out.push_str(&indent_str(indent));
-        out.push(':');
+        out.write_str("? ")?;
+        emit_block_scalar(&key_scalar, indent + step, step, None, out)?;
+        out.write_str(&indent_str(indent))?;
+        out.write_char(':')?;
     } else {
         // Plain / quoted scalar key: optional anchor + tag, then key text.
         if let Some(anchor) = &entry.key_anchor {
-            out.push('&');
-            out.push_str(anchor);
-            out.push(' ');
+            out.write_char('&')?;
+            out.write_str(anchor)?;
+            out.write_char(' ')?;
         }
         if let Some(tag) = &entry.key_tag {
-            out.push_str(&format_tag(tag));
-            out.push(' ');
+            out.write_str(&format_tag(tag))?;
+            out.write_char(' ')?;
         }
-        out.push_str(&emit_key(key, entry.key_style));
-        out.push(':');
+        out.write_str(&emit_key(key, entry.key_style))?;
+        out.write_char(':')?;
     }
+    Ok(())
 }
 
 /// Emit a mapping entry value (the part after the `:` on the key line).
-fn emit_mapping_value(entry: &YamlEntry, indent: usize, step: usize, out: &mut String) {
+fn emit_mapping_value<W: FmtWrite>(
+    entry: &YamlEntry,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     match &entry.value {
         YamlNode::Mapping(nested)
             if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
         {
             // Flow mapping value: emit inline on same line as key.
-            out.push(' ');
-            emit_mapping_flow(nested, out);
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push('\n');
+            out.write_char(' ')?;
+            emit_mapping_flow(nested, out)?;
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_char('\n')?;
         }
         YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
             // Block mapping value: anchor + tag (if any) + inline comment, then content below.
             if let Some(anchor) = &nested.anchor {
-                out.push_str(" &");
-                out.push_str(anchor);
+                out.write_str(" &")?;
+                out.write_str(anchor)?;
             }
             if let Some(tag) = &nested.tag {
-                out.push(' ');
-                out.push_str(&format_tag(tag));
+                out.write_char(' ')?;
+                out.write_str(&format_tag(tag))?;
             }
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push('\n');
-            emit_mapping(nested, indent + step, step, out);
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_char('\n')?;
+            emit_mapping(nested, indent + step, step, out)?;
         }
         YamlNode::Sequence(nested)
             if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
         {
             // Flow sequence value: emit inline on same line as key.
-            out.push(' ');
-            emit_sequence_flow(nested, out);
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push('\n');
+            out.write_char(' ')?;
+            emit_sequence_flow(nested, out)?;
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_char('\n')?;
         }
         YamlNode::Sequence(nested) if !nested.items.is_empty() => {
             // Block sequence value: anchor + tag (if any) + inline comment, then content below.
             if let Some(anchor) = &nested.anchor {
-                out.push_str(" &");
-                out.push_str(anchor);
+                out.write_str(" &")?;
+                out.write_str(anchor)?;
             }
             if let Some(tag) = &nested.tag {
-                out.push(' ');
-                out.push_str(&format_tag(tag));
+                out.write_char(' ')?;
+                out.write_str(&format_tag(tag))?;
             }
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push('\n');
-            emit_sequence(nested, indent + step, step, out);
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_char('\n')?;
+            emit_sequence(nested, indent + step, step, out)?;
         }
         YamlNode::Mapping(_) => {
             // Empty mapping — always inline.
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push_str(" {}\n");
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_str(" {}\n")?;
         }
         YamlNode::Sequence(_) => {
             // Empty sequence — always inline.
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push_str(" []\n");
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_str(" []\n")?;
         }
         YamlNode::Scalar(s) if is_block_scalar(s) => {
             // Block scalar: indicator goes on the key line; inline comment follows
             // the indicator (YAML allows `key: |  # comment`).
-            out.push(' ');
-            emit_block_scalar(s, indent + step, step, entry.comment_inline.as_deref(), out);
+            out.write_char(' ')?;
+            emit_block_scalar(s, indent + step, step, entry.comment_inline.as_deref(), out)?;
         }
         node => {
-            out.push(' ');
-            emit_node_inline(node, indent + step, step, out);
-            push_inline_comment(entry.comment_inline.as_deref(), out);
-            out.push('\n');
+            out.write_char(' ')?;
+            emit_node_inline(node, indent + step, step, out)?;
+            push_inline_comment(entry.comment_inline.as_deref(), out)?;
+            out.write_char('\n')?;
         }
     }
+    Ok(())
 }
 
-fn emit_mapping(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
+fn emit_mapping<W: FmtWrite>(
+    m: &YamlMapping,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     if m.style == ContainerStyle::Flow {
-        emit_mapping_flow(m, out);
-        return;
+        return emit_mapping_flow(m, out);
     }
     // Top-level anchor: emit `&name` on its own line before the entries.
     // Nested anchors are already emitted by emit_mapping_value / emit_sequence;
@@ -272,290 +363,306 @@ fn emit_mapping(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
     if indent == 0
         && let Some(anchor) = &m.anchor
     {
-        out.push('&');
-        out.push_str(anchor);
-        out.push('\n');
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char('\n')?;
     }
     if m.entries.is_empty() {
-        out.push_str("{}\n");
-        return;
+        return out.write_str("{}\n");
     }
     for (key, entry) in &m.entries {
         for _ in 0..entry.blank_lines_before {
-            out.push('\n');
+            out.write_char('\n')?;
         }
-        emit_comment_before(entry.comment_before.as_deref(), indent, out);
-        out.push_str(&indent_str(indent));
-        emit_mapping_key(key, entry, indent, step, out);
-        emit_mapping_value(entry, indent, step, out);
+        emit_comment_before(entry.comment_before.as_deref(), indent, out)?;
+        out.write_str(&indent_str(indent))?;
+        emit_mapping_key(key, entry, indent, step, out)?;
+        emit_mapping_value(entry, indent, step, out)?;
     }
     for _ in 0..m.trailing_blank_lines {
-        out.push('\n');
+        out.write_char('\n')?;
     }
+    Ok(())
 }
 
-fn emit_mapping_flow(m: &YamlMapping, out: &mut String) {
+fn emit_mapping_flow<W: FmtWrite>(m: &YamlMapping, out: &mut W) -> fmt::Result {
     if let Some(anchor) = &m.anchor {
-        out.push('&');
-        out.push_str(anchor);
-        out.push(' ');
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char(' ')?;
     }
     if let Some(tag) = &m.tag {
-        out.push_str(&format_tag(tag));
-        out.push(' ');
+        out.write_str(&format_tag(tag))?;
+        out.write_char(' ')?;
     }
-    out.push('{');
+    out.write_char('{')?;
     let mut first = true;
     for (key, entry) in &m.entries {
         if !first {
-            out.push_str(", ");
+            out.write_str(", ")?;
         }
         first = false;
         // Emit key: complex key_node, alias key, or plain scalar key.
         if let Some(key_node) = &entry.key_node {
             // Flow context supports `? <node>: <value>` or plain `<node>: <value>` syntax.
-            emit_node_inline(key_node, 0, 2, out);
+            emit_node_inline(key_node, 0, 2, out)?;
         } else if let Some(alias) = &entry.key_alias {
-            out.push('*');
-            out.push_str(alias);
+            out.write_char('*')?;
+            out.write_str(alias)?;
             // Space required: colon is a valid anchor-name character per YAML spec,
             // so `*alias:` is parsed as alias `alias:` rather than alias `alias` + `:`.
-            out.push(' ');
+            out.write_char(' ')?;
         } else {
             if let Some(anchor) = &entry.key_anchor {
-                out.push('&');
-                out.push_str(anchor);
-                out.push(' ');
+                out.write_char('&')?;
+                out.write_str(anchor)?;
+                out.write_char(' ')?;
             }
             if let Some(tag) = &entry.key_tag {
-                out.push_str(&format_tag(tag));
-                out.push(' ');
+                out.write_str(&format_tag(tag))?;
+                out.write_char(' ')?;
             }
-            out.push_str(&emit_key(key, entry.key_style));
+            out.write_str(&emit_key(key, entry.key_style))?;
         }
-        out.push_str(": ");
-        emit_node_inline(&entry.value, 0, 2, out);
+        out.write_str(": ")?;
+        emit_node_inline(&entry.value, 0, 2, out)?;
     }
-    out.push('}');
+    out.write_char('}')
 }
 
-fn emit_sequence(s: &YamlSequence, indent: usize, step: usize, out: &mut String) {
+fn emit_sequence<W: FmtWrite>(
+    s: &YamlSequence,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     if s.style == ContainerStyle::Flow {
-        emit_sequence_flow(s, out);
-        return;
+        return emit_sequence_flow(s, out);
     }
     // Top-level anchor: emit `&name` on its own line before the items.
     // All non-top-level calls to emit_sequence pass indent > 0.
     if indent == 0
         && let Some(anchor) = &s.anchor
     {
-        out.push('&');
-        out.push_str(anchor);
-        out.push('\n');
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char('\n')?;
     }
     if s.items.is_empty() {
-        out.push_str("[]\n");
-        return;
+        return out.write_str("[]\n");
     }
     for item in &s.items {
         for _ in 0..item.blank_lines_before {
-            out.push('\n');
+            out.write_char('\n')?;
         }
-        emit_comment_before(item.comment_before.as_deref(), indent, out);
-        out.push_str(&indent_str(indent));
-        out.push_str("- ");
+        emit_comment_before(item.comment_before.as_deref(), indent, out)?;
+        out.write_str(&indent_str(indent))?;
+        out.write_str("- ")?;
         match &item.value {
             YamlNode::Mapping(nested)
                 if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
             {
                 // Flow mapping in sequence: emit inline
-                emit_mapping_flow(nested, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_mapping_flow(nested, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 if nested.tag.is_some() || item.comment_inline.is_some() {
                     // Tagged or commented: emit tag/comment on the `-` line, content below.
                     if let Some(tag) = &nested.tag {
-                        out.push_str(&format_tag(tag));
+                        out.write_str(&format_tag(tag))?;
                         if item.comment_inline.is_some() {
-                            out.push(' ');
+                            out.write_char(' ')?;
                         }
                     }
                     if let Some(ci) = &item.comment_inline {
-                        out.push_str("# ");
-                        out.push_str(ci);
+                        out.write_str("# ")?;
+                        out.write_str(ci)?;
                     }
-                    out.push('\n');
-                    emit_mapping(nested, indent + step, step, out);
+                    out.write_char('\n')?;
+                    emit_mapping(nested, indent + step, step, out)?;
                 } else {
                     // First entry inline with `-`, rest indented
-                    emit_mapping_inline_first(nested, indent + step, step, out);
+                    emit_mapping_inline_first(nested, indent + step, step, out)?;
                 }
             }
             YamlNode::Sequence(nested)
                 if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
             {
                 // Flow sequence in sequence: emit inline
-                emit_sequence_flow(nested, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_sequence_flow(nested, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 if nested.tag.is_some() || item.comment_inline.is_some() {
                     // Tagged or commented: emit tag/comment on the `-` line, content below.
                     if let Some(tag) = &nested.tag {
-                        out.push_str(&format_tag(tag));
+                        out.write_str(&format_tag(tag))?;
                         if item.comment_inline.is_some() {
-                            out.push(' ');
+                            out.write_char(' ')?;
                         }
                     }
                     if let Some(ci) = &item.comment_inline {
-                        out.push_str("# ");
-                        out.push_str(ci);
+                        out.write_str("# ")?;
+                        out.write_str(ci)?;
                     }
-                    out.push('\n');
-                    emit_sequence(nested, indent + step, step, out);
+                    out.write_char('\n')?;
+                    emit_sequence(nested, indent + step, step, out)?;
                 } else {
                     // First inner item inline with `-`, rest indented
-                    emit_sequence_inline_first(nested, indent + step, step, out);
+                    emit_sequence_inline_first(nested, indent + step, step, out)?;
                 }
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
                 // Block scalar directly in sequence
-                emit_block_scalar(scalar, indent + step, step, None, out);
+                emit_block_scalar(scalar, indent + step, step, None, out)?;
             }
             node => {
-                emit_node_inline(node, indent + step, step, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_node_inline(node, indent + step, step, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
         }
     }
     for _ in 0..s.trailing_blank_lines {
-        out.push('\n');
+        out.write_char('\n')?;
     }
+    Ok(())
 }
 
-fn emit_sequence_flow(s: &YamlSequence, out: &mut String) {
+fn emit_sequence_flow<W: FmtWrite>(s: &YamlSequence, out: &mut W) -> fmt::Result {
     if let Some(anchor) = &s.anchor {
-        out.push('&');
-        out.push_str(anchor);
-        out.push(' ');
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char(' ')?;
     }
     if let Some(tag) = &s.tag {
-        out.push_str(&format_tag(tag));
-        out.push(' ');
+        out.write_str(&format_tag(tag))?;
+        out.write_char(' ')?;
     }
-    out.push('[');
+    out.write_char('[')?;
     let mut first = true;
     for item in &s.items {
         if !first {
-            out.push_str(", ");
+            out.write_str(", ")?;
         }
         first = false;
         // A block mapping/sequence nested inside a flow sequence must be emitted as
         // flow — block syntax is invalid inside flow context.
         match &item.value {
             YamlNode::Mapping(m) if m.style == ContainerStyle::Block => {
-                emit_mapping_flow(m, out);
+                emit_mapping_flow(m, out)?;
             }
             YamlNode::Sequence(inner) if inner.style == ContainerStyle::Block => {
-                emit_sequence_flow(inner, out);
+                emit_sequence_flow(inner, out)?;
             }
-            node => emit_node_inline(node, 0, 2, out),
+            node => emit_node_inline(node, 0, 2, out)?,
         }
     }
-    out.push(']');
+    out.write_char(']')
 }
 
 /// Emit a sequence where the first item shares the line with the parent `-`.
-fn emit_sequence_inline_first(s: &YamlSequence, indent: usize, step: usize, out: &mut String) {
+fn emit_sequence_inline_first<W: FmtWrite>(
+    s: &YamlSequence,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     let mut first = true;
     for item in &s.items {
         if !first {
             for _ in 0..item.blank_lines_before {
-                out.push('\n');
+                out.write_char('\n')?;
             }
         }
         if item.comment_before.is_some() {
             if first {
                 // Can't put a before-comment on the same line as the parent `-`
-                out.push('\n');
+                out.write_char('\n')?;
             }
-            emit_comment_before(item.comment_before.as_deref(), indent, out);
-            out.push_str(&indent_str(indent));
+            emit_comment_before(item.comment_before.as_deref(), indent, out)?;
+            out.write_str(&indent_str(indent))?;
         } else if !first {
-            out.push_str(&indent_str(indent));
+            out.write_str(&indent_str(indent))?;
         }
-        out.push_str("- ");
+        out.write_str("- ")?;
         match &item.value {
             YamlNode::Mapping(nested)
                 if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
             {
-                emit_mapping_flow(nested, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_mapping_flow(nested, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 if let Some(ci) = &item.comment_inline {
-                    out.push_str("# ");
-                    out.push_str(ci);
-                    out.push('\n');
-                    emit_mapping(nested, indent + step, step, out);
+                    out.write_str("# ")?;
+                    out.write_str(ci)?;
+                    out.write_char('\n')?;
+                    emit_mapping(nested, indent + step, step, out)?;
                 } else {
-                    emit_mapping_inline_first(nested, indent + step, step, out);
+                    emit_mapping_inline_first(nested, indent + step, step, out)?;
                 }
             }
             YamlNode::Sequence(nested)
                 if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
             {
-                emit_sequence_flow(nested, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_sequence_flow(nested, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 if let Some(ci) = &item.comment_inline {
-                    out.push_str("# ");
-                    out.push_str(ci);
-                    out.push('\n');
-                    emit_sequence(nested, indent + step, step, out);
+                    out.write_str("# ")?;
+                    out.write_str(ci)?;
+                    out.write_char('\n')?;
+                    emit_sequence(nested, indent + step, step, out)?;
                 } else {
-                    emit_sequence_inline_first(nested, indent + step, step, out);
+                    emit_sequence_inline_first(nested, indent + step, step, out)?;
                 }
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
-                emit_block_scalar(scalar, indent + step, step, None, out);
+                emit_block_scalar(scalar, indent + step, step, None, out)?;
             }
             node => {
-                emit_node_inline(node, indent + step, step, out);
-                push_inline_comment(item.comment_inline.as_deref(), out);
-                out.push('\n');
+                emit_node_inline(node, indent + step, step, out)?;
+                push_inline_comment(item.comment_inline.as_deref(), out)?;
+                out.write_char('\n')?;
             }
         }
         first = false;
     }
+    Ok(())
 }
 
 /// Emit a mapping where the first entry shares the line with the parent `-`.
-fn emit_mapping_inline_first(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
+fn emit_mapping_inline_first<W: FmtWrite>(
+    m: &YamlMapping,
+    indent: usize,
+    step: usize,
+    out: &mut W,
+) -> fmt::Result {
     let mut first = true;
     for (key, entry) in &m.entries {
         if entry.comment_before.is_some() {
             if first {
                 // Can't put before-comment on the same line as `-`; put it on a new line.
-                out.push('\n');
+                out.write_char('\n')?;
             }
-            emit_comment_before(entry.comment_before.as_deref(), indent, out);
-            out.push_str(&indent_str(indent));
+            emit_comment_before(entry.comment_before.as_deref(), indent, out)?;
+            out.write_str(&indent_str(indent))?;
         } else if !first {
-            out.push_str(&indent_str(indent));
+            out.write_str(&indent_str(indent))?;
         }
         // For the first entry the cursor is already positioned after `- ` by the caller.
-        emit_mapping_key(key, entry, indent, step, out);
-        emit_mapping_value(entry, indent, step, out);
+        emit_mapping_key(key, entry, indent, step, out)?;
+        emit_mapping_value(entry, indent, step, out)?;
         first = false;
     }
+    Ok(())
 }
 
 /// Returns true if this scalar should be emitted as a block scalar (`|` or `>`).
@@ -574,13 +681,13 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
 /// value.  To prevent the YAML parser from re-folding those `\n` separators into
 /// spaces again on re-parse, this function emits a blank "paragraph separator" line
 /// after every non-empty content line that has more content following it.
-fn emit_block_scalar(
+fn emit_block_scalar<W: FmtWrite>(
     s: &YamlScalar,
     indent: usize,
     step: usize,
     inline_comment: Option<&str>,
-    out: &mut String,
-) {
+    out: &mut W,
+) -> fmt::Result {
     let indicator = if s.style == ScalarStyle::Literal {
         '|'
     } else {
@@ -648,14 +755,14 @@ fn emit_block_scalar(
         (0, indent)
     };
 
-    out.push(indicator);
+    out.write_char(indicator)?;
     if explicit_indicator > 0 {
         // Digit before chomping (YAML spec allows either order; digit-first is conventional).
-        out.push(char::from_digit(explicit_indicator as u32, 10).unwrap_or('1'));
+        out.write_char(char::from_digit(explicit_indicator as u32, 10).unwrap_or('1'))?;
     }
-    out.push_str(chomping);
-    push_inline_comment(inline_comment, out);
-    out.push('\n');
+    out.write_str(chomping)?;
+    push_inline_comment(inline_comment, out)?;
+    out.write_char('\n')?;
     let prefix = indent_str(content_indent);
     let emit_count = if content.ends_with('\n') {
         lines.len() - 1
@@ -676,11 +783,11 @@ fn emit_block_scalar(
         // Whitespace-only lines (e.g. a tab-only line) must not emit a separator.
         for (i, line) in lines[..emit_count].iter().enumerate() {
             if line.is_empty() {
-                out.push('\n'); // blank line preserved from stored value
+                out.write_char('\n')?; // blank line preserved from stored value
             } else {
-                out.push_str(&prefix);
-                out.push_str(line);
-                out.push('\n');
+                out.write_str(&prefix)?;
+                out.write_str(line)?;
+                out.write_char('\n')?;
                 // A separator is needed when:
                 //   • the current line is base-level (not more-indented, not whitespace-only)
                 //   • the next non-empty content line is also base-level
@@ -693,7 +800,7 @@ fn emit_block_scalar(
                 let needs_sep =
                     !is_more_indented(line) && !line.trim().is_empty() && next_non_empty_is_base;
                 if needs_sep {
-                    out.push('\n'); // paragraph separator
+                    out.write_char('\n')?; // paragraph separator
                 }
             }
         }
@@ -701,34 +808,34 @@ fn emit_block_scalar(
         // Literal: emit lines verbatim.
         for line in &lines[..emit_count] {
             if line.is_empty() {
-                out.push('\n'); // blank line inside block scalar — no indent
+                out.write_char('\n')?; // blank line inside block scalar — no indent
             } else {
-                out.push_str(&prefix);
-                out.push_str(line);
-                out.push('\n');
+                out.write_str(&prefix)?;
+                out.write_str(line)?;
+                out.write_char('\n')?;
             }
         }
     }
+    Ok(())
 }
 
 /// Emit a scalar value in the appropriate style.
-pub fn emit_scalar(s: &YamlScalar, out: &mut String) {
+pub fn emit_scalar<W: FmtWrite>(s: &YamlScalar, out: &mut W) -> fmt::Result {
     if let Some(anchor) = &s.anchor {
-        out.push('&');
-        out.push_str(anchor);
-        out.push(' ');
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char(' ')?;
     }
     if let Some(tag) = &s.tag {
-        out.push_str(&format_tag(tag));
-        out.push(' ');
+        out.write_str(&format_tag(tag))?;
+        out.write_char(' ')?;
     }
     // Use preserved source text when available (e.g. float exponent form `1.5e10`,
     // non-canonical null/bool/int forms, tagged plain scalars).
     if let Some(orig) = &s.original {
-        out.push_str(orig);
-        return;
+        return out.write_str(orig);
     }
-    out.push_str(&emit_scalar_value_with_style(&s.value, s.style));
+    out.write_str(&emit_scalar_value_with_style(&s.value, s.style))
 }
 
 fn emit_scalar_value_with_style(v: &ScalarValue, style: ScalarStyle) -> Cow<'_, str> {
@@ -928,13 +1035,13 @@ mod tests {
 
     fn scalar_emit(s: &YamlScalar) -> String {
         let mut out = String::new();
-        emit_scalar(s, &mut out);
+        emit_scalar(s, &mut out).expect("emit to String is infallible");
         out
     }
 
     fn node_emit(node: &YamlNode) -> String {
         let mut out = String::new();
-        emit_node(node, 0, 2, &mut out);
+        emit_node(node, 0, 2, &mut out).expect("emit to String is infallible");
         out
     }
 

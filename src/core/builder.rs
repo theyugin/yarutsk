@@ -1406,8 +1406,11 @@ pub struct ParseOutput {
     pub doc_tag_directives: Vec<Vec<(String, String)>>,
 }
 
-pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
-    let mut parser = Parser::new_from_str(input);
+pub fn parse_iter<T: Iterator<Item = char>>(
+    src: T,
+    policy: Option<&TagPolicy>,
+) -> Result<ParseOutput, String> {
+    let mut parser = Parser::new(src);
     let mut builder = Builder::new();
 
     loop {
@@ -1438,4 +1441,8 @@ pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput,
         doc_yaml_version: builder.doc_yaml_version,
         doc_tag_directives: builder.doc_tag_directives,
     })
+}
+
+pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
+    parse_iter(input.chars(), policy)
 }

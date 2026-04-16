@@ -215,3 +215,51 @@ outer:
         assert result.index("z:") < result.index("a:")
         assert result.index("a:") < result.index("m:")
         assert result.index("m:") < result.index("b:")
+
+
+class TestStreamingLoad:
+    """load() and load_all() stream IO objects in chunks without reading
+    the entire file at once."""
+
+    def test_load_stringio(self):
+        doc = yarutsk.load(io.StringIO("key: value\n"))
+        assert doc["key"] == "value"
+
+    def test_load_bytesio(self):
+        doc = yarutsk.load(io.BytesIO(b"key: value\n"))
+        assert doc["key"] == "value"
+
+    def test_load_all_stringio(self):
+        src = io.StringIO("a: 1\n---\nb: 2\n")
+        docs = yarutsk.load_all(src)
+        assert len(docs) == 2
+        assert docs[0]["a"] == 1
+        assert docs[1]["b"] == 2
+
+    def test_load_all_bytesio(self):
+        src = io.BytesIO(b"x: 10\n---\ny: 20\n")
+        docs = yarutsk.load_all(src)
+        assert len(docs) == 2
+        assert docs[0]["x"] == 10
+        assert docs[1]["y"] == 20
+
+    def test_load_empty_stream(self):
+        doc = yarutsk.load(io.StringIO(""))
+        assert doc is None
+
+    def test_load_preserves_comments(self):
+        src = io.StringIO("# comment\nkey: value\n")
+        doc = yarutsk.load(src)
+        assert doc["key"] == "value"
+
+    def test_load_preserves_explicit_start(self):
+        src = io.StringIO("---\nkey: value\n")
+        doc = yarutsk.load(src)
+        assert doc.explicit_start is True
+
+    def test_load_schema_applied(self):
+        schema = yarutsk.Schema()
+        schema.add_loader("!upper", lambda v: str(v).upper())
+        src = io.StringIO("val: !upper hello\n")
+        doc = yarutsk.load(src, schema=schema)
+        assert doc["val"] == "HELLO"

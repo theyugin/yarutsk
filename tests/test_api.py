@@ -1732,3 +1732,85 @@ class TestNonStringKeys:
         doc2 = yarutsk.loads(out)
         # Key is stored as "42"; YAML emits it unquoted (valid YAML plain key)
         assert doc2["42"] == "answer"
+
+
+class TestYamlIter:
+    """iter_load_all() and iter_loads_all() lazily yield one document at a time."""
+
+    def test_iter_loads_all_single_doc(self):
+        docs = list(yarutsk.iter_loads_all("key: value\n"))
+        assert len(docs) == 1
+        assert docs[0]["key"] == "value"
+
+    def test_iter_loads_all_multi_doc(self):
+        text = "a: 1\n---\nb: 2\n---\nc: 3\n"
+        docs = list(yarutsk.iter_loads_all(text))
+        assert len(docs) == 3
+        assert docs[0]["a"] == 1
+        assert docs[1]["b"] == 2
+        assert docs[2]["c"] == 3
+
+    def test_iter_loads_all_empty_string(self):
+        docs = list(yarutsk.iter_loads_all(""))
+        assert docs == []
+
+    def test_iter_load_all_stringio(self):
+        src = io.StringIO("x: 10\n---\ny: 20\n")
+        docs = list(yarutsk.iter_load_all(src))
+        assert len(docs) == 2
+        assert docs[0]["x"] == 10
+        assert docs[1]["y"] == 20
+
+    def test_iter_load_all_bytesio(self):
+        src = io.BytesIO(b"p: hello\n---\nq: world\n")
+        docs = list(yarutsk.iter_load_all(src))
+        assert len(docs) == 2
+        assert docs[0]["p"] == "hello"
+        assert docs[1]["q"] == "world"
+
+    def test_iter_load_all_empty_stream(self):
+        docs = list(yarutsk.iter_load_all(io.StringIO("")))
+        assert docs == []
+
+    def test_iter_is_iterator_protocol(self):
+        it = yarutsk.iter_loads_all("a: 1\n---\nb: 2\n")
+        assert iter(it) is it
+        first = next(it)
+        assert first["a"] == 1
+        second = next(it)
+        assert second["b"] == 2
+        with pytest.raises(StopIteration):
+            next(it)
+
+    def test_iter_preserves_explicit_start(self):
+        it = yarutsk.iter_loads_all("---\nkey: val\n")
+        doc = next(it)
+        assert doc.explicit_start is True
+
+    def test_iter_preserves_comments(self):
+        it = yarutsk.iter_loads_all("# comment\nkey: value\n")
+        doc = next(it)
+        assert doc["key"] == "value"
+
+    def test_iter_schema_applied(self):
+        schema = yarutsk.Schema()
+        schema.add_loader("!rev", lambda v: str(v)[::-1])
+        it = yarutsk.iter_loads_all("val: !rev hello\n", schema=schema)
+        doc = next(it)
+        assert doc["val"] == "olleh"
+
+    def test_iter_loads_all_results_match_loads_all(self):
+        text = "a: 1\nb: two\n---\nc: true\n"
+        expected = yarutsk.loads_all(text)
+        actual = list(yarutsk.iter_loads_all(text))
+        assert len(actual) == len(expected)
+        for exp, act in zip(expected, actual):
+            assert yarutsk.dumps(exp) == yarutsk.dumps(act)
+
+    def test_iter_load_all_results_match_load_all(self):
+        text = "x: 1\n---\ny: 2\n"
+        expected = yarutsk.loads_all(text)
+        actual = list(yarutsk.iter_load_all(io.StringIO(text)))
+        assert len(actual) == len(expected)
+        for exp, act in zip(expected, actual):
+            assert yarutsk.dumps(exp) == yarutsk.dumps(act)
