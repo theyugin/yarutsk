@@ -28,14 +28,21 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
+      - name: Set up Python ${{ matrix.python-version }}
+        id: python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ matrix.python-version }}"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "cpython-${{ matrix.python-version }}"
           enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
+        env:
+          UV_PYTHON_PREFERENCE: only-system
 
       - name: Add venv to PATH
         shell: bash
@@ -45,6 +52,16 @@ jobs:
           else
             echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           fi
+
+      # pyo3-build-config does not emit rustc-link-search for the Python libs
+      # dir on Windows with actions/setup-python. Set LIB explicitly so
+      # link.exe can find python3xx.lib.
+      - name: Add Python libs dir to LIB (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $base = & "${{ steps.python.outputs.python-path }}" -c "import sys; print(sys.base_prefix)"
+          Add-Content -Path $env:GITHUB_ENV -Value "LIB=$base\libs;$env:LIB"
 
       - name: Build extension
         run: maturin develop
@@ -68,14 +85,20 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
           enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
+        env:
+          UV_PYTHON_PREFERENCE: only-system
 
       - name: Add venv to PATH
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
@@ -93,14 +116,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
           enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
+        env:
+          UV_PYTHON_PREFERENCE: only-system
 
       - name: Add venv to PATH
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
@@ -134,13 +163,14 @@ jobs:
 
   # ── Build release wheels ───────────────────────────────────────────────────
   build-wheels:
-    name: Wheels (${{ matrix.os }})
+    name: Wheels (${{ matrix.os }}, Python ${{ matrix.python-version }})
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, lint, ruff, typecheck]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v6
@@ -158,28 +188,20 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        id: python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ matrix.python-version }}"
 
-      - name: Install Python interpreters
-        run: uv python install cpython-3.12 cpython-3.13 cpython-3.14
-
-      - name: Find interpreter paths
-        if: matrix.os != 'ubuntu-latest'
-        id: interp
-        shell: bash
-        run: |
-          P312=$(uv python find 3.12)
-          P313=$(uv python find 3.13)
-          P314=$(uv python find 3.14)
-          echo "paths=$P312 $P313 $P314" >> $GITHUB_OUTPUT
-
+      # Linux builds run inside a manylinux Docker container, so the host
+      # python-path is not accessible; pass the version number instead.
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --interpreter 3.12 3.13 3.14
+          args: --release --out dist --interpreter ${{ matrix.python-version }}
           manylinux: auto
           rust-toolchain: nightly
 
@@ -190,7 +212,7 @@ jobs:
           command: build
           args: >-
             --release --out dist
-            --interpreter ${{ steps.interp.outputs.paths }}
+            --interpreter ${{ steps.python.outputs.python-path }}
             --target universal2-apple-darwin
           rust-toolchain: nightly
 
@@ -201,11 +223,11 @@ jobs:
           command: build
           args: >-
             --release --out dist
-            --interpreter ${{ steps.interp.outputs.paths }}
+            --interpreter ${{ steps.python.outputs.python-path }}
           rust-toolchain: nightly
 
       - name: Build sdist
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
@@ -213,7 +235,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist/
 
   # ── Publish to PyPI ────────────────────────────────────────────────────────

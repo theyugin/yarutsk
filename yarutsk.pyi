@@ -121,6 +121,22 @@ class YamlScalar:
 
     @tag_directives.setter
     def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
+    def format(
+        self,
+        *,
+        styles: bool = True,
+        comments: bool = True,
+        blank_lines: bool = True,
+    ) -> None:
+        """Strip cosmetic formatting, resetting to clean YAML defaults.
+
+        ``styles``: scalar quoting → plain (literal for multi-line strings),
+        ``original`` cleared so non-canonical forms emit canonically.
+        ``comments`` and ``blank_lines`` are accepted for API consistency but are
+        no-ops on scalars. Tags and anchors are always preserved.
+        """
+        ...
+
     def to_dict(self) -> "_Scalar":
         """Return the Python primitive value."""
         ...
@@ -286,6 +302,24 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
+    def format(
+        self,
+        *,
+        styles: bool = True,
+        comments: bool = True,
+        blank_lines: bool = True,
+    ) -> None:
+        """Strip cosmetic formatting metadata, resetting to clean YAML defaults.
+
+        ``styles``: scalar quoting → plain (or ``literal`` for multi-line strings),
+        container style → block, ``original`` values cleared.
+        ``comments``: ``comment_before`` and ``comment_inline`` cleared on all entries.
+        ``blank_lines``: ``blank_lines_before`` zeroed; ``trailing_blank_lines`` zeroed.
+        Tags, anchors, and document-level markers are always preserved.
+        Recurses into all nested containers.
+        """
+        ...
+
 class YamlSequence(list[Any]):
     """A YAML sequence node. Subclass of list — all standard list operations work.
 
@@ -428,6 +462,24 @@ class YamlSequence(list[Any]):
     @overload
     def blank_lines_before(self, idx: int, n: int) -> None:
         """Set the number of blank lines before the item at *idx*. Values are clamped to 0–255."""
+        ...
+
+    def format(
+        self,
+        *,
+        styles: bool = True,
+        comments: bool = True,
+        blank_lines: bool = True,
+    ) -> None:
+        """Strip cosmetic formatting metadata, resetting to clean YAML defaults.
+
+        ``styles``: scalar quoting → plain (or ``literal`` for multi-line strings),
+        container style → block, ``original`` values cleared.
+        ``comments``: ``comment_before`` and ``comment_inline`` cleared on all items.
+        ``blank_lines``: ``blank_lines_before`` zeroed; ``trailing_blank_lines`` zeroed.
+        Tags, anchors, and document-level markers are always preserved.
+        Recurses into all nested containers.
+        """
         ...
 
 class Schema:

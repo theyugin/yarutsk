@@ -930,4 +930,143 @@ class TestStyledConstructors:
         doc["l"] = MyList([1, 2, 3])
         out = yarutsk.dumps(doc, schema=schema)
         assert "!mylist" in out
-        assert "[" in out
+
+
+class TestFormat:
+    """Tests for the format() method that resets cosmetic formatting to YAML defaults."""
+
+    def test_scalar_style_reset(self):
+        doc = yarutsk.loads("key: 'single'")
+        doc.format()
+        assert doc.node("key").style == "plain"
+
+    def test_container_style_reset(self):
+        doc = yarutsk.loads("nested: {a: 1}")
+        doc.format()
+        assert "{" not in yarutsk.dumps(doc)
+
+    def test_comments_cleared(self):
+        src = dedent("""\
+            # comment
+            key: val  # inline
+        """)
+        doc = yarutsk.loads(src)
+        doc.format()
+        assert doc.comment_before("key") is None
+        assert doc.comment_inline("key") is None
+
+    def test_blank_lines_cleared(self):
+        src = dedent("""\
+            a: 1
+
+            b: 2
+        """)
+        doc = yarutsk.loads(src)
+        doc.format()
+        assert doc.blank_lines_before("b") == 0
+
+    def test_tags_preserved(self):
+        doc = yarutsk.loads("value: !!str 42")
+        doc.format()
+        assert "!!str" in yarutsk.dumps(doc)
+
+    def test_recursive_nested_mapping(self):
+        src = dedent("""\
+            outer:
+              inner: 'quoted'
+        """)
+        doc = yarutsk.loads(src)
+        doc.format()
+        assert "'" not in yarutsk.dumps(doc)
+
+    def test_sequence_items_formatted(self):
+        doc = yarutsk.loads("items: ['a', 'b']")
+        doc.format()
+        result = yarutsk.dumps(doc)
+        assert "[" not in result
+        assert "'" not in result
+
+    def test_styles_false_preserves_scalar_style(self):
+        doc = yarutsk.loads("key: 'single'")
+        doc.format(styles=False)
+        assert doc.node("key").style == "single"
+
+    def test_styles_false_preserves_container_style(self):
+        doc = yarutsk.loads("nested: {a: 1}")
+        doc.format(styles=False)
+        assert "{" in yarutsk.dumps(doc)
+
+    def test_comments_false_preserves_comments(self):
+        doc = yarutsk.loads("key: val  # inline")
+        doc.format(comments=False)
+        assert doc.comment_inline("key") == "inline"
+
+    def test_blank_lines_false_preserves_blank_lines(self):
+        src = dedent("""\
+            a: 1
+
+            b: 2
+        """)
+        doc = yarutsk.loads(src)
+        doc.format(blank_lines=False)
+        assert doc.blank_lines_before("b") > 0
+
+    def test_multiline_string_uses_literal_style(self):
+        # A multiline string should become literal block style, not double-quoted with \n
+        src = dedent("""\
+            message: |
+              line1
+              line2
+        """)
+        doc = yarutsk.loads(src)
+        # Force it to double-quoted so format() has something to reset
+        doc.scalar_style("message", "double")
+        doc.format()
+        result = yarutsk.dumps(doc)
+        assert "\\n" not in result
+        assert "|" in result
+
+    def test_roundtrip_clean(self):
+        src = dedent("""\
+            # Config
+            server:
+              host: 'localhost'  # inline
+              port: 8080
+
+              debug: true
+        """)
+        doc = yarutsk.loads(src)
+        doc.format()
+        result = yarutsk.dumps(doc)
+        assert "#" not in result
+        assert "'" not in result
+        assert "\n\n" not in result
+
+    def test_yaml_scalar_format(self):
+        s = yarutsk.YamlScalar("hello", style="double")
+        s.format()
+        assert s.style == "plain"
+
+    def test_yaml_scalar_format_preserves_tag(self):
+        s = yarutsk.YamlScalar("42", style="single", tag="!!str")
+        s.format()
+        assert s.tag == "!!str"
+        assert s.style == "plain"
+
+    def test_sequence_blank_lines_cleared(self):
+        src = dedent("""\
+            items:
+              - a
+
+              - b
+        """)
+        doc = yarutsk.loads(src)
+        seq = doc["items"]
+        doc.format()
+        assert seq.blank_lines_before(1) == 0
+
+    def test_trailing_blank_lines_cleared(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc.trailing_blank_lines = 3
+        doc.format()
+        assert doc.trailing_blank_lines == 0

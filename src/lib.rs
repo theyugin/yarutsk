@@ -971,6 +971,27 @@ impl PyYamlScalar {
         Ok(format!("YamlScalar({})", v.bind(py).repr()?))
     }
 
+    /// Strip cosmetic formatting, resetting to clean YAML defaults.
+    /// Pass keyword flags (all ``True`` by default) to control which fields are reset:
+    ///
+    /// - ``styles``: scalar quoting → plain (literal for multi-line strings),
+    ///   ``original`` cleared so non-canonical forms emit canonically.
+    /// - ``comments``: no-op on scalars (kept for API consistency).
+    /// - ``blank_lines``: no-op on scalars (kept for API consistency).
+    ///
+    /// Tags and anchors are always preserved.
+    #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
+    fn format(&mut self, styles: bool, comments: bool, blank_lines: bool) {
+        let _ = (comments, blank_lines); // no-op on scalars, accepted for API consistency
+        if styles && let YamlNode::Scalar(s) = &mut self.inner {
+            s.format_with(FormatOptions {
+                styles: true,
+                comments: false,
+                blank_lines: false,
+            });
+        }
+    }
+
     /// The scalar style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``.
     /// Newly created scalars use ``"plain"``.
     #[getter]
@@ -1601,6 +1622,43 @@ impl PyYamlMapping {
         }
     }
 
+    /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
+    ///
+    /// All three keyword flags default to ``True``:
+    ///
+    /// - ``styles``: scalar quoting → plain (or ``literal`` for multi-line strings),
+    ///   container style → block, scalar ``original`` values cleared.
+    /// - ``comments``: ``comment_before`` and ``comment_inline`` cleared on all entries.
+    /// - ``blank_lines``: ``blank_lines_before`` zeroed on all entries;
+    ///   ``trailing_blank_lines`` zeroed on this container.
+    ///
+    /// Tags, anchors, and document-level markers are always preserved.
+    /// Recurses into all nested containers.
+    #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
+    fn format(
+        slf: &Bound<'_, Self>,
+        styles: bool,
+        comments: bool,
+        blank_lines: bool,
+    ) -> PyResult<()> {
+        let opts = FormatOptions {
+            styles,
+            comments,
+            blank_lines,
+        };
+        // Step 1: reset Rust-inner tree (covers scalar style and entry metadata)
+        slf.borrow_mut().inner.format_with(opts);
+        // Step 2: propagate to Python-side child objects (their own .inner must also be updated)
+        for (_, val) in slf.as_super().iter() {
+            if let Ok(child_m) = val.cast::<PyYamlMapping>() {
+                PyYamlMapping::format(child_m, styles, comments, blank_lines)?;
+            } else if let Ok(child_s) = val.cast::<PyYamlSequence>() {
+                PyYamlSequence::format(child_s, styles, comments, blank_lines)?;
+            }
+        }
+        Ok(())
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         mapping_repr(py, &self.inner)
     }
@@ -2155,6 +2213,43 @@ impl PyYamlSequence {
                 "blank_lines_before takes 1 or 2 positional arguments",
             )),
         }
+    }
+
+    /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
+    ///
+    /// All three keyword flags default to ``True``:
+    ///
+    /// - ``styles``: scalar quoting → plain (or ``literal`` for multi-line strings),
+    ///   container style → block, scalar ``original`` values cleared.
+    /// - ``comments``: ``comment_before`` and ``comment_inline`` cleared on all items.
+    /// - ``blank_lines``: ``blank_lines_before`` zeroed on all items;
+    ///   ``trailing_blank_lines`` zeroed on this container.
+    ///
+    /// Tags, anchors, and document-level markers are always preserved.
+    /// Recurses into all nested containers.
+    #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
+    fn format(
+        slf: &Bound<'_, Self>,
+        styles: bool,
+        comments: bool,
+        blank_lines: bool,
+    ) -> PyResult<()> {
+        let opts = FormatOptions {
+            styles,
+            comments,
+            blank_lines,
+        };
+        // Step 1: reset Rust-inner tree (covers scalar style and item metadata)
+        slf.borrow_mut().inner.format_with(opts);
+        // Step 2: propagate to Python-side child objects (their own .inner must also be updated)
+        for item in slf.as_super().iter() {
+            if let Ok(child_m) = item.cast::<PyYamlMapping>() {
+                PyYamlMapping::format(child_m, styles, comments, blank_lines)?;
+            } else if let Ok(child_s) = item.cast::<PyYamlSequence>() {
+                PyYamlSequence::format(child_s, styles, comments, blank_lines)?;
+            }
+        }
+        Ok(())
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {

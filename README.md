@@ -402,6 +402,11 @@ doc.sort_keys()                        # alphabetical, in-place
 doc.sort_keys(reverse=True)            # reverse alphabetical
 doc.sort_keys(key=lambda k: len(k))    # custom key function on key strings
 doc.sort_keys(recursive=True)          # also sort all nested mappings
+
+# Normalize formatting (reset all cosmetic metadata to YAML defaults)
+doc.format()                           # reset styles, comments, and blank lines
+doc.format(comments=False)            # reset styles + blank lines, keep comments
+doc.format(styles=False)              # clear comments + blank lines, keep styles
 ```
 
 ### YamlSequence
@@ -489,9 +494,60 @@ doc.trailing_blank_lines = 0
 doc.sort()                             # natural order, in-place
 doc.sort(reverse=True)
 doc.sort(key=lambda v: len(v))         # custom key function on item values
+
+# Normalize formatting (reset all cosmetic metadata to YAML defaults)
+doc.format()                           # reset styles, comments, and blank lines
+doc.format(comments=False)            # reset styles + blank lines, keep comments
+doc.format(styles=False)              # clear comments + blank lines, keep styles
 ```
 
 Sorting preserves all comments — each entry or item carries its inline and before-key comments with it when reordered.
+
+### Normalizing formatting
+
+`format()` strips all cosmetic metadata and resets the document to clean YAML defaults. Useful for diffing values without noise, canonicalizing config files, or stripping comments before committing:
+
+```python
+src = """\
+# Config
+server:
+  host: 'localhost'  # primary
+  port: 8080
+
+  debug: yes
+"""
+
+doc = yarutsk.loads(src)
+doc.format()
+print(yarutsk.dumps(doc))
+# server:
+#   host: localhost
+#   port: 8080
+#   debug: yes
+```
+
+`format()` is available on `YamlMapping`, `YamlSequence`, and `YamlScalar`. It recurses into all nested containers automatically.
+
+Three keyword flags (all `True` by default) control what is reset:
+
+| Flag | Effect |
+|---|---|
+| `styles=True` | Scalar quoting → plain (multiline strings → literal block `\|`); container style → block; non-canonical originals (`0xFF`, `1.5e10`) cleared so they emit canonically |
+| `comments=True` | `comment_before` and `comment_inline` cleared on every entry/item |
+| `blank_lines=True` | `blank_lines_before` zeroed on every entry/item; `trailing_blank_lines` zeroed on containers |
+
+Tags, anchors, and document-level markers (`explicit_start`, `yaml_version`, etc.) are **always preserved** — they are semantic, not cosmetic.
+
+```python
+# Preserve comments, reset only styles and blank lines
+doc.format(comments=False)
+
+# Preserve styles, clear only comments and blank lines
+doc.format(styles=False)
+
+# Clear only blank lines
+doc.format(styles=False, comments=False)
+```
 
 ## Comparison
 

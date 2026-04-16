@@ -75,8 +75,13 @@ The pipeline is: scanner → parser → builder → Rust data model → PyO3 Pyt
 - **`scalar_style(key, style)`** — sets scalar quoting style: `"plain"`, `"single"`, `"double"`, `"literal"`, `"folded"`
 - **`container_style(key, style)`** — sets `"block"` or `"flow"` on a nested mapping/sequence value; syncs both Rust `inner` and Python parent dict
 - **`blank_lines_before(key)`** / **`blank_lines_before(key, n)`** — gets or sets blank lines before a key/index (0–255, clamped)
+- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `PyYamlScalar` (styles-only; comments/blank_lines are no-ops).
 
 Sequence variants use integer indices instead of string keys.
+
+### README
+
+When adding, changing, or removing public API methods, **update `README.md`** to match. The README is the primary user-facing reference; it must stay in sync with the implementation.
 
 ### Schema / custom type handling
 

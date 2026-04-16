@@ -502,3 +502,94 @@ pub struct YamlItem {
     /// Blank lines in the source before this item (capped at 255).
     pub blank_lines_before: u8,
 }
+
+// ─── Format options ───────────────────────────────────────────────────────────
+
+/// Controls which cosmetic fields are reset by `format_with()`.
+#[derive(Clone, Copy)]
+pub struct FormatOptions {
+    /// Reset scalar quoting → plain (literal for multi-line), container style → block,
+    /// and clear `original` so non-canonical forms (hex, exponent) emit canonically.
+    pub styles: bool,
+    /// Clear `comment_before` and `comment_inline` on every entry/item.
+    pub comments: bool,
+    /// Zero `blank_lines_before` on every entry/item and `trailing_blank_lines` on containers.
+    pub blank_lines: bool,
+}
+
+impl YamlScalar {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            // Strings with embedded newlines get literal block style so the emitter
+            // doesn't fall back to double-quoted with \n escape sequences.
+            let is_multiline = matches!(&self.value, ScalarValue::Str(s) if s.contains('\n'));
+            self.style = if is_multiline {
+                ScalarStyle::Literal
+            } else {
+                ScalarStyle::Plain
+            };
+            self.original = None;
+        }
+        // tag and anchor are semantic — always preserved.
+    }
+}
+
+impl YamlMapping {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            self.style = ContainerStyle::Block;
+        }
+        if opts.blank_lines {
+            self.trailing_blank_lines = 0;
+        }
+        for entry in self.entries.values_mut() {
+            if opts.comments {
+                entry.comment_before = None;
+                entry.comment_inline = None;
+            }
+            if opts.blank_lines {
+                entry.blank_lines_before = 0;
+            }
+            if opts.styles {
+                entry.key_style = ScalarStyle::Plain;
+            }
+            // key_tag, key_anchor, key_alias are semantic — preserved.
+            if let Some(kn) = &mut entry.key_node {
+                kn.format_with(opts);
+            }
+            entry.value.format_with(opts);
+        }
+    }
+}
+
+impl YamlSequence {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            self.style = ContainerStyle::Block;
+        }
+        if opts.blank_lines {
+            self.trailing_blank_lines = 0;
+        }
+        for item in &mut self.items {
+            if opts.comments {
+                item.comment_before = None;
+                item.comment_inline = None;
+            }
+            if opts.blank_lines {
+                item.blank_lines_before = 0;
+            }
+            item.value.format_with(opts);
+        }
+    }
+}
+
+impl YamlNode {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        match self {
+            YamlNode::Mapping(m) => m.format_with(opts),
+            YamlNode::Sequence(s) => s.format_with(opts),
+            YamlNode::Scalar(s) => s.format_with(opts),
+            YamlNode::Alias { .. } | YamlNode::Null => {}
+        }
+    }
+}
