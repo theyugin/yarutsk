@@ -280,12 +280,24 @@ doc = yarutsk.loads("!!str 42")
 doc.tag                                # '!!str'
 doc.tag = None                         # clear tag
 
+# Anchor
+doc = yarutsk.loads("value: &val 42\n")
+doc.node("value").anchor               # 'val'
+doc.anchor = "root"                    # set anchor on top-level scalar
+
 # Explicit document markers
 doc = yarutsk.loads("---\n42\n...")
 doc.explicit_start                     # True
 doc.explicit_end                       # True
 doc.explicit_start = False
 doc.explicit_end   = False
+
+# Document-level directives (top-level node only)
+doc = yarutsk.loads("%YAML 1.1\n---\n42\n")
+doc.yaml_version                       # '1.1'
+doc.yaml_version = "1.2"
+doc.tag_directives                     # list of (handle, prefix) tuples
+doc.tag_directives = [("!", "tag:example.com,2024:")]
 ```
 
 `YamlScalar` can also be constructed directly to control how a value is emitted when assigned into a mapping or sequence:
@@ -325,10 +337,22 @@ doc["point"] = m
 yarutsk.dumps(doc)                     # 'point: {x: 1, y: 2}\n'
 ```
 
-Constructor signature: `YamlMapping(*, style="block", tag=None)`
+Constructor signature: `YamlMapping(mapping=None, *, style="block", tag=None)`
 
+- `mapping` — optional initial data: a plain `dict`, another `YamlMapping` (inner metadata preserved), or any mapping; if omitted the mapping starts empty
 - `style` — `"block"` (default) or `"flow"`
 - `tag` — YAML tag string, or `None`
+
+```python
+# From a plain dict
+m = yarutsk.YamlMapping({"a": 1, "b": 2}, style="flow")
+yarutsk.dumps(m)                       # '{a: 1, b: 2}\n'
+
+# From an existing YamlMapping (preserves comments, styles, anchors)
+src = yarutsk.loads("x: 1\ny: 2\n")
+m = yarutsk.YamlMapping(src, style="flow")
+m.style                                # 'flow'
+```
 
 All standard dict operations work directly:
 
@@ -358,26 +382,43 @@ json.dumps(doc)                        # works
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python dict
 
-# Comments (1-arg = get, 2-arg = set; pass None to clear)
+# Comments — overload form (1-arg = get, 2-arg = set; pass None to clear)
 doc.comment_inline("key")             # -> str | None
 doc.comment_before("key")             # -> str | None
 doc.comment_inline("key", text)
 doc.comment_before("key", text)
 
+# Comments — explicit form (same semantics, better IDE support)
+doc.get_comment_inline("key")         # -> str | None
+doc.get_comment_before("key")         # -> str | None
+doc.set_comment_inline("key", text)   # pass None to clear
+doc.set_comment_before("key", text)   # pass None to clear
+
 # YAML tag
 doc.tag                                # -> str | None  (e.g. '!!python/object:Foo')
 doc.tag = "!!map"
 
-# Explicit document markers
+# Anchor
+doc.anchor                             # -> str | None  (e.g. 'base' from `base: &base ...`)
+doc.anchor = "myanchor"               # set anchor; emits `&myanchor` before the mapping
+
+# Explicit document markers (top-level node only)
 doc.explicit_start                     # bool
 doc.explicit_end                       # bool
 doc.explicit_start = True
 doc.explicit_end   = True
 
+# Document-level directives (top-level node only)
+doc.yaml_version                       # -> str | None  (e.g. '1.1')
+doc.yaml_version = "1.2"
+doc.tag_directives                     # -> list[tuple[str, str]]  (handle, prefix pairs)
+doc.tag_directives = [("!", "tag:example.com,2024:")]
+
 # Node access — returns YamlScalar/YamlMapping/YamlSequence preserving style/tag/anchor
 node = doc.node("key")                # KeyError if absent
 
-# Scalar style shortcut (equivalent to: doc.node("key").style = "single")
+# Scalar style shortcut
+# Raises TypeError if the value is not a scalar (use container_style() instead)
 doc.scalar_style("key", "single")     # 'plain'|'single'|'double'|'literal'|'folded'
 
 # Assign a styled scalar in one expression using YamlScalar
@@ -403,10 +444,31 @@ doc.sort_keys(reverse=True)            # reverse alphabetical
 doc.sort_keys(key=lambda k: len(k))    # custom key function on key strings
 doc.sort_keys(recursive=True)          # also sort all nested mappings
 
+# Aliases — check and mark values as YAML aliases
+doc.alias_name("key")                  # -> str if value is an alias, else None; KeyError if absent
+doc.set_alias("key", "anchor")         # mark "key"'s value as emitting *anchor; resolved value unchanged
+
 # Normalize formatting (reset all cosmetic metadata to YAML defaults)
 doc.format()                           # reset styles, comments, and blank lines
 doc.format(comments=False)            # reset styles + blank lines, keep comments
 doc.format(styles=False)              # clear comments + blank lines, keep styles
+```
+
+Aliases round-trip automatically — `base: &anchor 1\nref: *anchor\n` emits back intact. `alias_name` lets you detect which values are aliases programmatically, and `set_alias` lets you add new aliases in code:
+
+```python
+# Detect parsed aliases
+doc = yarutsk.loads("base: &val 1\nref: *val\n")
+doc.alias_name("ref")                  # 'val'
+doc.alias_name("base")                 # None  (has anchor, not alias)
+doc["ref"]                             # 1  (resolved value always accessible)
+
+# Create a new alias programmatically
+doc = yarutsk.loads("base: &anchor hello\nother: hello\n")
+doc.set_alias("other", "anchor")
+doc.alias_name("other")                # 'anchor'
+doc["other"]                           # 'hello'
+yarutsk.dumps(doc)                     # 'base: &anchor hello\nother: *anchor\n'
 ```
 
 ### YamlSequence
@@ -425,10 +487,25 @@ doc["values"] = s
 yarutsk.dumps(doc)                     # 'values: [1, 2, 3]\n'
 ```
 
-Constructor signature: `YamlSequence(*, style="block", tag=None)`
+Constructor signature: `YamlSequence(iterable=None, *, style="block", tag=None)`
 
+- `iterable` — optional initial data: a `YamlSequence` (inner metadata preserved), any other iterable, or `None` for an empty sequence
 - `style` — `"block"` (default) or `"flow"`
 - `tag` — YAML tag string, or `None`
+
+```python
+# From a plain list / iterable
+s = yarutsk.YamlSequence([1, 2, 3], style="flow")
+yarutsk.dumps(s)                       # '[1, 2, 3]\n'
+
+s = yarutsk.YamlSequence(range(3))
+list(s)                                # [0, 1, 2]
+
+# From an existing YamlSequence (preserves comments, styles, anchors)
+src = yarutsk.loads("- 1\n- 2\n")
+s = yarutsk.YamlSequence(src, style="flow")
+s.style                                # 'flow'
+```
 
 All standard list operations work directly:
 
@@ -458,23 +535,40 @@ json.dumps(doc)                        # works
 # Conversion
 doc.to_dict()                          # deep conversion to plain Python list
 
-# Comments (1-arg = get, 2-arg = set; pass None to clear)
+# Comments — overload form (1-arg = get, 2-arg = set; pass None to clear)
 doc.comment_inline(idx)               # -> str | None
 doc.comment_before(idx)               # -> str | None
 doc.comment_inline(idx, text)
 doc.comment_before(idx, text)
 
+# Comments — explicit form (same semantics, better IDE support)
+doc.get_comment_inline(idx)           # -> str | None
+doc.get_comment_before(idx)           # -> str | None
+doc.set_comment_inline(idx, text)     # pass None to clear
+doc.set_comment_before(idx, text)     # pass None to clear
+
 # YAML tag
 doc.tag                                # -> str | None  (e.g. '!!python/tuple')
 doc.tag = None
 
-# Explicit document markers
+# Anchor
+doc.anchor                             # -> str | None
+doc.anchor = "mylist"                 # set anchor; emits `&mylist` before the sequence
+
+# Explicit document markers (top-level node only)
 doc.explicit_start                     # bool
 doc.explicit_end                       # bool
 doc.explicit_start = True
 doc.explicit_end   = True
 
-# Scalar style shortcut (equivalent to: doc.node(idx).style = "single")
+# Document-level directives (top-level node only)
+doc.yaml_version                       # -> str | None  (e.g. '1.1')
+doc.yaml_version = "1.2"
+doc.tag_directives                     # -> list[tuple[str, str]]  (handle, prefix pairs)
+doc.tag_directives = [("!", "tag:example.com,2024:")]
+
+# Scalar style shortcut
+# Raises TypeError if the item is not a scalar (use container_style() instead)
 doc.scalar_style(0, "double")         # 'plain'|'single'|'double'|'literal'|'folded'
 
 # Assign a styled scalar in one expression using YamlScalar
@@ -494,6 +588,11 @@ doc.trailing_blank_lines = 0
 doc.sort()                             # natural order, in-place
 doc.sort(reverse=True)
 doc.sort(key=lambda v: len(v))         # custom key function on item values
+doc.sort(recursive=True)              # also sort nested mappings (by key) and sequences
+
+# Aliases — check and mark items as YAML aliases
+doc.alias_name(idx)                    # -> str if item is an alias, else None; IndexError if out of range
+doc.set_alias(idx, "anchor")           # mark item at idx as emitting *anchor; resolved value unchanged
 
 # Normalize formatting (reset all cosmetic metadata to YAML defaults)
 doc.format()                           # reset styles, comments, and blank lines

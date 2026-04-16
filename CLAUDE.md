@@ -34,9 +34,11 @@ uv sync --group dev
 **Lint / format:**
 ```bash
 cargo fmt
-cargo clippy
+cargo clippy -- -D warnings   # treat all warnings as errors
 .venv/bin/ruff check .
 ```
+
+Always run `cargo clippy -- -D warnings` after Rust changes and fix every diagnostic before considering the work done.
 
 **Type check (Python stubs):**
 ```bash

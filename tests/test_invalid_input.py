@@ -19,9 +19,6 @@ import pytest
 import yarutsk
 
 
-# ── 1. Malformed YAML syntax ──────────────────────────────────────────────────
-
-
 class TestMalformedYaml:
     def test_unclosed_single_quote(self):
         with pytest.raises(yarutsk.ParseError):
@@ -74,9 +71,6 @@ class TestMalformedYaml:
     def test_load_stream_malformed(self):
         with pytest.raises(yarutsk.ParseError):
             yarutsk.load(io.StringIO("x: 'unclosed"))
-
-
-# ── 2. Invalid Python types passed to dumps ───────────────────────────────────
 
 
 class TestInvalidDumpTypes:
@@ -144,9 +138,6 @@ class TestInvalidDumpTypes:
             yarutsk.dumps_all([doc, {1, 2, 3}])
 
 
-# ── 3. Schema dumper error cases ──────────────────────────────────────────────
-
-
 class _Opaque:
     """A custom type with no registered dumper."""
 
@@ -203,9 +194,6 @@ class TestSchemaDumperErrors:
             yarutsk.dumps(_Opaque())
 
 
-# ── 4. Schema loader error cases ─────────────────────────────────────────────
-
-
 class TestSchemaLoaderErrors:
     def test_loader_exception_propagates(self):
         schema = yarutsk.Schema()
@@ -234,9 +222,6 @@ class TestSchemaLoaderErrors:
         # dumps uses the Rust inner node, so it re-emits the original YAML.
         result = yarutsk.dumps(doc)
         assert "!opaque" in result
-
-
-# ── 5. Stream edge cases ──────────────────────────────────────────────────────
 
 
 class _NoReadStream:
@@ -289,9 +274,6 @@ class TestStreamEdgeCases:
             yarutsk.load_all(_NoReadStream())
 
 
-# ── 6. dumps_all / dump_all with invalid docs ────────────────────────────────
-
-
 class TestDumpsAllInvalidDocs:
     def test_docs_none(self):
         with pytest.raises((TypeError, RuntimeError)):
@@ -316,9 +298,6 @@ class TestDumpsAllInvalidDocs:
         buf = io.StringIO()
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dump_all([doc, {1, 2}], buf)  # type: ignore[list-item]
-
-
-# ── 7. Comment / style operations with bad arguments ─────────────────────────
 
 
 class TestBadCommentAndStyleArgs:

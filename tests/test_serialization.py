@@ -8,8 +8,6 @@ import yarutsk
 
 
 class TestSerialization:
-    """Test serialization functionality."""
-
     def test_dump_to_stringio(self):
         content = io.StringIO("name: John\nage: 30")
         doc = yarutsk.load(content)

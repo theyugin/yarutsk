@@ -14,7 +14,7 @@
 //! compliance, and emits a stream of tokens that can be used by the [`crate::YamlLoader`] to
 //! construct the [`crate::Yaml`] object.
 
-use crate::scanner::{Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
+use super::scanner::{Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
 use std::collections::HashMap;
 
 /// Return type of [`Parser::parser_process_directives`]: parsed YAML version and TAG directives.

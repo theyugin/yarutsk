@@ -10,8 +10,6 @@ import yarutsk
 
 
 class TestStringAPI:
-    """Test loads/dumps string-based API."""
-
     def test_loads_basic(self):
         doc = yarutsk.loads(
             dedent("""\
@@ -130,8 +128,6 @@ class TestStringAPI:
 
 
 class TestToDict:
-    """Test to_dict conversion."""
-
     def test_to_dict_simple(self):
         content = io.StringIO(
             dedent("""\
@@ -155,8 +151,6 @@ person:
 
 
 class TestRepr:
-    """Test __repr__ functionality."""
-
     def test_repr_mapping(self):
         content = io.StringIO(
             dedent("""\
@@ -176,8 +170,6 @@ class TestRepr:
 
 
 class TestContains:
-    """Test __contains__ functionality."""
-
     def test_contains_existing_key(self):
         content = io.StringIO(
             dedent("""\
@@ -750,8 +742,6 @@ class TestSequenceScalarStyle:
 class TestStyledConstructors:
     """Tests for YamlScalar/YamlMapping/YamlSequence constructors with style/tag."""
 
-    # ── YamlScalar ──────────────────────────────────────────────────────────
-
     def test_scalar_default_style(self):
         s = yarutsk.YamlScalar("hello")
         assert s.style == "plain"
@@ -816,8 +806,6 @@ class TestStyledConstructors:
         out = yarutsk.dumps(doc)
         assert 'a: "new"' in out
 
-    # ── YamlMapping ─────────────────────────────────────────────────────────
-
     def test_mapping_default_style(self):
         m = yarutsk.YamlMapping()
         assert m.style == "block"
@@ -854,8 +842,6 @@ class TestStyledConstructors:
         out = yarutsk.dumps(doc)
         assert "{" in out
 
-    # ── YamlSequence ────────────────────────────────────────────────────────
-
     def test_sequence_default_style(self):
         s = yarutsk.YamlSequence()
         assert s.style == "block"
@@ -877,8 +863,6 @@ class TestStyledConstructors:
     def test_sequence_rejects_unknown_style(self):
         with pytest.raises(ValueError):
             yarutsk.YamlSequence(style="notathing")
-
-    # ── Dumper integration ──────────────────────────────────────────────────
 
     def test_dumper_returns_styled_scalar(self):
         class MyVal:
@@ -1070,3 +1054,336 @@ class TestFormat:
         doc.trailing_blank_lines = 3
         doc.format()
         assert doc.trailing_blank_lines == 0
+
+
+class TestIndentParameter:
+    """Test the indent= parameter on dump functions."""
+
+    def test_dumps_indent_4(self):
+        doc = yarutsk.loads("outer:\n  inner: 1\n")
+        out = yarutsk.dumps(doc, indent=4)
+        assert "    inner: 1" in out
+
+    def test_dumps_indent_1(self):
+        doc = yarutsk.loads("outer:\n  inner: 1\n")
+        out = yarutsk.dumps(doc, indent=1)
+        assert " inner: 1" in out
+
+    def test_dumps_all_indent(self):
+        docs = yarutsk.loads_all("a: 1\n---\nb: 2\n")
+        out = yarutsk.dumps_all(docs, indent=4)
+        assert "    " not in out  # top-level keys are not indented
+        assert "a: 1" in out
+        assert "b: 2" in out
+
+
+class TestYamlVersionAndTagDirectives:
+    """Test yaml_version and tag_directives properties."""
+
+    def test_yaml_version_roundtrip(self):
+        src = "%YAML 1.1\n---\nkey: value\n"
+        doc = yarutsk.loads(src)
+        assert doc.yaml_version == "1.1"
+        assert yarutsk.dumps(doc) == src
+
+    def test_yaml_version_set(self):
+        doc = yarutsk.loads("key: value\n")
+        doc.yaml_version = "1.2"
+        doc.explicit_start = True
+        out = yarutsk.dumps(doc)
+        assert "%YAML 1.2" in out
+        assert "---" in out
+
+    def test_yaml_version_clear(self):
+        src = "%YAML 1.1\n---\nkey: value\n"
+        doc = yarutsk.loads(src)
+        doc.yaml_version = None
+        out = yarutsk.dumps(doc)
+        assert "%YAML" not in out
+
+    def test_tag_directives_roundtrip(self):
+        src = "%TAG ! tag:example.com,2024:\n---\nkey: value\n"
+        doc = yarutsk.loads(src)
+        assert doc.tag_directives == [("!", "tag:example.com,2024:")]
+        assert yarutsk.dumps(doc) == src
+
+    def test_tag_directives_set(self):
+        doc = yarutsk.loads("key: value\n")
+        doc.explicit_start = True
+        doc.tag_directives = [("!e!", "tag:example.com,2024:")]
+        out = yarutsk.dumps(doc)
+        assert "%TAG !e! tag:example.com,2024:" in out
+
+    def test_tag_directives_clear(self):
+        src = "%TAG ! tag:example.com,2024:\n---\nkey: value\n"
+        doc = yarutsk.loads(src)
+        doc.tag_directives = []
+        out = yarutsk.dumps(doc)
+        assert "%TAG" not in out
+
+    def test_yaml_version_on_scalar(self):
+        doc = yarutsk.loads("42\n")
+        assert isinstance(doc, yarutsk.YamlScalar)
+        doc.yaml_version = "1.1"
+        doc.explicit_start = True
+        out = yarutsk.dumps(doc)
+        assert "%YAML 1.1" in out
+
+    def test_yaml_version_on_sequence(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc.yaml_version = "1.2"
+        doc.explicit_start = True
+        out = yarutsk.dumps(doc)
+        assert "%YAML 1.2" in out
+
+
+class TestScalarStyleTypeError:
+    """Test that scalar_style() raises TypeError on non-scalar values."""
+
+    def test_mapping_scalar_style_on_nested_mapping_raises(self):
+        doc = yarutsk.loads("outer:\n  inner: 1\n")
+        with pytest.raises(TypeError, match="not a scalar"):
+            doc.scalar_style("outer", "plain")
+
+    def test_mapping_scalar_style_on_nested_sequence_raises(self):
+        doc = yarutsk.loads("items:\n  - 1\n  - 2\n")
+        with pytest.raises(TypeError, match="not a scalar"):
+            doc.scalar_style("items", "plain")
+
+    def test_sequence_scalar_style_on_nested_mapping_raises(self):
+        doc = yarutsk.loads("- key: value\n")
+        with pytest.raises(TypeError, match="not a scalar"):
+            doc.scalar_style(0, "plain")
+
+    def test_sequence_scalar_style_on_nested_sequence_raises(self):
+        doc = yarutsk.loads("- - 1\n  - 2\n")
+        with pytest.raises(TypeError, match="not a scalar"):
+            doc.scalar_style(0, "plain")
+
+    def test_mapping_scalar_style_on_scalar_still_works(self):
+        doc = yarutsk.loads("key: value\n")
+        doc.scalar_style("key", "double")
+        assert '"value"' in yarutsk.dumps(doc)
+
+    def test_sequence_scalar_style_on_scalar_still_works(self):
+        doc = yarutsk.loads("- hello\n")
+        doc.scalar_style(0, "single")
+        assert "'hello'" in yarutsk.dumps(doc)
+
+
+class TestAnchorProperty:
+    """Test the anchor read/write property on all three node types."""
+
+    def test_mapping_anchor_roundtrip(self):
+        src = "base: &anchor\n  x: 1\nalias: *anchor\n"
+        doc = yarutsk.loads(src)
+        nested = doc.node("base")
+        assert nested.anchor == "anchor"
+
+    def test_mapping_set_anchor(self):
+        doc = yarutsk.loads("key:\n  x: 1\n")
+        nested = doc.node("key")
+        assert isinstance(nested, yarutsk.YamlMapping)
+        nested.anchor = "myanchor"
+        assert nested.anchor == "myanchor"
+
+    def test_scalar_anchor_roundtrip(self):
+        src = "value: &val 42\n"
+        doc = yarutsk.loads(src)
+        node = doc.node("value")
+        assert isinstance(node, yarutsk.YamlScalar)
+        assert node.anchor == "val"
+
+    def test_scalar_set_anchor(self):
+        s = yarutsk.YamlScalar("hello")
+        assert s.anchor is None
+        s.anchor = "greeting"
+        assert s.anchor == "greeting"
+        s.anchor = None
+        assert s.anchor is None
+
+    def test_sequence_set_anchor(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc.anchor = "mylist"
+        assert doc.anchor == "mylist"
+        out = yarutsk.dumps(doc)
+        assert "&mylist" in out
+
+    def test_mapping_set_anchor_emits(self):
+        doc = yarutsk.loads("key: value\n")
+        doc.anchor = "root"
+        out = yarutsk.dumps(doc)
+        assert "&root" in out
+
+
+class TestConstructorFromExisting:
+    """YamlMapping(mapping) and YamlSequence(iterable) constructors."""
+
+    def test_mapping_from_plain_dict(self):
+        m = yarutsk.YamlMapping({"a": 1, "b": 2})
+        assert m["a"] == 1
+        assert m["b"] == 2
+        assert list(m.keys()) == ["a", "b"]
+
+    def test_mapping_from_plain_dict_with_style(self):
+        m = yarutsk.YamlMapping({"x": 1}, style="flow")
+        assert m.style == "flow"
+        assert m["x"] == 1
+
+    def test_mapping_from_yaml_mapping_preserves_values(self):
+        src = yarutsk.loads("x: 1\ny: 2\n")
+        m = yarutsk.YamlMapping(src)
+        assert m["x"] == 1
+        assert m["y"] == 2
+        assert list(m.keys()) == ["x", "y"]
+
+    def test_mapping_from_yaml_mapping_with_override_style(self):
+        src = yarutsk.loads("x: 1\ny: 2\n")
+        m = yarutsk.YamlMapping(src, style="flow")
+        assert m.style == "flow"
+        assert m["x"] == 1
+
+    def test_mapping_from_yaml_mapping_preserves_inner_metadata(self):
+        src = yarutsk.loads("x: 1  # inline\ny: 2\n")
+        m = yarutsk.YamlMapping(src)
+        assert m.get_comment_inline("x") == "inline"
+
+    def test_mapping_empty_no_arg(self):
+        m = yarutsk.YamlMapping()
+        assert len(m) == 0
+        assert m.style == "block"
+
+    def test_mapping_none_arg(self):
+        m = yarutsk.YamlMapping(None)
+        assert len(m) == 0
+
+    def test_sequence_from_list(self):
+        s = yarutsk.YamlSequence([1, 2, 3])
+        assert list(s) == [1, 2, 3]
+
+    def test_sequence_from_list_with_style(self):
+        s = yarutsk.YamlSequence([1, 2, 3], style="flow")
+        assert s.style == "flow"
+        assert list(s) == [1, 2, 3]
+
+    def test_sequence_from_range(self):
+        s = yarutsk.YamlSequence(range(3))
+        assert list(s) == [0, 1, 2]
+
+    def test_sequence_from_yaml_sequence_preserves_values(self):
+        src = yarutsk.loads("- 1\n- 2\n")
+        assert isinstance(src, yarutsk.YamlSequence)
+        s = yarutsk.YamlSequence(src)
+        assert list(s) == [1, 2]
+
+    def test_sequence_from_yaml_sequence_with_override_style(self):
+        src = yarutsk.loads("- 1\n- 2\n")
+        assert isinstance(src, yarutsk.YamlSequence)
+        s = yarutsk.YamlSequence(src, style="flow")
+        assert s.style == "flow"
+        assert list(s) == [1, 2]
+
+    def test_sequence_from_yaml_sequence_preserves_inner_metadata(self):
+        src = yarutsk.loads("- a  # first\n- b\n")
+        assert isinstance(src, yarutsk.YamlSequence)
+        s = yarutsk.YamlSequence(src)
+        assert s.get_comment_inline(0) == "first"
+
+    def test_sequence_empty_no_arg(self):
+        s = yarutsk.YamlSequence()
+        assert len(s) == 0
+        assert s.style == "block"
+
+    def test_sequence_none_arg(self):
+        s = yarutsk.YamlSequence(None)
+        assert len(s) == 0
+
+
+class TestAliasAPI:
+    """Tests for alias_name() and set_alias() on YamlMapping and YamlSequence."""
+
+    def test_mapping_alias_name_none_for_plain_value(self):
+        doc = yarutsk.loads("key: value\n")
+        assert doc.alias_name("key") is None
+
+    def test_mapping_alias_name_parsed_alias(self):
+        doc = yarutsk.loads("base: &anchor 1\nref: *anchor\n")
+        assert doc.alias_name("ref") == "anchor"
+
+    def test_mapping_alias_name_anchor_node_is_not_alias(self):
+        doc = yarutsk.loads("base: &anchor 1\nref: *anchor\n")
+        assert doc.alias_name("base") is None
+
+    def test_mapping_alias_name_missing_key_raises(self):
+        doc = yarutsk.loads("key: value\n")
+        with pytest.raises(KeyError):
+            doc.alias_name("missing")
+
+    def test_mapping_set_alias_marks_value(self):
+        doc = yarutsk.loads("base: &anchor hello\nother: hello\n")
+        doc.set_alias("other", "anchor")
+        assert doc.alias_name("other") == "anchor"
+
+    def test_mapping_set_alias_resolved_value_accessible(self):
+        doc = yarutsk.loads("base: &anchor 42\nother: 42\n")
+        doc.set_alias("other", "anchor")
+        assert doc["other"] == 42
+
+    def test_mapping_set_alias_emits_star_anchor(self):
+        doc = yarutsk.loads("base: &anchor hello\nother: hello\n")
+        doc.set_alias("other", "anchor")
+        out = yarutsk.dumps(doc)
+        assert "*anchor" in out
+
+    def test_mapping_set_alias_missing_key_raises(self):
+        doc = yarutsk.loads("key: value\n")
+        with pytest.raises(KeyError):
+            doc.set_alias("missing", "anchor")
+
+    def test_sequence_alias_name_none_for_plain_value(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.alias_name(0) is None
+
+    def test_sequence_alias_name_parsed_alias(self):
+        doc = yarutsk.loads("- &val 1\n- *val\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.alias_name(1) == "val"
+
+    def test_sequence_alias_name_anchor_node_is_not_alias(self):
+        doc = yarutsk.loads("- &val 1\n- *val\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.alias_name(0) is None
+
+    def test_sequence_alias_name_out_of_range_raises(self):
+        doc = yarutsk.loads("- 1\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        with pytest.raises(IndexError):
+            doc.alias_name(99)
+
+    def test_sequence_set_alias_marks_value(self):
+        doc = yarutsk.loads("- 1\n- 1\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc.set_alias(1, "val")
+        assert doc.alias_name(1) == "val"
+
+    def test_sequence_set_alias_resolved_value_accessible(self):
+        doc = yarutsk.loads("- 42\n- 42\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc.set_alias(1, "val")
+        assert doc[1] == 42
+
+    def test_sequence_set_alias_emits_star_anchor(self):
+        doc = yarutsk.loads("- &val 1\n- 1\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc.set_alias(1, "val")
+        out = yarutsk.dumps(doc)
+        assert "*val" in out
+
+    def test_sequence_set_alias_out_of_range_raises(self):
+        doc = yarutsk.loads("- 1\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        with pytest.raises(IndexError):
+            doc.set_alias(99, "val")

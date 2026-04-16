@@ -9,10 +9,7 @@ import yarutsk
 
 
 class TestBasicLoading:
-    """Test basic YAML loading functionality."""
-
     def test_load_from_stringio(self):
-        """Test loading from StringIO."""
         content = io.StringIO(
             dedent("""\
             name: John
@@ -24,7 +21,6 @@ class TestBasicLoading:
         assert doc["age"] == 30
 
     def test_load_from_bytesio(self):
-        """Test loading from BytesIO."""
         content = io.BytesIO(
             dedent("""\
             name: John
@@ -36,7 +32,6 @@ class TestBasicLoading:
         assert doc["age"] == 30
 
     def test_load_nested_mapping(self):
-        """Test loading nested mappings."""
         content = io.StringIO("""
 person:
   name: John
@@ -50,7 +45,6 @@ person:
         assert doc["person"]["address"]["city"] == "New York"
 
     def test_load_sequence(self):
-        """Test loading sequences."""
         content = io.StringIO("""
 items:
   - first
@@ -64,7 +58,6 @@ items:
         assert items[2] == "third"
 
     def test_load_flow_sequence(self):
-        """Test loading flow sequences."""
         content = io.StringIO("[a, b, c]")
         doc = yarutsk.load(content)
         assert doc[0] == "a"
@@ -72,7 +65,6 @@ items:
         assert doc[2] == "c"
 
     def test_load_flow_mapping(self):
-        """Test loading flow mappings."""
         content = io.StringIO("{a: 1, b: 2}")
         doc = yarutsk.load(content)
         assert doc["a"] == 1
@@ -80,8 +72,6 @@ items:
 
 
 class TestTypePreservation:
-    """Test that YAML types are correctly preserved."""
-
     def test_integer(self):
         content = io.StringIO("value: 42")
         doc = yarutsk.load(content)
@@ -173,8 +163,6 @@ class TestTypePreservation:
 
 
 class TestInsertionOrderPreservation:
-    """Test that insertion order is preserved."""
-
     def test_order_preserved_on_load(self):
         """Keys appear in same order as input YAML."""
         content = io.StringIO(

@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::{Event, Parser, Tag};
-use crate::scanner::{Marker, TScalarStyle};
-use crate::types::*;
+use super::parser::{Event, Parser, Tag};
+use super::scanner::{Marker, TScalarStyle};
+use super::types::*;
 
 /// Tags that should bypass built-in ScalarValue coercion in the builder.
 /// When a tag is in this set the scalar value is kept as `ScalarValue::Str`
@@ -715,8 +715,8 @@ fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::emitter::emit_docs;
     use super::*;
-    use crate::emitter::emit_docs;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

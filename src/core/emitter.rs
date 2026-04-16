@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::types::*;
+use super::types::*;
 
 /// Format a stored tag for emission.
 ///
@@ -266,6 +266,16 @@ fn emit_mapping(m: &YamlMapping, indent: usize, step: usize, out: &mut String) {
         emit_mapping_flow(m, out);
         return;
     }
+    // Top-level anchor: emit `&name` on its own line before the entries.
+    // Nested anchors are already emitted by emit_mapping_value / emit_sequence;
+    // all non-top-level calls to emit_mapping pass indent > 0.
+    if indent == 0
+        && let Some(anchor) = &m.anchor
+    {
+        out.push('&');
+        out.push_str(anchor);
+        out.push('\n');
+    }
     if m.entries.is_empty() {
         out.push_str("{}\n");
         return;
@@ -333,6 +343,15 @@ fn emit_sequence(s: &YamlSequence, indent: usize, step: usize, out: &mut String)
     if s.style == ContainerStyle::Flow {
         emit_sequence_flow(s, out);
         return;
+    }
+    // Top-level anchor: emit `&name` on its own line before the items.
+    // All non-top-level calls to emit_sequence pass indent > 0.
+    if indent == 0
+        && let Some(anchor) = &s.anchor
+    {
+        out.push('&');
+        out.push_str(anchor);
+        out.push('\n');
     }
     if s.items.is_empty() {
         out.push_str("[]\n");
@@ -1519,7 +1538,7 @@ mod tests {
             )]);
             let mut out = String::new();
             emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
-            let re_parsed = crate::builder::parse_str(&out, None).expect("re-parse failed");
+            let re_parsed = crate::core::builder::parse_str(&out, None).expect("re-parse failed");
             let re_docs = re_parsed.docs;
             if let YamlNode::Mapping(m2) = &re_docs[0] {
                 if let YamlNode::Scalar(s) = &m2.entries["text"].value {

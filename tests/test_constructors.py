@@ -18,9 +18,6 @@ import pytest
 import yarutsk
 
 
-# ── YamlScalar construction ───────────────────────────────────────────────────
-
-
 class TestYamlScalarConstruction:
     def test_str_default(self):
         s = yarutsk.YamlScalar("hello")
@@ -120,9 +117,6 @@ class TestYamlScalarReprAndToDict:
         assert yarutsk.YamlScalar(None).to_dict() is None
 
 
-# ── YamlScalar dump output ────────────────────────────────────────────────────
-
-
 class TestYamlScalarDumpStyle:
     def _doc_with(self, val):
         doc = yarutsk.YamlMapping()
@@ -167,9 +161,6 @@ class TestYamlScalarDumpStyle:
         assert self._doc_with(yarutsk.YamlScalar(42, style="double")) == dedent("""\
             k: 42
         """)
-
-
-# ── YamlMapping construction ──────────────────────────────────────────────────
 
 
 class TestYamlMappingConstruction:
@@ -258,9 +249,6 @@ class TestYamlMappingDumpStyle:
         assert "{" in yarutsk.dumps(doc)
 
 
-# ── YamlSequence construction ─────────────────────────────────────────────────
-
-
 class TestYamlSequenceConstruction:
     def test_default_style(self):
         s = yarutsk.YamlSequence()
@@ -340,9 +328,6 @@ class TestYamlSequenceDumpStyle:
         assert "[" in yarutsk.dumps(doc)
 
 
-# ── Assignment paths for styled scalars ───────────────────────────────────────
-
-
 class TestStyledScalarAssignmentPaths:
     """All the ways a styled YamlScalar can enter a mapping or sequence."""
 
@@ -420,9 +405,6 @@ class TestStyledScalarAssignmentPaths:
         assert '"styled"' in yarutsk.dumps(doc)
 
 
-# ── Assignment paths for styled containers ────────────────────────────────────
-
-
 class TestStyledContainerAssignmentPaths:
     def test_mapping_setitem_flow_mapping(self):
         doc = yarutsk.loads("p: placeholder")
@@ -458,9 +440,6 @@ class TestStyledContainerAssignmentPaths:
         m["x"] = 9
         doc.update({"sub": m})
         assert "{" in yarutsk.dumps(doc)
-
-
-# ── Dumper protocol with styled nodes ────────────────────────────────────────
 
 
 class TestDumperWithStyledNodes:
@@ -568,9 +547,6 @@ class TestDumperWithStyledNodes:
         out = yarutsk.dumps(doc, schema=schema)
         assert "'alice'" in out
         assert "!name" in out
-
-
-# ── Tag on mapping / sequence appears in dump ─────────────────────────────────
 
 
 class TestConstructorTagInOutput:

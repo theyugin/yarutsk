@@ -7,7 +7,16 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from typing import Any, Callable, IO, Literal, SupportsIndex, TypeVar, overload
+from typing import (
+    Any,
+    Callable,
+    IO,
+    Iterable,
+    Literal,
+    SupportsIndex,
+    TypeVar,
+    overload,
+)
 
 _T = TypeVar("_T")
 
@@ -108,6 +117,13 @@ class YamlScalar:
     @tag.setter
     def tag(self, value: str | None) -> None: ...
     @property
+    def anchor(self) -> str | None:
+        """The anchor name declared on this scalar (``&name``), or ``None``."""
+        ...
+
+    @anchor.setter
+    def anchor(self, value: str | None) -> None: ...
+    @property
     def yaml_version(self) -> str | None:
         """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
         ...
@@ -162,13 +178,17 @@ class YamlMapping(dict[str, Any]):
 
     def __init__(
         self,
+        mapping: "dict[str, Any] | YamlMapping | None" = None,
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
     ) -> None:
-        """Create an empty mapping with the given container style and optional tag.
+        """Create a mapping, optionally populated from *mapping*.
 
-        Raises ``ValueError`` for an unknown *style*.
+        If *mapping* is a ``YamlMapping``, inner metadata (comments, styles,
+        anchors) is preserved. If it is a plain ``dict`` or another mapping, it
+        is iterated and entries are set as plain values. Raises ``ValueError``
+        for an unknown *style*.
         """
         ...
 
@@ -193,6 +213,13 @@ class YamlMapping(dict[str, Any]):
 
     @tag.setter
     def tag(self, value: str | None) -> None: ...
+    @property
+    def anchor(self) -> str | None:
+        """The anchor name declared on this mapping (``&name``), or ``None``."""
+        ...
+
+    @anchor.setter
+    def anchor(self, value: str | None) -> None: ...
     @property
     def yaml_version(self) -> str | None:
         """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
@@ -230,7 +257,8 @@ class YamlMapping(dict[str, Any]):
     def scalar_style(self, key: str, style: str) -> None:
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
+        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
+        ``TypeError`` if the value is not a scalar (use ``container_style()`` instead).
         """
         ...
 
@@ -302,6 +330,47 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
+    def get_comment_inline(self, key: str) -> str | None:
+        """Return the inline comment for *key*, or ``None`` if unset.
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def set_comment_inline(self, key: str, comment: str | None) -> None:
+        """Set the inline comment for *key*; pass ``None`` to clear.
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def get_comment_before(self, key: str) -> str | None:
+        """Return the block comment above *key*, lines joined with ``\\n``, or ``None`` if unset.
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def set_comment_before(self, key: str, comment: str | None) -> None:
+        """Set the block comment above *key*; pass ``None`` to clear.
+        Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def alias_name(self, key: str) -> str | None:
+        """Return the anchor name if the value at *key* is a YAML alias node, else ``None``.
+
+        A value is an alias node when it was parsed from ``*name`` YAML syntax or when
+        ``set_alias()`` was called on it.  The resolved Python value is still accessible
+        via normal ``__getitem__``.  Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
+    def set_alias(self, key: str, anchor_name: str) -> None:
+        """Mark the value at *key* as emitting ``*anchor_name`` in YAML output.
+
+        The current resolved value is retained so Python reads (``doc[key]``) keep
+        working. Raises ``KeyError`` if *key* is absent.
+        """
+        ...
+
     def format(
         self,
         *,
@@ -337,13 +406,16 @@ class YamlSequence(list[Any]):
 
     def __init__(
         self,
+        iterable: "Iterable[Any] | None" = None,
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
     ) -> None:
-        """Create an empty sequence with the given container style and optional tag.
+        """Create a sequence, optionally populated from *iterable*.
 
-        Raises ``ValueError`` for an unknown *style*.
+        If *iterable* is a ``YamlSequence``, inner metadata (comments, styles,
+        anchors) is preserved. Any other iterable has its items appended as plain
+        values. Raises ``ValueError`` for an unknown *style*.
         """
         ...
 
@@ -368,6 +440,13 @@ class YamlSequence(list[Any]):
 
     @tag.setter
     def tag(self, value: str | None) -> None: ...
+    @property
+    def anchor(self) -> str | None:
+        """The anchor name declared on this sequence (``&name``), or ``None``."""
+        ...
+
+    @anchor.setter
+    def anchor(self, value: str | None) -> None: ...
     @property
     def yaml_version(self) -> str | None:
         """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
@@ -399,7 +478,8 @@ class YamlSequence(list[Any]):
     def scalar_style(self, idx: int, style: str) -> None:
         """Set the scalar quoting style for the item at *idx*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
+        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
+        ``TypeError`` if the item is not a scalar (use ``container_style()`` instead).
         """
         ...
 
@@ -426,8 +506,15 @@ class YamlSequence(list[Any]):
         self,
         key: Callable[[Any], Any] | None = None,
         reverse: bool = False,
+        recursive: bool = False,
     ) -> None:
-        """Sort sequence items in-place, preserving comment metadata."""
+        """Sort sequence items in-place, preserving comment metadata.
+
+        When *recursive* is ``True``, any nested ``YamlMapping`` values have their
+        keys sorted by natural string order (``sort_keys`` with no *key* function),
+        and any nested ``YamlSequence`` values are sorted recursively with the same
+        *key* and *reverse* arguments.
+        """
         ...
 
     def to_dict(self) -> Any:
@@ -452,6 +539,47 @@ class YamlSequence(list[Any]):
     @overload
     def comment_before(self, idx: int, comment: str | None) -> None:
         """Set or clear the block comment above the item at *idx*. Pass ``None`` to remove it."""
+        ...
+
+    def get_comment_inline(self, idx: int) -> str | None:
+        """Return the inline comment for the item at *idx*, or ``None`` if unset.
+        Raises ``IndexError`` for out-of-range indices.
+        """
+        ...
+
+    def set_comment_inline(self, idx: int, comment: str | None) -> None:
+        """Set the inline comment for the item at *idx*; pass ``None`` to clear.
+        Raises ``IndexError`` for out-of-range indices.
+        """
+        ...
+
+    def get_comment_before(self, idx: int) -> str | None:
+        """Return the block comment above the item at *idx*, lines joined with ``\\n``, or ``None`` if unset.
+        Raises ``IndexError`` for out-of-range indices.
+        """
+        ...
+
+    def set_comment_before(self, idx: int, comment: str | None) -> None:
+        """Set the block comment above the item at *idx*; pass ``None`` to clear.
+        Raises ``IndexError`` for out-of-range indices.
+        """
+        ...
+
+    def alias_name(self, idx: int) -> str | None:
+        """Return the anchor name if the item at *idx* is a YAML alias node, else ``None``.
+
+        A value is an alias node when it was parsed from ``*name`` YAML syntax or when
+        ``set_alias()`` was called on it.  The resolved Python value is still accessible
+        via normal ``__getitem__``.  Raises ``IndexError`` for out-of-range indices.
+        """
+        ...
+
+    def set_alias(self, idx: int, anchor_name: str) -> None:
+        """Mark the item at *idx* as emitting ``*anchor_name`` in YAML output.
+
+        The current resolved value is retained so Python reads (``seq[idx]``) keep
+        working. Raises ``IndexError`` for out-of-range indices.
+        """
         ...
 
     @overload

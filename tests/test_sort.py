@@ -9,10 +9,7 @@ import yarutsk
 
 
 class TestKeySorting:
-    """Test key sorting functionality."""
-
     def test_sort_keys_default(self):
-        """Default alphabetical sort."""
         content = io.StringIO(
             dedent("""\
             z: 1
@@ -28,7 +25,6 @@ class TestKeySorting:
         assert list(doc.keys()) == ["a", "m", "z"]
 
     def test_sort_keys_custom_function(self):
-        """Sort with custom key function."""
         content = io.StringIO(
             dedent("""\
             banana: 1
@@ -42,7 +38,6 @@ class TestKeySorting:
         assert list(doc.keys()) == ["apple", "banana", "cherry"]
 
     def test_sort_keys_reverse(self):
-        """Reverse alphabetical sort."""
         content = io.StringIO(
             dedent("""\
             a: 1
@@ -56,7 +51,6 @@ class TestKeySorting:
         assert list(doc.keys()) == ["c", "b", "a"]
 
     def test_sort_keys_recursive(self):
-        """Recursive sort of nested mappings."""
         content = io.StringIO("""
 z: 1
 a:
@@ -71,7 +65,6 @@ m: 3
         assert list(doc["a"].keys()) == ["b", "m"]
 
     def test_sort_sequence(self):
-        """Sort a sequence."""
         content = io.StringIO("""
 items:
   - zebra
@@ -87,7 +80,6 @@ items:
         assert items[2] == "zebra"
 
     def test_sort_sequence_with_key(self):
-        """Sort a sequence with custom key function."""
         content = io.StringIO("""
 items:
   - banana
@@ -104,24 +96,19 @@ items:
 
 
 class TestSortingEdgeCases:
-    """Test edge cases in sorting."""
-
     def test_sort_empty_mapping(self):
-        """Sort an empty mapping."""
         content = io.StringIO("{}")
         doc = yarutsk.load(content)
         doc.sort_keys()
         assert list(doc.keys()) == []
 
     def test_sort_single_key(self):
-        """Sort a mapping with single key."""
         content = io.StringIO("a: 1")
         doc = yarutsk.load(content)
         doc.sort_keys()
         assert list(doc.keys()) == ["a"]
 
     def test_sort_preserves_comments(self):
-        """Sorting preserves inline and before-key comments."""
         content = io.StringIO("""
 z: 1  # z comment
 a: 2  # a comment
@@ -136,7 +123,6 @@ m: 3  # m comment
         assert doc.comment_inline("z") == "z comment"
 
     def test_sort_keys_reverse_custom(self):
-        """Reverse sort with custom key function."""
         content = io.StringIO(
             dedent("""\
             banana: 1
@@ -149,7 +135,6 @@ m: 3  # m comment
         assert list(doc.keys()) == ["cherry", "banana", "apple"]
 
     def test_sort_sequence_reverse(self):
-        """Reverse-sort a sequence."""
         content = io.StringIO(
             dedent("""\
             - a
@@ -164,14 +149,12 @@ m: 3  # m comment
         assert doc[2] == "a"
 
     def test_sort_sequence_empty(self):
-        """Sort an empty sequence does not error."""
         content = io.StringIO("[]")
         doc = yarutsk.load(content)
         doc.sort()
         assert len(doc) == 0
 
     def test_sort_not_recursive_by_default(self):
-        """sort_keys does not recurse unless asked."""
         content = io.StringIO(
             dedent("""\
             z: 1
@@ -183,10 +166,9 @@ m: 3  # m comment
         doc = yarutsk.load(content)
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "z"]
-        assert list(doc["a"].keys()) == ["m", "b"]  # inner unchanged
+        assert list(doc["a"].keys()) == ["m", "b"]
 
     def test_sort_then_insert(self):
-        """New keys inserted after sort go to the end."""
         content = io.StringIO(
             dedent("""\
             z: 1
@@ -209,7 +191,6 @@ class TestSortWithCustomTypes:
         self.schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
 
     def test_sort_keys_preserves_custom_value_nonrecursive(self):
-        """Non-recursive sort_keys must not drop custom-typed values."""
         doc = yarutsk.loads(
             dedent("""\
             z: !point
@@ -226,8 +207,7 @@ class TestSortWithCustomTypes:
         assert doc["z"] == Point(1, 2)
 
     def test_sort_keys_preserves_custom_value_recursive(self):
-        """Recursive sort_keys must not drop custom-typed values (regression for bug
-        where node_to_py on the empty placeholder replaced the custom object with {})."""
+        """Regression: node_to_py on the empty placeholder must not replace a custom object with {}."""
         doc = yarutsk.loads(
             dedent("""\
             z: !point
@@ -247,7 +227,6 @@ class TestSortWithCustomTypes:
         assert doc["z"] == Point(3, 4)
 
     def test_sort_sequence_custom_type_no_key_raises(self):
-        """sort() on a sequence of unorderable custom objects raises TypeError."""
         doc = yarutsk.loads(
             dedent("""\
             - !point
@@ -264,7 +243,6 @@ class TestSortWithCustomTypes:
             doc.sort()
 
     def test_sort_sequence_custom_type_with_key(self):
-        """sort(key=...) on custom objects sorts by key result, preserving objects."""
         doc = yarutsk.loads(
             dedent("""\
             - !point
@@ -291,6 +269,76 @@ class Point:
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Point) and self.x == other.x and self.y == other.y
+
+
+class TestSequenceRecursiveSort:
+    """Test YamlSequence.sort(recursive=True)."""
+
+    def test_recursive_sorts_nested_mapping_keys(self):
+        src = dedent("""\
+            a_entry:
+              z: 1
+              a: 2
+            b_entry:
+              m: 3
+              b: 4
+        """)
+        doc = yarutsk.loads(src)
+        doc.sort_keys(recursive=True)
+        assert list(doc["a_entry"].keys()) == ["a", "z"]
+        assert list(doc["b_entry"].keys()) == ["b", "m"]
+
+    def test_recursive_sorts_nested_mapping_keys_via_sequence(self):
+        inner_src = dedent("""\
+            - - 3
+              - 1
+              - 2
+        """)
+        inner_doc = yarutsk.loads(inner_src)
+        inner_doc.sort(recursive=True)
+        assert list(inner_doc[0]) == [1, 2, 3]
+
+    def test_recursive_sorts_nested_sequence(self):
+        src = dedent("""\
+            - - 3
+              - 1
+              - 2
+            - - 9
+              - 7
+        """)
+        doc = yarutsk.loads(src)
+        doc.sort(recursive=True)
+        assert list(doc[0]) == [1, 2, 3]
+        assert list(doc[1]) == [7, 9]
+
+    def test_recursive_false_does_not_sort_nested(self):
+        src = dedent("""\
+            - z: 1
+              a: 2
+        """)
+        doc = yarutsk.loads(src)
+        doc.sort(recursive=False)
+        assert list(doc[0].keys()) == ["z", "a"]
+
+    def test_recursive_with_reverse(self):
+        src = dedent("""\
+            - - 1
+              - 3
+              - 2
+        """)
+        doc = yarutsk.loads(src)
+        doc.sort(recursive=True, reverse=True)
+        assert list(doc[0]) == [3, 2, 1]
+
+    def test_recursive_preserves_comments(self):
+        src = dedent("""\
+            - - 2  # second
+              - 1  # first
+        """)
+        doc = yarutsk.loads(src)
+        doc.sort(recursive=True)
+        assert doc[0].get_comment_inline(0) == "first"
+        assert doc[0].get_comment_inline(1) == "second"
 
 
 if __name__ == "__main__":

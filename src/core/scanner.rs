@@ -24,7 +24,7 @@ use std::{char, collections::VecDeque, error::Error, fmt};
 
 use arraydeque::ArrayDeque;
 
-use crate::char_traits::{
+use super::char_traits::{
     as_hex, is_alpha, is_anchor_char, is_blank, is_blank_or_breakz, is_break, is_breakz, is_digit,
     is_flow, is_hex, is_tag_char, is_uri_char, is_z,
 };

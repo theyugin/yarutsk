@@ -8,9 +8,6 @@ import pytest
 import yarutsk
 
 
-# ── Custom types used across tests ───────────────────────────────────────────
-
-
 class Point:
     def __init__(self, x: float, y: float) -> None:
         self.x = x
@@ -31,9 +28,6 @@ class Color:
             and self.g == other.g
             and self.b == other.b
         )
-
-
-# ── Custom mapping type (loader + dumper) ─────────────────────────────────────
 
 
 class TestCustomMappingType:
@@ -114,9 +108,6 @@ class TestCustomMappingType:
         assert "!point-b" not in out
 
 
-# ── Custom scalar type ────────────────────────────────────────────────────────
-
-
 class TestCustomScalarType:
     def setup_method(self) -> None:
         self.schema = yarutsk.Schema()
@@ -157,9 +148,6 @@ class TestCustomScalarType:
         out = yarutsk.dumps(doc, schema=self.schema)
         assert "!color" in out
         assert "0,128,255" in out
-
-
-# ── Overriding built-in coercion tags ─────────────────────────────────────────
 
 
 class TestOverrideBuiltinTags:
@@ -211,12 +199,7 @@ class TestOverrideBuiltinTags:
         assert received == ["hello"]
 
 
-# ── Default type conversions (no schema) ─────────────────────────────────────
-
-
 class TestDefaultTypeConversions:
-    # ── Implicit coercion (no tag) ────────────────────────────────────────────
-
     def test_implicit_int(self) -> None:
         doc = yarutsk.loads("x: 42\n")
         assert doc["x"] == 42
@@ -294,8 +277,6 @@ class TestDefaultTypeConversions:
         assert doc["x"] == "hello"
         assert isinstance(doc["x"], str)
 
-    # ── Explicit tags ─────────────────────────────────────────────────────────
-
     def test_tag_int_decimal(self) -> None:
         doc = yarutsk.loads("x: !!int 42\n")
         assert doc["x"] == 42
@@ -361,9 +342,6 @@ class TestDefaultTypeConversions:
         doc = yarutsk.loads("x: !!timestamp 2024-03-10 08:00:00\n")
         assert isinstance(doc["x"], datetime.datetime)
         assert doc["x"].hour == 8
-
-
-# ── Mutable mapping: custom type assignments ──────────────────────────────────
 
 
 class TestMutableMappingCustomTypes:
@@ -451,9 +429,6 @@ class TestMutableMappingCustomTypes:
         doc2 = yarutsk.loads(out, schema=self.schema)
         assert isinstance(doc2["pos"], Point)
         assert doc2["pos"] == Point(3, 4)
-
-
-# ── Mutable sequence: custom type assignments ─────────────────────────────────
 
 
 class TestMutableSequenceCustomTypes:
@@ -562,9 +537,6 @@ class TestMutableSequenceCustomTypes:
         assert "- 1" in out
         assert "- 2" in out
         assert "!point" in out
-
-
-# ── Schema error handling ─────────────────────────────────────────────────────
 
 
 class TestSchemaErrors:

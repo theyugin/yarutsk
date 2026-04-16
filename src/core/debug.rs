@@ -2,6 +2,8 @@
 // Copyright (c) 2015 Chen Yuheng, Copyright (c) 2023 Ethiraric
 // Licensed under MIT OR Apache-2.0 — see THIRD_PARTY_NOTICES
 
+#![allow(unexpected_cfgs, unused_macros)]
+
 //! Debugging helpers.
 //!
 //! Debugging is governed by two conditions:

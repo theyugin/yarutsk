@@ -925,8 +925,6 @@ class TestTimestampTagRoundTrip:
 class TestContainerStyle:
     """style property: read block/flow from source and switch between them."""
 
-    # ── YamlMapping ──────────────────────────────────────────────────────────
-
     def test_mapping_block_style_default(self):
         doc = yarutsk.loads(
             dedent("""\
@@ -966,8 +964,6 @@ class TestContainerStyle:
         with pytest.raises(ValueError):
             doc.style = "invalid"
 
-    # ── YamlSequence ─────────────────────────────────────────────────────────
-
     def test_sequence_block_style_default(self):
         doc = yarutsk.loads(
             dedent("""\
@@ -1002,8 +998,6 @@ class TestContainerStyle:
 class TestContainerStyleSetter:
     """container_style(key/idx, style) sets the block/flow style of a nested
     mapping or sequence value directly, without going through node() clones."""
-
-    # ── nested sequences inside a mapping ────────────────────────────────────
 
     def test_mapping_value_default_block_after_plain_list_assign(self):
         doc = yarutsk.loads("k: placeholder\n")
@@ -1047,8 +1041,6 @@ class TestContainerStyleSetter:
         doc.container_style("k", "flow")
         assert yarutsk.dumps(doc) == "k: hello\n"
 
-    # ── nested mappings inside a mapping ─────────────────────────────────────
-
     def test_mapping_nested_mapping_set_to_flow(self):
         doc = yarutsk.loads(
             dedent("""\
@@ -1067,8 +1059,6 @@ class TestContainerStyleSetter:
         doc.container_style("k", "block")
         out = yarutsk.dumps(doc)
         assert "a: 1\n" in out
-
-    # ── nested containers inside a sequence ──────────────────────────────────
 
     def test_sequence_item_set_to_flow(self):
         doc = yarutsk.loads(
