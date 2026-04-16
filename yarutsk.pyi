@@ -14,6 +14,7 @@ from typing import (
     Iterable,
     Literal,
     SupportsIndex,
+    TypeAlias,
     TypeVar,
     overload,
 )
@@ -25,6 +26,17 @@ _Scalar = int | float | bool | str | None
 
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
+
+# ── Public type aliases ───────────────────────────────────────────────────────
+
+ScalarStyle: TypeAlias = Literal["plain", "single", "double", "literal", "folded"]
+"""The quoting style of a YAML scalar."""
+
+ContainerStyle: TypeAlias = Literal["block", "flow"]
+"""The layout style of a YAML mapping or sequence."""
+
+YamlNode: TypeAlias = "YamlMapping | YamlSequence | YamlScalar"
+"""Any YAML document node (mapping, sequence, or scalar)."""
 
 class YarutskError(Exception):
     """Base exception for all yarutsk errors."""
@@ -72,7 +84,7 @@ class YamlScalar:
         self,
         value: "_Scalar",
         *,
-        style: str = "plain",
+        style: "ScalarStyle" = "plain",
         tag: str | None = None,
     ) -> None:
         """Create a scalar with the given primitive value, quoting style, and optional tag.
@@ -89,12 +101,12 @@ class YamlScalar:
         ...
 
     @property
-    def style(self) -> str:
+    def style(self) -> "ScalarStyle":
         """The scalar quoting style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``."""
         ...
 
     @style.setter
-    def style(self, value: str) -> None: ...
+    def style(self, value: "ScalarStyle") -> None: ...
     @property
     def explicit_start(self) -> bool:
         """Whether the source document had an explicit ``---`` marker."""
@@ -254,7 +266,7 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    def scalar_style(self, key: str, style: str) -> None:
+    def scalar_style(self, key: str, style: "ScalarStyle") -> None:
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
@@ -389,6 +401,32 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
+    @classmethod
+    def from_dict(
+        cls,
+        obj: "dict[str, Any]",
+        *,
+        schema: "Schema | None" = None,
+    ) -> "YamlMapping":
+        """Create a ``YamlMapping`` from a plain Python dict (or any dict-like object).
+
+        Nested dicts are recursively converted to ``YamlMapping``, nested lists to
+        ``YamlSequence``. Raises ``TypeError`` if *obj* is not dict-like.
+        """
+        ...
+
+    def nodes(self) -> "list[tuple[str, YamlMapping | YamlSequence | YamlScalar]]":
+        """Return a list of ``(key, node)`` pairs for all entries in this mapping.
+
+        Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
+        preserving style/tag metadata. Unlike ``items()``, which returns plain
+        Python values, ``nodes()`` returns the full typed node objects.
+        """
+        ...
+
+    def __copy__(self) -> "YamlMapping": ...
+    def __deepcopy__(self, memo: "dict[int, Any]") -> "YamlMapping": ...
+
 class YamlSequence(list[Any]):
     """A YAML sequence node. Subclass of list — all standard list operations work.
 
@@ -475,7 +513,7 @@ class YamlSequence(list[Any]):
 
     @trailing_blank_lines.setter
     def trailing_blank_lines(self, value: int) -> None: ...
-    def scalar_style(self, idx: int, style: str) -> None:
+    def scalar_style(self, idx: int, style: "ScalarStyle") -> None:
         """Set the scalar quoting style for the item at *idx*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
@@ -609,6 +647,23 @@ class YamlSequence(list[Any]):
         Recurses into all nested containers.
         """
         ...
+
+    @classmethod
+    def from_list(
+        cls,
+        obj: "list[Any]",
+        *,
+        schema: "Schema | None" = None,
+    ) -> "YamlSequence":
+        """Create a ``YamlSequence`` from a plain Python list (or any iterable).
+
+        Nested dicts are recursively converted to ``YamlMapping``, nested lists to
+        ``YamlSequence``. Raises ``TypeError`` if *obj* cannot be interpreted as a sequence.
+        """
+        ...
+
+    def __copy__(self) -> "YamlSequence": ...
+    def __deepcopy__(self, memo: "dict[int, Any]") -> "YamlSequence": ...
 
 class Schema:
     """A per-call type registry for customising load and dump behaviour.

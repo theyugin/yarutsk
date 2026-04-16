@@ -2,13 +2,14 @@
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyList, PyTuple, PyType};
 
 use super::convert::{
     DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
-    py_compare, py_to_node, resolve_seq_idx, sequence_repr, sequence_to_dict,
+    py_compare, py_to_node, resolve_seq_idx, sequence_repr, sequence_to_dict, sequence_to_py_obj,
 };
 use super::py_mapping::PyYamlMapping;
+use super::schema::Schema;
 use crate::core::types::*;
 
 // ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
@@ -705,6 +706,50 @@ impl PyYamlSequence {
             }
         }
         Ok(())
+    }
+
+    /// Create a ``YamlSequence`` from a plain Python list (or any iterable).
+    ///
+    /// Nested dicts are recursively converted to ``YamlMapping``, nested lists to
+    /// ``YamlSequence``. If *schema* is provided, schema dumpers are applied.
+    /// Raises ``TypeError`` if *obj* cannot be interpreted as a sequence.
+    #[classmethod]
+    #[pyo3(signature = (obj, *, schema = None))]
+    fn from_list(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        obj: &Bound<'_, PyAny>,
+        schema: Option<Py<Schema>>,
+    ) -> PyResult<Py<PyAny>> {
+        let sb = schema.as_ref().map(|s| s.bind(py));
+        let node = py_to_node(obj, sb)?;
+        match node {
+            YamlNode::Sequence(s) => sequence_to_py_obj(py, s, DocMeta::none(), sb),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "from_list requires a list or iterable object",
+            )),
+        }
+    }
+
+    /// Return a shallow copy of this sequence (comments, style metadata, and
+    /// nested structure are all cloned).
+    fn __copy__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let meta = DocMeta {
+            explicit_start: self.explicit_start,
+            explicit_end: self.explicit_end,
+            yaml_version: self.yaml_version,
+            tag_directives: self.tag_directives.clone(),
+        };
+        sequence_to_py_obj(py, self.inner.clone(), meta, None)
+    }
+
+    /// Return a deep copy of this sequence.
+    ///
+    /// Because ``YamlSequence`` owns all its data (no ``Rc``/``Arc`` sharing),
+    /// the Rust ``Clone`` is already a deep copy. The *memo* dict is accepted
+    /// for API compatibility but is not used.
+    fn __deepcopy__(&self, py: Python<'_>, _memo: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        self.__copy__(py)
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {

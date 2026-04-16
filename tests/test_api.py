@@ -1387,3 +1387,168 @@ class TestAliasAPI:
         assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(IndexError):
             doc.set_alias(99, "val")
+
+
+# ── from_dict / from_list ─────────────────────────────────────────────────────
+
+
+class TestFromDict:
+    def test_from_dict_basic(self):
+        m = yarutsk.YamlMapping.from_dict({"a": 1, "b": 2})
+        assert isinstance(m, yarutsk.YamlMapping)
+        assert m["a"] == 1
+        assert m["b"] == 2
+
+    def test_from_dict_nested_dict_becomes_mapping(self):
+        m = yarutsk.YamlMapping.from_dict({"x": {"y": 3}})
+        assert isinstance(m["x"], yarutsk.YamlMapping)
+        assert m["x"]["y"] == 3
+
+    def test_from_dict_nested_list_becomes_sequence(self):
+        m = yarutsk.YamlMapping.from_dict({"items": [1, 2, 3]})
+        assert isinstance(m["items"], yarutsk.YamlSequence)
+        assert list(m["items"]) == [1, 2, 3]
+
+    def test_from_dict_round_trips(self):
+        m = yarutsk.YamlMapping.from_dict({"name": "Alice", "age": 30})
+        out = yarutsk.dumps(m)
+        doc2 = yarutsk.loads(out)
+        assert doc2["name"] == "Alice"
+        assert doc2["age"] == 30
+
+    def test_from_dict_non_dict_raises_type_error(self):
+        with pytest.raises(TypeError):
+            yarutsk.YamlMapping.from_dict([1, 2, 3])
+
+    def test_from_dict_empty(self):
+        m = yarutsk.YamlMapping.from_dict({})
+        assert isinstance(m, yarutsk.YamlMapping)
+        assert len(m) == 0
+
+
+class TestFromList:
+    def test_from_list_basic(self):
+        s = yarutsk.YamlSequence.from_list([1, 2, 3])
+        assert isinstance(s, yarutsk.YamlSequence)
+        assert list(s) == [1, 2, 3]
+
+    def test_from_list_nested_dict_becomes_mapping(self):
+        s = yarutsk.YamlSequence.from_list([{"a": 1}, {"b": 2}])
+        assert isinstance(s[0], yarutsk.YamlMapping)
+        assert s[0]["a"] == 1
+
+    def test_from_list_nested_list_becomes_sequence(self):
+        s = yarutsk.YamlSequence.from_list([[1, 2], [3, 4]])
+        assert isinstance(s[0], yarutsk.YamlSequence)
+        assert list(s[0]) == [1, 2]
+
+    def test_from_list_round_trips(self):
+        s = yarutsk.YamlSequence.from_list(["x", "y", "z"])
+        out = yarutsk.dumps(s)
+        doc2 = yarutsk.loads(out)
+        assert list(doc2) == ["x", "y", "z"]
+
+    def test_from_list_non_list_raises_type_error(self):
+        with pytest.raises(TypeError):
+            yarutsk.YamlSequence.from_list({"a": 1})
+
+    def test_from_list_empty(self):
+        s = yarutsk.YamlSequence.from_list([])
+        assert isinstance(s, yarutsk.YamlSequence)
+        assert len(s) == 0
+
+
+# ── YamlMapping.nodes() ───────────────────────────────────────────────────────
+
+
+class TestMappingNodes:
+    def test_nodes_returns_list_of_pairs(self):
+        doc = yarutsk.loads("x: 1\ny: hello\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        pairs = doc.nodes()
+        assert [k for k, _ in pairs] == ["x", "y"]
+
+    def test_nodes_scalar_values_are_yaml_scalar(self):
+        doc = yarutsk.loads("a: 1\nb: true\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        nodes = {k: v for k, v in doc.nodes()}
+        assert isinstance(nodes["a"], yarutsk.YamlScalar)
+        assert isinstance(nodes["b"], yarutsk.YamlScalar)
+
+    def test_nodes_nested_mapping_preserved(self):
+        doc = yarutsk.loads("outer:\n  inner: 42\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        nodes = {k: v for k, v in doc.nodes()}
+        assert isinstance(nodes["outer"], yarutsk.YamlMapping)
+        assert nodes["outer"]["inner"] == 42
+
+    def test_nodes_preserves_scalar_style(self):
+        doc = yarutsk.loads('key: "quoted"\n')
+        assert isinstance(doc, yarutsk.YamlMapping)
+        nodes = {k: v for k, v in doc.nodes()}
+        assert isinstance(nodes["key"], yarutsk.YamlScalar)
+        assert nodes["key"].style == "double"
+
+    def test_nodes_empty_mapping(self):
+        doc = yarutsk.loads("{}\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        assert doc.nodes() == []
+
+
+# ── __copy__ / __deepcopy__ ───────────────────────────────────────────────────
+
+
+class TestDeepCopy:
+    def test_mapping_deepcopy_independence(self):
+        import copy
+
+        doc = yarutsk.loads("x: 1\ny:\n  z: 2\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        doc2 = copy.deepcopy(doc)
+        doc2["x"] = 99
+        assert doc["x"] == 1
+
+    def test_mapping_deepcopy_nested_independence(self):
+        import copy
+
+        doc = yarutsk.loads("outer:\n  inner: 10\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        doc2 = copy.deepcopy(doc)
+        doc2["outer"]["inner"] = 99
+        assert doc["outer"]["inner"] == 10
+
+    def test_mapping_copy_is_yaml_mapping(self):
+        import copy
+
+        doc = yarutsk.loads("a: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        doc2 = copy.copy(doc)
+        assert isinstance(doc2, yarutsk.YamlMapping)
+
+    def test_mapping_deepcopy_preserves_style(self):
+        import copy
+
+        doc = yarutsk.loads('key: "quoted"\n')
+        assert isinstance(doc, yarutsk.YamlMapping)
+        doc2 = copy.deepcopy(doc)
+        doc2.scalar_style("key", "plain")
+        # Original should still have double-quoted style
+        out = yarutsk.dumps(doc)
+        assert '"quoted"' in out
+
+    def test_sequence_deepcopy_independence(self):
+        import copy
+
+        doc = yarutsk.loads("- 1\n- 2\n- 3\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc2 = copy.deepcopy(doc)
+        doc2[0] = 99
+        assert doc[0] == 1
+
+    def test_sequence_copy_is_yaml_sequence(self):
+        import copy
+
+        doc = yarutsk.loads("- a\n- b\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        doc2 = copy.copy(doc)
+        assert isinstance(doc2, yarutsk.YamlSequence)

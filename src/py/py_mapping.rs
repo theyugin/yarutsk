@@ -2,13 +2,14 @@
 
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyTuple, PyType};
 
 use super::convert::{
-    DocMeta, mapping_repr, mapping_to_dict, node_to_doc, node_to_py, parse_container_style,
-    parse_yaml_version, plain_entry, py_to_node, sort_mapping,
+    DocMeta, mapping_repr, mapping_to_dict, mapping_to_py_obj, node_to_doc, node_to_py,
+    parse_container_style, parse_yaml_version, plain_entry, py_to_node, sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
+use super::schema::Schema;
 use crate::core::types::*;
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
@@ -681,6 +682,66 @@ impl PyYamlMapping {
             }
         }
         Ok(())
+    }
+
+    /// Create a ``YamlMapping`` from a plain Python dict (or any dict-like object).
+    ///
+    /// Nested dicts are recursively converted to ``YamlMapping``, nested lists to
+    /// ``YamlSequence``. If *schema* is provided, schema dumpers are applied.
+    /// Raises ``TypeError`` if *obj* is not a dict-like object.
+    #[classmethod]
+    #[pyo3(signature = (obj, *, schema = None))]
+    fn from_dict(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        obj: &Bound<'_, PyAny>,
+        schema: Option<Py<Schema>>,
+    ) -> PyResult<Py<PyAny>> {
+        let sb = schema.as_ref().map(|s| s.bind(py));
+        let node = py_to_node(obj, sb)?;
+        match node {
+            YamlNode::Mapping(m) => mapping_to_py_obj(py, m, DocMeta::none(), sb),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "from_dict requires a dict or dict-like object",
+            )),
+        }
+    }
+
+    /// Return a list of ``(key, node)`` pairs for all entries in this mapping.
+    ///
+    /// Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
+    /// preserving style/tag metadata. Unlike ``items()``, which returns Python
+    /// primitives, ``nodes()`` returns the full typed node objects.
+    fn nodes(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
+        self.inner
+            .entries
+            .iter()
+            .map(|(k, entry)| {
+                let node = node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?;
+                Ok((k.clone(), node))
+            })
+            .collect()
+    }
+
+    /// Return a shallow copy of this mapping (comments, style metadata, and
+    /// nested structure are all cloned).
+    fn __copy__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let meta = DocMeta {
+            explicit_start: self.explicit_start,
+            explicit_end: self.explicit_end,
+            yaml_version: self.yaml_version,
+            tag_directives: self.tag_directives.clone(),
+        };
+        mapping_to_py_obj(py, self.inner.clone(), meta, None)
+    }
+
+    /// Return a deep copy of this mapping.
+    ///
+    /// Because ``YamlMapping`` owns all its data (no ``Rc``/``Arc`` sharing),
+    /// the Rust ``Clone`` is already a deep copy. The *memo* dict is accepted
+    /// for API compatibility but is not used.
+    fn __deepcopy__(&self, py: Python<'_>, _memo: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        self.__copy__(py)
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {

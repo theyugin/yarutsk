@@ -358,6 +358,65 @@ def check_sequence_tag_directives(s: YamlSequence) -> None:
     _ = dirs
 
 
+# ── New public type aliases ───────────────────────────────────────────────────
+
+
+def check_public_type_aliases() -> None:
+    style: yarutsk.ScalarStyle = "double"
+    cstyle: yarutsk.ContainerStyle = "flow"
+    _node: yarutsk.YamlNode
+    _ = style, cstyle
+
+
+# ── YamlMapping.from_dict ─────────────────────────────────────────────────────
+
+
+def check_from_dict() -> None:
+    m: YamlMapping = YamlMapping.from_dict({"a": 1, "b": {"c": 2}})
+    m2: YamlMapping = YamlMapping.from_dict({"x": [1, 2, 3]})
+    _ = m, m2
+
+
+# ── YamlMapping.nodes ────────────────────────────────────────────────────────
+
+
+def check_mapping_nodes(m: YamlMapping) -> None:
+    pairs: list[tuple[str, YamlMapping | YamlSequence | YamlScalar]] = m.nodes()
+    _ = pairs
+
+
+# ── YamlSequence.from_list ───────────────────────────────────────────────────
+
+
+def check_from_list() -> None:
+    s: YamlSequence = YamlSequence.from_list([1, 2, {"x": 3}])
+    s2: YamlSequence = YamlSequence.from_list(["a", "b"])
+    _ = s, s2
+
+
+# ── __copy__ / __deepcopy__ ───────────────────────────────────────────────────
+
+
+def check_mapping_copy(m: YamlMapping) -> None:
+    import copy
+
+    shallow: YamlMapping = m.__copy__()
+    deep: YamlMapping = m.__deepcopy__({})
+    copy_shallow: YamlMapping = copy.copy(m)
+    copy_deep: YamlMapping = copy.deepcopy(m)
+    _ = shallow, deep, copy_shallow, copy_deep
+
+
+def check_sequence_copy(s: YamlSequence) -> None:
+    import copy
+
+    shallow: YamlSequence = s.__copy__()
+    deep: YamlSequence = s.__deepcopy__({})
+    copy_shallow: YamlSequence = copy.copy(s)
+    copy_deep: YamlSequence = copy.deepcopy(s)
+    _ = shallow, deep, copy_shallow, copy_deep
+
+
 # ── Type errors that mypy should catch (kept as comments to document intent) ──
 #
 #   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlMapping | YamlSequence | None
