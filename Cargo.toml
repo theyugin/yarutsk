@@ -1,6 +1,6 @@
 [package]
 name = "yarutsk"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "A YAML round-trip library that preserves comments and insertion order"
 license = "MIT"

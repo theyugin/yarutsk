@@ -132,6 +132,32 @@ impl PyYamlMapping {
         }
     }
 
+    fn clear(slf: &Bound<'_, Self>) -> PyResult<()> {
+        slf.borrow_mut().inner.entries.clear();
+        // PyDict::clear() calls PyDict_Clear at C level — does not re-enter our override.
+        slf.as_super().clear();
+        Ok(())
+    }
+
+    fn popitem(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<(String, Py<PyAny>)> {
+        let key = slf.borrow().inner.entries.last().map(|(k, _)| k.clone());
+        match key {
+            None => Err(PyKeyError::new_err("dictionary is empty")),
+            Some(k) => {
+                let py_val = slf
+                    .as_super()
+                    .get_item(&k)?
+                    .map_or_else(|| py.None(), |v| v.unbind());
+                Self::__delitem__(slf, &k)?;
+                Ok((k, py_val))
+            }
+        }
+    }
+
+    fn copy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.__copy__(py)
+    }
+
     fn update(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<()> {
         // Update inner AND parent dict together for only the keys in `other`,
         // leaving unchanged keys untouched in both. This avoids an O(n) full rebuild

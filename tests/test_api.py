@@ -1552,3 +1552,183 @@ class TestDeepCopy:
         assert isinstance(doc, yarutsk.YamlSequence)
         doc2 = copy.copy(doc)
         assert isinstance(doc2, yarutsk.YamlSequence)
+
+
+class TestMappingDesyncFixes:
+    """Verify that previously-unoverridden dict methods now sync inner."""
+
+    def test_clear_empties_inner(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        doc.clear()
+        assert len(doc) == 0
+        out = yarutsk.dumps(doc)
+        assert "a" not in out
+        assert "b" not in out
+
+    def test_clear_returns_empty_mapping_on_dump(self):
+        doc = yarutsk.loads("x: 10\ny: 20\n")
+        doc.clear()
+        doc2 = yarutsk.loads(yarutsk.dumps(doc))
+        assert len(doc2) == 0
+
+    def test_clear_then_add_key(self):
+        doc = yarutsk.loads("old: 1\n")
+        doc.clear()
+        doc["new"] = 2
+        out = yarutsk.dumps(doc)
+        assert "old" not in out
+        assert "new: 2" in out
+
+    def test_popitem_syncs_inner(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        k, v = doc.popitem()
+        assert k not in doc
+        out = yarutsk.dumps(doc)
+        assert k not in out
+
+    def test_popitem_returns_last_key(self):
+        doc = yarutsk.loads("x: 10\ny: 20\n")
+        k, v = doc.popitem()
+        assert k == "y"
+        assert v == 20
+
+    def test_popitem_on_empty_raises(self):
+        doc = yarutsk.loads("{}\n")
+        with pytest.raises(KeyError):
+            doc.popitem()
+
+    def test_copy_returns_yaml_mapping(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        c = doc.copy()
+        assert isinstance(c, yarutsk.YamlMapping)
+
+    def test_copy_content_matches(self):
+        doc = yarutsk.loads("a: 1\nb: 2\n")
+        c = doc.copy()
+        assert yarutsk.dumps(c) == yarutsk.dumps(doc)
+
+    def test_copy_is_independent(self):
+        doc = yarutsk.loads("a: 1\n")
+        c = doc.copy()
+        c["a"] = 99
+        assert doc["a"] == 1
+
+
+class TestSequenceDesyncFixes:
+    """Verify that previously-unoverridden list methods now sync inner."""
+
+    def test_iadd_syncs_inner(self):
+        seq = yarutsk.loads("- 1\n")
+        seq += [2, 3]
+        assert list(seq) == [1, 2, 3]
+        out = yarutsk.dumps(seq)
+        assert "- 2" in out
+        assert "- 3" in out
+
+    def test_iadd_returns_yaml_sequence(self):
+        seq = yarutsk.loads("- a\n")
+        seq += ["b"]
+        assert isinstance(seq, yarutsk.YamlSequence)
+
+    def test_iadd_preserves_existing_metadata(self):
+        seq = yarutsk.loads("- x  # comment\n")
+        seq += ["y"]
+        assert seq.comment_inline(0) == "comment"
+
+    def test_slice_setitem_syncs_inner(self):
+        seq = yarutsk.loads("- 1\n- 2\n- 3\n")
+        seq[1:2] = [20, 21]
+        assert list(seq) == [1, 20, 21, 3]
+        out = yarutsk.dumps(seq)
+        assert "- 20" in out
+        assert "- 21" in out
+        assert "- 2\n" not in out
+
+    def test_slice_setitem_empty_replacement(self):
+        # Replacing with empty list — same as slice deletion
+        seq = yarutsk.loads("- a\n- b\n- c\n")
+        seq[1:2] = []
+        assert list(seq) == ["a", "c"]
+        out = yarutsk.dumps(seq)
+        assert "- b\n" not in out
+
+    def test_slice_setitem_insertion(self):
+        # start == stop → insert without removing anything
+        seq = yarutsk.loads("- a\n- c\n")
+        seq[1:1] = ["b"]
+        assert list(seq) == ["a", "b", "c"]
+
+    def test_slice_delitem_syncs_inner(self):
+        seq = yarutsk.loads("- a\n- b\n- c\n")
+        del seq[0:2]
+        assert list(seq) == ["c"]
+        assert yarutsk.dumps(seq) == "- c\n"
+
+    def test_slice_delitem_empty_slice(self):
+        seq = yarutsk.loads("- 1\n- 2\n")
+        del seq[1:1]  # no-op
+        assert list(seq) == [1, 2]
+
+    def test_slice_delitem_full(self):
+        seq = yarutsk.loads("- x\n- y\n- z\n")
+        del seq[:]
+        assert list(seq) == []
+        assert len(seq) == 0
+
+    def test_extended_slice_setitem_raises(self):
+        seq = yarutsk.loads("- 1\n- 2\n- 3\n- 4\n")
+        with pytest.raises(NotImplementedError):
+            seq[::2] = [10, 20]
+
+    def test_extended_slice_delitem_raises(self):
+        seq = yarutsk.loads("- 1\n- 2\n- 3\n- 4\n")
+        with pytest.raises(NotImplementedError):
+            del seq[::2]
+
+
+class TestNonStringKeys:
+    """YAML keys that are not strings are coerced to strings on load."""
+
+    def test_integer_key_loaded_as_string(self):
+        doc = yarutsk.loads("1: foo\n2: bar\n")
+        assert "1" in doc
+        assert "2" in doc
+        assert 1 not in doc
+
+    def test_float_key_loaded_as_string(self):
+        doc = yarutsk.loads("3.14: pi\n")
+        assert "3.14" in doc
+
+    def test_bool_key_true_loaded_as_string(self):
+        doc = yarutsk.loads("true: yes\n")
+        assert "true" in doc
+
+    def test_bool_key_false_loaded_as_string(self):
+        doc = yarutsk.loads("false: no\n")
+        assert "false" in doc
+
+    def test_null_key_preserved_as_raw_text(self):
+        # YAML keys are stored as their raw source text (not coerced).
+        # `null` the YAML null scalar becomes the Python string "null", not "".
+        doc = yarutsk.loads("null: value\n")
+        assert "null" in doc
+        assert doc["null"] == "value"
+
+    def test_null_key_tilde_form(self):
+        # The ~ spelling of null is also preserved as raw text.
+        doc = yarutsk.loads("~: value\n")
+        assert "~" in doc
+        assert doc["~"] == "value"
+
+    def test_null_key_round_trips(self):
+        doc = yarutsk.loads("null: value\n")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        assert doc2["null"] == "value"
+
+    def test_integer_key_round_trips(self):
+        doc = yarutsk.loads("42: answer\n")
+        out = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out)
+        # Key is stored as "42"; YAML emits it unquoted (valid YAML plain key)
+        assert doc2["42"] == "answer"

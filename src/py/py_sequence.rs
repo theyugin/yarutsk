@@ -2,7 +2,7 @@
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple, PyType};
+use pyo3::types::{PyList, PySlice, PyTuple, PyType};
 
 use super::convert::{
     DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
@@ -67,42 +67,111 @@ impl PyYamlSequence {
 
     // ── Mutations (must sync parent list) ────────────────────────────────────
 
-    fn __setitem__(slf: &Bound<'_, Self>, key: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn __setitem__(
+        slf: &Bound<'_, Self>,
+        key: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
         let py = slf.py();
-        let real_idx = resolve_seq_idx(key, slf.borrow().inner.items.len())?;
-        let (node, py_val) = match py_to_node(value, None) {
-            Ok(n) => {
-                let pv = node_to_py(py, &n, None)?;
-                (n, pv)
+        if let Ok(idx) = key.extract::<isize>() {
+            let real_idx = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
+            let (node, py_val) = match py_to_node(value, None) {
+                Ok(n) => {
+                    let pv = node_to_py(py, &n, None)?;
+                    (n, pv)
+                }
+                Err(_) => (
+                    YamlNode::Mapping(YamlMapping::new()),
+                    value.clone().unbind(),
+                ),
+            };
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.items[real_idx as usize].value = node;
             }
-            Err(_) => (
-                YamlNode::Mapping(YamlMapping::new()),
-                value.clone().unbind(),
-            ),
-        };
-        {
-            let mut borrow = slf.borrow_mut();
-            borrow.inner.items[real_idx as usize].value = node;
+            slf.as_super()
+                .set_item(real_idx as usize, py_val.bind(py))?;
+            return Ok(());
         }
-        slf.as_super()
-            .set_item(real_idx as usize, py_val.bind(py))?;
-        Ok(())
+        if let Ok(slice) = key.cast::<PySlice>() {
+            let len = slf.borrow().inner.items.len() as isize;
+            let indices = slice.indices(len)?;
+            if indices.step != 1 {
+                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                    "yarutsk sequences do not support extended slice assignment (step != 1)",
+                ));
+            }
+            let start = indices.start as usize;
+            let stop = indices.stop as usize;
+            let mut new_pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
+            for py_item in value.try_iter()? {
+                let py_item = py_item?;
+                let (node, py_val) = match py_to_node(&py_item, None) {
+                    Ok(n) => {
+                        let pv = node_to_py(py, &n, None)?;
+                        (n, pv)
+                    }
+                    Err(_) => (
+                        YamlNode::Mapping(YamlMapping::new()),
+                        py_item.clone().unbind(),
+                    ),
+                };
+                new_pairs.push((plain_item(node), py_val));
+            }
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.items.drain(start..stop);
+                for (i, (item, _)) in new_pairs.iter().enumerate() {
+                    borrow.inner.items.insert(start + i, item.clone());
+                }
+            }
+            let new_py_list = PyList::new(py, new_pairs.iter().map(|(_, v)| v.bind(py)))?;
+            slf.as_super()
+                .set_slice(start, stop, new_py_list.as_any())?;
+            return Ok(());
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "sequence indices must be integers or slices",
+        ))
     }
 
-    fn __delitem__(slf: &Bound<'_, Self>, key: isize) -> PyResult<()> {
-        let real_idx = resolve_seq_idx(key, slf.borrow().inner.items.len())?;
-        {
-            let mut borrow = slf.borrow_mut();
-            borrow.inner.items.remove(real_idx as usize);
+    fn __delitem__(slf: &Bound<'_, Self>, key: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(idx) = key.extract::<isize>() {
+            let real_idx = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.items.remove(real_idx as usize);
+            }
+            // Use set_slice(i, i+1, []) instead of del_item(): del_item routes through
+            // PySequence_DelItem which dispatches via sq_ass_item back to our __delitem__,
+            // causing a recursive removal loop. set_slice calls PyList_SetSlice at C level,
+            // bypassing the MRO entirely.
+            let empty = PyList::empty(slf.py());
+            slf.as_super()
+                .set_slice(real_idx as usize, real_idx as usize + 1, empty.as_any())?;
+            return Ok(());
         }
-        // Use set_slice(i, i+1, []) instead of del_item(): del_item routes through
-        // PySequence_DelItem which dispatches via sq_ass_item back to our __delitem__,
-        // causing a recursive removal loop. set_slice calls PyList_SetSlice at C level,
-        // bypassing the MRO entirely.
-        let empty = PyList::empty(slf.py());
-        slf.as_super()
-            .set_slice(real_idx as usize, real_idx as usize + 1, empty.as_any())?;
-        Ok(())
+        if let Ok(slice) = key.cast::<PySlice>() {
+            let len = slf.borrow().inner.items.len() as isize;
+            let indices = slice.indices(len)?;
+            if indices.step != 1 {
+                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                    "yarutsk sequences do not support extended slice deletion (step != 1)",
+                ));
+            }
+            let start = indices.start as usize;
+            let stop = indices.stop as usize;
+            {
+                let mut borrow = slf.borrow_mut();
+                borrow.inner.items.drain(start..stop);
+            }
+            let empty = PyList::empty(slf.py());
+            slf.as_super().set_slice(start, stop, empty.as_any())?;
+            return Ok(());
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "sequence indices must be integers or slices",
+        ))
     }
 
     fn append(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -244,6 +313,10 @@ impl PyYamlSequence {
             list_part.append(py_val.bind(py))?;
         }
         Ok(())
+    }
+
+    fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<()> {
+        Self::extend(slf, other)
     }
 
     fn reverse(slf: &Bound<'_, Self>) -> PyResult<()> {
