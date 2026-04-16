@@ -6,9 +6,6 @@ on:
     tags: ["v*"]
   pull_request:
 
-env:
-  PYTHON_VERSIONS: "3.12 3.13 3.14"
-
 jobs:
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -34,20 +31,29 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "cpython-${{ matrix.python-version }}"
           enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
 
+      - name: Add venv to PATH
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Build extension
-        run: uv run maturin develop
+        run: maturin develop
 
       - name: Core tests
-        run: uv run pytest tests/ --ignore=tests/test_yaml_suite.py -v
+        run: pytest tests/ --ignore=tests/test_yaml_suite.py -v
 
       - name: yaml-test-suite compliance
-        run: uv run pytest tests/test_yaml_suite.py -q --tb=short
+        run: pytest tests/test_yaml_suite.py -q --tb=short
 
   # ── Type checking ──────────────────────────────────────────────────────────
   typecheck:
@@ -71,11 +77,14 @@ jobs:
       - name: Install dev dependencies
         run: uv sync --group dev
 
+      - name: Add venv to PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
       - name: Build extension
-        run: uv run maturin develop
+        run: maturin develop
 
       - name: mypy
-        run: uv run mypy
+        run: mypy
 
   # ── Python lint ───────────────────────────────────────────────────────────
   ruff:
@@ -93,11 +102,14 @@ jobs:
       - name: Install dev dependencies
         run: uv sync --group dev
 
+      - name: Add venv to PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
       - name: ruff check
-        run: uv run ruff check .
+        run: ruff check .
 
       - name: ruff format
-        run: uv run ruff format --check .
+        run: ruff format --check .
 
   # ── Rust lint ──────────────────────────────────────────────────────────────
   lint:
@@ -146,23 +158,50 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
-      - name: Set up Python interpreters
-        uses: actions/setup-python@v6
-        with:
-          python-version: |
-            3.12
-            3.13
-            3.14
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
 
-      - name: Build wheels
+      - name: Install Python interpreters
+        run: uv python install cpython-3.12 cpython-3.13 cpython-3.14
+
+      - name: Find interpreter paths
+        if: matrix.os != 'ubuntu-latest'
+        id: interp
+        shell: bash
+        run: |
+          P312=$(uv python find 3.12)
+          P313=$(uv python find 3.13)
+          P314=$(uv python find 3.14)
+          echo "paths=$P312 $P313 $P314" >> $GITHUB_OUTPUT
+
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --interpreter 3.12 3.13 3.14
+          manylinux: auto
+          rust-toolchain: nightly
+
+      - name: Build wheels (macOS)
+        if: matrix.os == 'macos-latest'
         uses: PyO3/maturin-action@v1
         with:
           command: build
           args: >-
             --release --out dist
-            --interpreter ${{ env.PYTHON_VERSIONS }}
-            ${{ matrix.os == 'macos-latest' && '--target universal2-apple-darwin' || '' }}
-          manylinux: ${{ matrix.os == 'ubuntu-latest' && 'auto' || '' }}
+            --interpreter ${{ steps.interp.outputs.paths }}
+            --target universal2-apple-darwin
+          rust-toolchain: nightly
+
+      - name: Build wheels (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: >-
+            --release --out dist
+            --interpreter ${{ steps.interp.outputs.paths }}
           rust-toolchain: nightly
 
       - name: Build sdist
