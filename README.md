@@ -543,7 +543,7 @@ seq[99]                      # IndexError
 - **Blank line cap**: at most 255 blank lines before any entry are tracked; runs longer than that are clamped to 255 on load.
 - **Block only by default**: the emitter writes block-style YAML. Flow containers (`{...}` / `[...]`) from the source are preserved if they were already flow-style, but there is no option to force everything to flow on dump.
 - **Streaming**: the entire document must fit in memory; incremental/streaming parse is not supported.
-- **YAML version**: the scanner implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`). Most YAML 1.2-only documents work, but a small number of spec edge cases differ — see `tests/test_yaml_suite.py` for the `xfail` markers.
+- **YAML version**: the scanner implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`). Most YAML 1.2-only documents load correctly, but inputs that rely on strict YAML 1.2 semantics may differ.
 
 ## Benchmarks
 
@@ -570,7 +570,7 @@ make test        # core library tests (fast)
 make test-all    # all tests including yaml-test-suite compliance
 ```
 
-`test_yaml_suite.py` requires the `yaml-test-suite` submodule. Tests that fail due to known YAML normalisation differences are marked `xfail` and do not count as failures.
+`test_yaml_suite.py` requires the `yaml-test-suite` submodule. Test cases marked `fail: true` in the suite metadata (invalid YAML that a conformant parser must reject) are marked `xfail(strict=True)` — `test_parse` is expected to fail on them, and an unexpected pass is treated as an error. Cases marked `skip: true` in the suite metadata are skipped entirely.
 
 Other useful targets:
 
