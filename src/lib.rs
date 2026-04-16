@@ -1290,12 +1290,29 @@ impl PyYamlMapping {
         let dict_part = slf.as_super();
         if recursive {
             // Recursive sort may have reordered nested objects' inner.entries too.
-            // Recreate Python objects from inner (simpler than chasing nested refs).
+            // Preserve Python objects from the parent dict (same as the non-recursive
+            // path) — do NOT call node_to_py, which would convert the empty-mapping
+            // placeholder stored for custom types back to {}, losing the custom object.
+            // For nested PyYamlMapping values, call sort_keys recursively so their
+            // Python dict is synced to their already-sorted inner.
+            let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+            let py_vals: Vec<Py<PyAny>> = sorted_keys
+                .iter()
+                .filter_map(|k| dict_part.get_item(k).ok()?.map(|v| v.unbind()))
+                .collect();
             dict_part.clear();
-            let borrow = slf.borrow();
-            for (k, e) in &borrow.inner.entries {
-                let py_val = node_to_py(py, &e.value, None)?;
-                dict_part.set_item(k, py_val.bind(py))?;
+            for (k, v) in sorted_keys.iter().zip(py_vals.iter()) {
+                let py_val = v.bind(py);
+                if let Ok(nested) = py_val.cast::<PyYamlMapping>() {
+                    PyYamlMapping::sort_keys(
+                        nested,
+                        py,
+                        key.as_ref().map(|k| k.clone_ref(py)),
+                        reverse,
+                        true,
+                    )?;
+                }
+                dict_part.set_item(k.as_str(), py_val)?;
             }
         } else {
             // Non-recursive: only key order changed; Python objects are unchanged.

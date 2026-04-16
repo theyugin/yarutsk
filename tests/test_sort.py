@@ -200,5 +200,98 @@ m: 3  # m comment
         assert list(doc.keys()) == ["a", "m", "z", "b"]
 
 
+class TestSortWithCustomTypes:
+    """Sort behaviour when mappings/sequences contain custom-loaded Python objects."""
+
+    def setup_method(self) -> None:
+        self.schema = yarutsk.Schema()
+        self.schema.add_loader("!point", lambda d: Point(d["x"], d["y"]))
+        self.schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
+
+    def test_sort_keys_preserves_custom_value_nonrecursive(self):
+        """Non-recursive sort_keys must not drop custom-typed values."""
+        doc = yarutsk.loads(
+            dedent("""\
+            z: !point
+              x: 1
+              y: 2
+            a: plain
+        """),
+            schema=self.schema,
+        )
+        assert isinstance(doc["z"], Point)
+        doc.sort_keys()
+        assert list(doc.keys()) == ["a", "z"]
+        assert isinstance(doc["z"], Point)
+        assert doc["z"] == Point(1, 2)
+
+    def test_sort_keys_preserves_custom_value_recursive(self):
+        """Recursive sort_keys must not drop custom-typed values (regression for bug
+        where node_to_py on the empty placeholder replaced the custom object with {})."""
+        doc = yarutsk.loads(
+            dedent("""\
+            z: !point
+              x: 3
+              y: 4
+            a:
+              m: 1
+              b: 2
+        """),
+            schema=self.schema,
+        )
+        assert isinstance(doc["z"], Point)
+        doc.sort_keys(recursive=True)
+        assert list(doc.keys()) == ["a", "z"]
+        assert list(doc["a"].keys()) == ["b", "m"]
+        assert isinstance(doc["z"], Point)
+        assert doc["z"] == Point(3, 4)
+
+    def test_sort_sequence_custom_type_no_key_raises(self):
+        """sort() on a sequence of unorderable custom objects raises TypeError."""
+        doc = yarutsk.loads(
+            dedent("""\
+            - !point
+              x: 2
+              y: 0
+            - !point
+              x: 1
+              y: 0
+        """),
+            schema=self.schema,
+        )
+        assert all(isinstance(v, Point) for v in doc)
+        with pytest.raises(TypeError):
+            doc.sort()
+
+    def test_sort_sequence_custom_type_with_key(self):
+        """sort(key=...) on custom objects sorts by key result, preserving objects."""
+        doc = yarutsk.loads(
+            dedent("""\
+            - !point
+              x: 3
+              y: 0
+            - !point
+              x: 1
+              y: 0
+            - !point
+              x: 2
+              y: 0
+        """),
+            schema=self.schema,
+        )
+        doc.sort(key=lambda p: p.x)
+        assert all(isinstance(v, Point) for v in doc)
+        assert [v.x for v in doc] == [1, 2, 3]
+
+
+class Point:
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Point) and self.x == other.x and self.y == other.y
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
