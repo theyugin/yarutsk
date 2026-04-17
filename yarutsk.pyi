@@ -7,6 +7,7 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
+from collections.abc import Sequence as _Sequence
 from typing import (
     Any,
     Callable,
@@ -26,6 +27,10 @@ _Scalar = int | float | bool | str | None
 
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
+
+# Any value accepted by dump/dumps — the Yaml types plus plain Python
+# containers and primitives that are auto-converted.
+_Dumpable: TypeAlias = "YamlMapping | YamlSequence | YamlScalar | dict[str, Any] | list[Any] | tuple[Any, ...] | int | float | bool | str | None"
 
 # ── Public type aliases ───────────────────────────────────────────────────────
 
@@ -790,7 +795,7 @@ def iter_loads_all(
     ...
 
 def dump(
-    doc: "YamlMapping | YamlSequence | YamlScalar",
+    doc: "_Dumpable",
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
@@ -798,24 +803,30 @@ def dump(
 ) -> None:
     """Serialize *doc* to *stream* in block-style YAML.
 
+    *doc* can be a ``YamlMapping``/``YamlSequence``/``YamlScalar``, or a plain
+    Python ``dict``/``list``/``tuple``/scalar which will be auto-converted.
+
     *indent* controls the per-level indentation width (default: 2).
     """
     ...
 
 def dumps(
-    doc: "YamlMapping | YamlSequence | YamlScalar",
+    doc: "_Dumpable",
     *,
     schema: Schema | None = None,
     indent: int = 2,
 ) -> str:
     """Serialize *doc* to a YAML string.
 
+    *doc* can be a ``YamlMapping``/``YamlSequence``/``YamlScalar``, or a plain
+    Python ``dict``/``list``/``tuple``/scalar which will be auto-converted.
+
     *indent* controls the per-level indentation width (default: 2).
     """
     ...
 
 def dump_all(
-    docs: "list[YamlMapping | YamlSequence | YamlScalar]",
+    docs: "_Sequence[_Dumpable]",
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
@@ -828,7 +839,7 @@ def dump_all(
     ...
 
 def dumps_all(
-    docs: "list[YamlMapping | YamlSequence | YamlScalar]",
+    docs: "_Sequence[_Dumpable]",
     *,
     schema: Schema | None = None,
     indent: int = 2,

@@ -452,6 +452,29 @@ def check_from_list_with_schema() -> None:
     _ = s
 
 
+# ── dumps / dump accept plain Python types ───────────────────────────────────
+
+
+def check_dumps_plain_dict() -> None:
+    text: str = yarutsk.dumps({"a": 1, "b": [2, 3]})
+    _ = text
+
+
+def check_dumps_plain_list() -> None:
+    text: str = yarutsk.dumps([1, 2, 3])
+    _ = text
+
+
+def check_dumps_plain_scalar() -> None:
+    text: str = yarutsk.dumps("hello")
+    _ = text
+
+
+def check_dump_all_mixed() -> None:
+    text: str = yarutsk.dumps_all([{"a": 1}, [2, 3]])
+    _ = text
+
+
 # ── Type errors that mypy should catch (kept as comments to document intent) ──
 #
 #   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlMapping | YamlSequence | None
