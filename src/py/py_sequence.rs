@@ -7,7 +7,7 @@ use pyo3::types::{PyList, PySlice, PyTuple};
 use super::convert::{
     DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
     py_compare, py_to_node, py_to_node_with_fallback, resolve_seq_idx, sequence_repr,
-    sequence_to_dict, sequence_to_py_obj,
+    sequence_to_py_obj, sequence_to_python,
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
@@ -429,8 +429,8 @@ impl PyYamlSequence {
 
     // ── Read-only extras ──────────────────────────────────────────────────────
 
-    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        sequence_to_dict(py, &self.inner)
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        sequence_to_python(py, &self.inner)
     }
 
     /// Read or write the inline comment for the item at *idx*.

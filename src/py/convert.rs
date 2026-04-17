@@ -928,32 +928,32 @@ pub(crate) fn sequence_repr(py: Python<'_>, s: &YamlSequence) -> String {
     format!("YamlSequence([{}])", items.join(", "))
 }
 
-// ─── Dict conversion helpers ──────────────────────────────────────────────────
+// ─── Plain-Python conversion helpers ──────────────────────────────────────────
 
-pub(crate) fn node_to_dict(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
+pub(crate) fn node_to_python(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py(py, &s.value),
-        YamlNode::Mapping(m) => mapping_to_dict(py, m),
-        YamlNode::Sequence(s) => sequence_to_dict(py, s),
-        YamlNode::Alias { resolved, .. } => node_to_dict(py, resolved),
+        YamlNode::Mapping(m) => mapping_to_python(py, m),
+        YamlNode::Sequence(s) => sequence_to_python(py, s),
+        YamlNode::Alias { resolved, .. } => node_to_python(py, resolved),
     }
 }
 
-pub(crate) fn mapping_to_dict(py: Python<'_>, m: &YamlMapping) -> PyResult<Py<PyAny>> {
+pub(crate) fn mapping_to_python(py: Python<'_>, m: &YamlMapping) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     for (k, e) in &m.entries {
-        let v = node_to_dict(py, &e.value)?;
+        let v = node_to_python(py, &e.value)?;
         d.set_item(k, v)?;
     }
     Ok(d.into_any().unbind())
 }
 
-pub(crate) fn sequence_to_dict(py: Python<'_>, s: &YamlSequence) -> PyResult<Py<PyAny>> {
+pub(crate) fn sequence_to_python(py: Python<'_>, s: &YamlSequence) -> PyResult<Py<PyAny>> {
     let items: Vec<Py<PyAny>> = s
         .items
         .iter()
-        .map(|i| node_to_dict(py, &i.value))
+        .map(|i| node_to_python(py, &i.value))
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, items)?.into_any().unbind())
 }

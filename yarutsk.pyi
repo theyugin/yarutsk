@@ -193,7 +193,7 @@ class YamlScalar:
         """
         ...
 
-    def to_dict(self) -> "_Scalar":
+    def to_python(self) -> "_Scalar":
         """Return the Python primitive value."""
         ...
 
@@ -206,7 +206,7 @@ class YamlMapping(dict[str, Any]):
     In addition to the full dict interface, provides:
     - Comment access/mutation methods
     - ``sort_keys()`` for in-place key sorting
-    - ``to_dict()`` for deep conversion to a plain Python dict
+    - ``to_python()`` for deep conversion to a plain Python ``dict``
 
     Can be constructed directly to create a styled mapping::
 
@@ -342,8 +342,8 @@ class YamlMapping(dict[str, Any]):
         """Sort mapping keys in-place."""
         ...
 
-    def to_dict(self) -> Any:
-        """Recursively convert to a plain Python dict (no YamlMapping/YamlSequence nodes)."""
+    def to_python(self) -> Any:
+        """Recursively convert to a plain Python ``dict`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
     @overload
@@ -452,7 +452,7 @@ class YamlSequence(list[Any]):
     In addition to the full list interface, provides:
     - Comment access/mutation methods (addressed by integer index)
     - ``sort()`` override that preserves comment metadata
-    - ``to_dict()`` for deep conversion to a plain Python list
+    - ``to_python()`` for deep conversion to a plain Python ``list``
 
     Can be constructed directly to create a styled sequence::
 
@@ -578,8 +578,8 @@ class YamlSequence(list[Any]):
         """
         ...
 
-    def to_dict(self) -> Any:
-        """Recursively convert to a plain Python list (no YamlMapping/YamlSequence nodes)."""
+    def to_python(self) -> Any:
+        """Recursively convert to a plain Python ``list`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
     @overload

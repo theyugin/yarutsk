@@ -172,7 +172,7 @@ class TestYamlSuite:
             pytest.skip(f"parse failed (covered by test_parse): {e}")
 
         expected = _parse_json_docs(json_str)
-        actual = [d.to_dict() if hasattr(d, "to_dict") else d for d in docs]
+        actual = [d.to_python() if hasattr(d, "to_python") else d for d in docs]
         assert actual == expected, (
             f"\nExpected: {expected}\nActual:   {actual}\nYAML:\n{test['yaml']}"
         )
@@ -214,7 +214,7 @@ class TestYamlSuite:
         # ── Hard check: re-parsed values must match original ─────────────────
         if test["json"]:
             expected = _parse_json_docs(test["json"])
-            actual = [d.to_dict() if hasattr(d, "to_dict") else d for d in re_docs]
+            actual = [d.to_python() if hasattr(d, "to_python") else d for d in re_docs]
             if actual != expected:
                 pytest.fail(
                     f"Re-parsed values changed after round-trip.\n"

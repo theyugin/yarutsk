@@ -1,4 +1,4 @@
-"""Tests for the Python dict/list API surface: loads/dumps, to_dict, repr,
+"""Tests for the Python dict/list API surface: loads/dumps, to_python, repr,
 protocol compliance, sequence methods, negative indices, setdefault, errors, get."""
 
 import io
@@ -127,8 +127,8 @@ class TestStringAPI:
         assert repr(doc_stream) == repr(doc_str)
 
 
-class TestToDict:
-    def test_to_dict_simple(self):
+class TestToPython:
+    def test_to_python_simple(self):
         content = io.StringIO(
             dedent("""\
             name: John
@@ -136,17 +136,17 @@ class TestToDict:
         """)
         )
         doc = yarutsk.load(content)
-        d = doc.to_dict()
+        d = doc.to_python()
         assert d == {"name": "John", "age": 30}
 
-    def test_to_dict_nested(self):
+    def test_to_python_nested(self):
         content = io.StringIO("""
 person:
   name: John
   age: 30
 """)
         doc = yarutsk.load(content)
-        d = doc.to_dict()
+        d = doc.to_python()
         assert d == {"person": {"name": "John", "age": 30}}
 
 

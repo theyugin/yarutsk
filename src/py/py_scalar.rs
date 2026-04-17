@@ -101,7 +101,7 @@ impl PyYamlScalar {
         }
     }
 
-    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.value(py)
     }
 

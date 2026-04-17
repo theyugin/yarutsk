@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use super::convert::{
-    DocMeta, mapping_repr, mapping_to_dict, mapping_to_py_obj, node_to_doc, node_to_py,
+    DocMeta, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc, node_to_py,
     parse_container_style, parse_yaml_version, plain_entry, py_to_node, py_to_node_with_fallback,
     sort_mapping,
 };
@@ -329,8 +329,8 @@ impl PyYamlMapping {
 
     // ── Read-only extras ──────────────────────────────────────────────────────
 
-    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        mapping_to_dict(py, &self.inner)
+    fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        mapping_to_python(py, &self.inner)
     }
 
     /// Read or write the inline comment for *key*.

@@ -100,7 +100,7 @@ Each PyO3 container type holds a Rust `inner` field with the full data model; th
 - **`set_alias(key, anchor_name)`** — replaces the child value with an alias reference to the given anchor
 - **`sort_keys(...)`** (mapping) / **`sort(...)`** / **`index(...)`** (sequence) — in-place operations that preserve per-entry metadata
 - **`copy()`** / **`__copy__`** / **`__deepcopy__`** — metadata-preserving copies
-- **`to_dict()`** — collapse to a plain Python `dict`/`list`/primitive tree (loses all style metadata)
+- **`to_python()`** — collapse to a plain Python `dict`/`list`/primitive tree (loses all style metadata)
 - **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` (styles-only; `comments` and `blank_lines` are no-ops there).
 
 Sequence variants use integer indices instead of string keys.

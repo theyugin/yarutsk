@@ -179,9 +179,9 @@ class TestMultiDocument:
     def test_scalar_top_level(self):
         doc = yarutsk.loads("scalar")
         assert type(doc).__name__ == "YamlScalar"
-        assert doc.to_dict() == "scalar"
+        assert doc.to_python() == "scalar"
         doc2 = yarutsk.loads("42")
-        assert doc2.to_dict() == 42
+        assert doc2.to_python() == 42
 
     def test_comments_preserved_across_docs(self):
         yaml = dedent("""\
@@ -213,7 +213,7 @@ class TestEmptyDocuments:
         """A bare --- produces a null YamlScalar, not a Python None."""
         result = yarutsk.loads("---")
         assert result is None or (
-            type(result).__name__ == "YamlScalar" and result.to_dict() is None
+            type(result).__name__ == "YamlScalar" and result.to_python() is None
         )
 
     def test_loads_all_empty(self):

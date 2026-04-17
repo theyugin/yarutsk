@@ -149,7 +149,7 @@ def check_none_narrowing() -> str:
 
 def check_scalar_value(s: YamlScalar) -> None:
     v: int | float | bool | str | None = s.value
-    d: int | float | bool | str | None = s.to_dict()
+    d: int | float | bool | str | None = s.to_python()
     eq: bool = s == 42
     _ = v, d, eq
 
@@ -202,8 +202,8 @@ def check_mapping_access(m: YamlMapping) -> None:
     _ = val, contained, length, keys
 
 
-def check_mapping_to_dict(m: YamlMapping) -> None:
-    d: Any = m.to_dict()
+def check_mapping_to_python(m: YamlMapping) -> None:
+    d: Any = m.to_python()
     _ = d
 
 
@@ -288,8 +288,8 @@ def check_sequence_access(s: YamlSequence) -> None:
     _ = item, length
 
 
-def check_sequence_to_dict(s: YamlSequence) -> None:
-    d: Any = s.to_dict()
+def check_sequence_to_python(s: YamlSequence) -> None:
+    d: Any = s.to_python()
     _ = d
 
 

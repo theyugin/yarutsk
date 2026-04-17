@@ -8,7 +8,7 @@ Covers:
 - All mutation entry-points: __setitem__, append, insert, extend, update, setdefault
 - Dumper protocol: returning styled nodes from add_dumper callbacks
 - Tag precedence: tuple tag overrides any tag already set on the node
-- to_dict / __eq__ / __repr__ on YamlScalar
+- to_python / __eq__ / __repr__ on YamlScalar
 - Tag on YamlMapping / YamlSequence appears in dump output
 """
 
@@ -111,10 +111,10 @@ class TestYamlScalarReprAndToDict:
         assert "YamlScalar" in r
         assert "hi" in r
 
-    def test_to_dict_returns_primitive(self):
-        assert yarutsk.YamlScalar("x").to_dict() == "x"
-        assert yarutsk.YamlScalar(7).to_dict() == 7
-        assert yarutsk.YamlScalar(None).to_dict() is None
+    def test_to_python_returns_primitive(self):
+        assert yarutsk.YamlScalar("x").to_python() == "x"
+        assert yarutsk.YamlScalar(7).to_python() == 7
+        assert yarutsk.YamlScalar(None).to_python() is None
 
 
 class TestYamlScalarDumpStyle:
