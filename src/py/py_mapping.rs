@@ -2,7 +2,7 @@
 
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple, PyType};
+use pyo3::types::{PyDict, PyTuple};
 
 use super::convert::{
     DocMeta, mapping_repr, mapping_to_dict, mapping_to_py_obj, node_to_doc, node_to_py,
@@ -33,9 +33,14 @@ pub struct PyYamlMapping {
 #[pymethods]
 impl PyYamlMapping {
     #[new]
-    #[pyo3(signature = (mapping = None, *, style = "block", tag = None))]
-    fn new(mapping: Option<&Bound<'_, PyAny>>, style: &str, tag: Option<&str>) -> PyResult<Self> {
-        let _ = mapping; // populated in __init__ once the parent dict is available
+    #[pyo3(signature = (mapping = None, *, style = "block", tag = None, schema = None))]
+    fn new(
+        mapping: Option<&Bound<'_, PyAny>>,
+        style: &str,
+        tag: Option<&str>,
+        schema: Option<Py<Schema>>,
+    ) -> PyResult<Self> {
+        let _ = (mapping, schema); // populated in __init__ once the parent dict is available
         let mut inner = YamlMapping::new();
         inner.style = parse_container_style(style)?;
         inner.tag = tag.map(str::to_owned);
@@ -51,16 +56,46 @@ impl PyYamlMapping {
     // Intercept __init__ so that Python does not forward args to dict.__init__,
     // which would otherwise insert them as dict entries. Populate from `mapping`
     // here because the parent dict is accessible via slf.as_super() at this point.
-    #[pyo3(signature = (mapping = None, *, style = "block", tag = None))]
+    #[pyo3(signature = (mapping = None, *, style = "block", tag = None, schema = None))]
     fn __init__(
         slf: &Bound<'_, Self>,
         mapping: Option<&Bound<'_, PyAny>>,
         style: &str,
         tag: Option<&str>,
+        schema: Option<Py<Schema>>,
     ) -> PyResult<()> {
         let _ = (style, tag); // already applied in __new__
         if let Some(m) = mapping {
-            PyYamlMapping::update(slf, m)?;
+            if let Some(ref schema_py) = schema {
+                // Schema path: use py_to_node (which invokes schema dumpers) then
+                // rebuild from the resulting YamlMapping node.
+                let py = slf.py();
+                let sb = schema_py.bind(py);
+                let node = py_to_node(m, Some(sb))?;
+                if let YamlNode::Mapping(parsed) = node {
+                    let dict_part = slf.as_super();
+                    let mut borrow = slf.borrow_mut();
+                    // Preserve style/tag from __new__, overlay entries from parsed.
+                    let style = borrow.inner.style;
+                    let tag = borrow.inner.tag.clone();
+                    borrow.inner = parsed;
+                    borrow.inner.style = style;
+                    borrow.inner.tag = tag;
+                    drop(borrow);
+                    // Sync the parent dict with Python-visible values.
+                    let borrow = slf.borrow();
+                    for (k, e) in &borrow.inner.entries {
+                        let py_val = node_to_py(py, &e.value, Some(sb))?;
+                        dict_part.set_item(k, py_val.bind(py))?;
+                    }
+                } else {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "YamlMapping requires a dict or mapping-like object",
+                    ));
+                }
+            } else {
+                PyYamlMapping::update(slf, m)?;
+            }
         }
         Ok(())
     }
@@ -708,29 +743,6 @@ impl PyYamlMapping {
             }
         }
         Ok(())
-    }
-
-    /// Create a ``YamlMapping`` from a plain Python dict (or any dict-like object).
-    ///
-    /// Nested dicts are recursively converted to ``YamlMapping``, nested lists to
-    /// ``YamlSequence``. If *schema* is provided, schema dumpers are applied.
-    /// Raises ``TypeError`` if *obj* is not a dict-like object.
-    #[classmethod]
-    #[pyo3(signature = (obj, *, schema = None))]
-    fn from_dict(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'_>,
-        obj: &Bound<'_, PyAny>,
-        schema: Option<Py<Schema>>,
-    ) -> PyResult<Py<PyAny>> {
-        let sb = schema.as_ref().map(|s| s.bind(py));
-        let node = py_to_node(obj, sb)?;
-        match node {
-            YamlNode::Mapping(m) => mapping_to_py_obj(py, m, DocMeta::none(), sb),
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(
-                "from_dict requires a dict or dict-like object",
-            )),
-        }
     }
 
     /// Return a list of ``(key, node)`` pairs for all entries in this mapping.

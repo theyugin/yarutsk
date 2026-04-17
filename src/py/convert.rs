@@ -79,7 +79,33 @@ thread_local! {
 /// so Python-level cycles through them are impossible.
 fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
     // Must check our custom types *before* PyDict/PyList — PyYamlMapping extends PyDict.
-    if obj.cast::<PyYamlMapping>().is_ok() || obj.cast::<PyYamlSequence>().is_ok() {
+    // Descend into their parent dict/list values so that plain containers
+    // embedded inside a YamlMapping/YamlSequence are discovered for
+    // anchor/alias handling (including cycle detection).
+    if obj.cast::<PyYamlMapping>().is_ok() {
+        let ptr = obj.as_ptr() as usize;
+        if *ref_count.entry(ptr).or_insert(0) > 0 {
+            return; // already visited — avoid infinite recursion
+        }
+        *ref_count.entry(ptr).or_insert(0) = 1;
+        if let Ok(d) = obj.cast::<PyDict>() {
+            for (_, v) in d.iter() {
+                prepass(&v, ref_count);
+            }
+        }
+        return;
+    }
+    if obj.cast::<PyYamlSequence>().is_ok() {
+        let ptr = obj.as_ptr() as usize;
+        if *ref_count.entry(ptr).or_insert(0) > 0 {
+            return;
+        }
+        *ref_count.entry(ptr).or_insert(0) = 1;
+        if let Ok(l) = obj.cast::<PyList>() {
+            for item in l.iter() {
+                prepass(&item, ref_count);
+            }
+        }
         return;
     }
     let is_dict = obj.cast::<PyDict>().is_ok();
@@ -622,6 +648,9 @@ pub(crate) fn extract_yaml_node(
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<YamlNode> {
     if let Ok(bound_m) = obj.cast::<PyYamlMapping>() {
+        let ptr = obj.as_ptr() as usize;
+        let _guard = CycleGuard::enter(ptr)
+            .ok_or_else(|| PyRuntimeError::new_err("self-referential structure detected"))?;
         let borrow = bound_m.borrow();
         let dict_part = bound_m.as_super();
         let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
@@ -657,6 +686,9 @@ pub(crate) fn extract_yaml_node(
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(bound_s) = obj.cast::<PyYamlSequence>() {
+        let ptr = obj.as_ptr() as usize;
+        let _guard = CycleGuard::enter(ptr)
+            .ok_or_else(|| PyRuntimeError::new_err("self-referential structure detected"))?;
         let borrow = bound_s.borrow();
         let list_part = bound_s.as_super();
         let inner_len = borrow.inner.items.len();

@@ -2,7 +2,7 @@
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PySlice, PyTuple, PyType};
+use pyo3::types::{PyList, PySlice, PyTuple};
 
 use super::convert::{
     DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
@@ -33,9 +33,14 @@ pub struct PyYamlSequence {
 #[pymethods]
 impl PyYamlSequence {
     #[new]
-    #[pyo3(signature = (iterable = None, *, style = "block", tag = None))]
-    fn new(iterable: Option<&Bound<'_, PyAny>>, style: &str, tag: Option<&str>) -> PyResult<Self> {
-        let _ = iterable; // populated in __init__ once the parent list is available
+    #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]
+    fn new(
+        iterable: Option<&Bound<'_, PyAny>>,
+        style: &str,
+        tag: Option<&str>,
+        schema: Option<Py<Schema>>,
+    ) -> PyResult<Self> {
+        let _ = (iterable, schema); // populated in __init__ once the parent list is available
         let mut inner = YamlSequence::new();
         inner.style = parse_container_style(style)?;
         inner.tag = tag.map(str::to_owned);
@@ -51,16 +56,42 @@ impl PyYamlSequence {
     // Intercept __init__ so that Python does not forward args to list.__init__,
     // which would otherwise try to iterate them. Populate from `iterable` here
     // because the parent list is accessible via slf.as_super() at this point.
-    #[pyo3(signature = (iterable = None, *, style = "block", tag = None))]
+    #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]
     fn __init__(
         slf: &Bound<'_, Self>,
         iterable: Option<&Bound<'_, PyAny>>,
         style: &str,
         tag: Option<&str>,
+        schema: Option<Py<Schema>>,
     ) -> PyResult<()> {
         let _ = (style, tag); // already applied in __new__
         if let Some(it) = iterable {
-            PyYamlSequence::extend(slf, it)?;
+            if let Some(ref schema_py) = schema {
+                let py = slf.py();
+                let sb = schema_py.bind(py);
+                let node = py_to_node(it, Some(sb))?;
+                if let YamlNode::Sequence(parsed) = node {
+                    let list_part = slf.as_super();
+                    let mut borrow = slf.borrow_mut();
+                    let style = borrow.inner.style;
+                    let tag = borrow.inner.tag.clone();
+                    borrow.inner = parsed;
+                    borrow.inner.style = style;
+                    borrow.inner.tag = tag;
+                    drop(borrow);
+                    let borrow = slf.borrow();
+                    for item in &borrow.inner.items {
+                        let py_val = node_to_py(py, &item.value, Some(sb))?;
+                        list_part.append(py_val.bind(py))?;
+                    }
+                } else {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "YamlSequence requires a list or iterable object",
+                    ));
+                }
+            } else {
+                PyYamlSequence::extend(slf, it)?;
+            }
         }
         Ok(())
     }
@@ -779,29 +810,6 @@ impl PyYamlSequence {
             }
         }
         Ok(())
-    }
-
-    /// Create a ``YamlSequence`` from a plain Python list (or any iterable).
-    ///
-    /// Nested dicts are recursively converted to ``YamlMapping``, nested lists to
-    /// ``YamlSequence``. If *schema* is provided, schema dumpers are applied.
-    /// Raises ``TypeError`` if *obj* cannot be interpreted as a sequence.
-    #[classmethod]
-    #[pyo3(signature = (obj, *, schema = None))]
-    fn from_list(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'_>,
-        obj: &Bound<'_, PyAny>,
-        schema: Option<Py<Schema>>,
-    ) -> PyResult<Py<PyAny>> {
-        let sb = schema.as_ref().map(|s| s.bind(py));
-        let node = py_to_node(obj, sb)?;
-        match node {
-            YamlNode::Sequence(s) => sequence_to_py_obj(py, s, DocMeta::none(), sb),
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(
-                "from_list requires a list or iterable object",
-            )),
-        }
     }
 
     /// Return a shallow copy of this sequence (comments, style metadata, and

@@ -26,27 +26,58 @@ pub struct PyYamlScalar {
 
 #[pymethods]
 impl PyYamlScalar {
-    /// Create a new ``YamlScalar`` from a Python primitive value.
+    /// Create a new ``YamlScalar`` from a Python value.
     ///
-    /// *value* must be ``str``, ``int``, ``float``, ``bool``, or ``None``.
+    /// *value* can be ``str``, ``int``, ``float``, ``bool``, ``None``,
+    /// ``bytes``, ``bytearray``, ``datetime.datetime``, or ``datetime.date``.
     /// *style* controls the quoting style when serialized; defaults to ``"plain"``.
     /// *tag* is an optional YAML tag string (e.g. ``"!mytag"``).
     #[new]
     #[pyo3(signature = (value, *, style = "plain", tag = None))]
     fn new(value: &Bound<'_, PyAny>, style: &str, tag: Option<&str>) -> PyResult<Self> {
-        let node = py_primitive_to_scalar(value).ok_or_else(|| {
-            pyo3::exceptions::PyTypeError::new_err(
-                "YamlScalar value must be a Python primitive (str, int, float, bool, or None)",
-            )
-        })?;
         let scalar_style = parse_scalar_style(style)?;
-        let inner = match node {
-            YamlNode::Scalar(mut s) => {
-                s.style = scalar_style;
-                s.tag = tag.map(str::to_owned);
-                YamlNode::Scalar(s)
+        // Try plain primitives first.
+        let inner = if let Some(node) = py_primitive_to_scalar(value) {
+            match node {
+                YamlNode::Scalar(mut s) => {
+                    s.style = scalar_style;
+                    s.tag = tag.map(str::to_owned);
+                    YamlNode::Scalar(s)
+                }
+                other => other, // Null
             }
-            other => other,
+        } else if (value.is_instance_of::<pyo3::types::PyBytes>()
+            || value.is_instance_of::<pyo3::types::PyByteArray>())
+            && let Ok(b) = value.extract::<Vec<u8>>()
+        {
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str(STANDARD.encode(&b)),
+                style: scalar_style,
+                tag: Some(tag.unwrap_or("!!binary").to_owned()),
+                original: None,
+                anchor: None,
+            })
+        } else {
+            // datetime.datetime / datetime.date
+            let py = value.py();
+            let datetime_mod = py.import("datetime")?;
+            let datetime_type = datetime_mod.getattr("datetime")?;
+            let date_type = datetime_mod.getattr("date")?;
+            if value.is_instance(&datetime_type)? || value.is_instance(&date_type)? {
+                let iso: String = value.call_method0("isoformat")?.extract()?;
+                YamlNode::Scalar(YamlScalar {
+                    value: ScalarValue::Str(iso),
+                    style: scalar_style,
+                    tag: Some(tag.unwrap_or("!!timestamp").to_owned()),
+                    original: None,
+                    anchor: None,
+                })
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "YamlScalar value must be str, int, float, bool, None, bytes, bytearray, datetime, or date",
+                ));
+            }
         };
         Ok(PyYamlScalar {
             inner,

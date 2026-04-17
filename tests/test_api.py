@@ -1259,11 +1259,11 @@ class TestConstructorFromExisting:
         m = yarutsk.YamlMapping(None)
         assert len(m) == 0
 
-    def test_sequence_from_list(self):
+    def test_sequence_constructor_with_list(self):
         s = yarutsk.YamlSequence([1, 2, 3])
         assert list(s) == [1, 2, 3]
 
-    def test_sequence_from_list_with_style(self):
+    def test_sequence_constructor_with_style(self):
         s = yarutsk.YamlSequence([1, 2, 3], style="flow")
         assert s.style == "flow"
         assert list(s) == [1, 2, 3]
@@ -1389,71 +1389,71 @@ class TestAliasAPI:
             doc.set_alias(99, "val")
 
 
-# ── from_dict / from_list ─────────────────────────────────────────────────────
+# ── Constructing YamlMapping / YamlSequence from Python data ─────────────────
 
 
-class TestFromDict:
-    def test_from_dict_basic(self):
-        m = yarutsk.YamlMapping.from_dict({"a": 1, "b": 2})
+class TestMappingConstructor:
+    def test_basic(self):
+        m = yarutsk.YamlMapping({"a": 1, "b": 2})
         assert isinstance(m, yarutsk.YamlMapping)
         assert m["a"] == 1
         assert m["b"] == 2
 
-    def test_from_dict_nested_dict_becomes_mapping(self):
-        m = yarutsk.YamlMapping.from_dict({"x": {"y": 3}})
+    def test_nested_dict_becomes_mapping(self):
+        m = yarutsk.YamlMapping({"x": {"y": 3}})
         assert isinstance(m["x"], yarutsk.YamlMapping)
         assert m["x"]["y"] == 3
 
-    def test_from_dict_nested_list_becomes_sequence(self):
-        m = yarutsk.YamlMapping.from_dict({"items": [1, 2, 3]})
+    def test_nested_list_becomes_sequence(self):
+        m = yarutsk.YamlMapping({"items": [1, 2, 3]})
         assert isinstance(m["items"], yarutsk.YamlSequence)
         assert list(m["items"]) == [1, 2, 3]
 
-    def test_from_dict_round_trips(self):
-        m = yarutsk.YamlMapping.from_dict({"name": "Alice", "age": 30})
+    def test_round_trips(self):
+        m = yarutsk.YamlMapping({"name": "Alice", "age": 30})
         out = yarutsk.dumps(m)
         doc2 = yarutsk.loads(out)
         assert doc2["name"] == "Alice"
         assert doc2["age"] == 30
 
-    def test_from_dict_non_dict_raises_type_error(self):
+    def test_non_dict_raises_type_error(self):
         with pytest.raises(TypeError):
-            yarutsk.YamlMapping.from_dict([1, 2, 3])
+            yarutsk.YamlMapping([1, 2, 3])
 
-    def test_from_dict_empty(self):
-        m = yarutsk.YamlMapping.from_dict({})
+    def test_empty(self):
+        m = yarutsk.YamlMapping({})
         assert isinstance(m, yarutsk.YamlMapping)
         assert len(m) == 0
 
 
-class TestFromList:
-    def test_from_list_basic(self):
-        s = yarutsk.YamlSequence.from_list([1, 2, 3])
+class TestSequenceConstructor:
+    def test_basic(self):
+        s = yarutsk.YamlSequence([1, 2, 3])
         assert isinstance(s, yarutsk.YamlSequence)
         assert list(s) == [1, 2, 3]
 
-    def test_from_list_nested_dict_becomes_mapping(self):
-        s = yarutsk.YamlSequence.from_list([{"a": 1}, {"b": 2}])
+    def test_nested_dict_becomes_mapping(self):
+        s = yarutsk.YamlSequence([{"a": 1}, {"b": 2}])
         assert isinstance(s[0], yarutsk.YamlMapping)
         assert s[0]["a"] == 1
 
-    def test_from_list_nested_list_becomes_sequence(self):
-        s = yarutsk.YamlSequence.from_list([[1, 2], [3, 4]])
+    def test_nested_list_becomes_sequence(self):
+        s = yarutsk.YamlSequence([[1, 2], [3, 4]])
         assert isinstance(s[0], yarutsk.YamlSequence)
         assert list(s[0]) == [1, 2]
 
-    def test_from_list_round_trips(self):
-        s = yarutsk.YamlSequence.from_list(["x", "y", "z"])
+    def test_round_trips(self):
+        s = yarutsk.YamlSequence(["x", "y", "z"])
         out = yarutsk.dumps(s)
         doc2 = yarutsk.loads(out)
         assert list(doc2) == ["x", "y", "z"]
 
-    def test_from_list_non_list_raises_type_error(self):
-        with pytest.raises(TypeError):
-            yarutsk.YamlSequence.from_list({"a": 1})
+    def test_non_iterable_raises_type_error(self):
+        with pytest.raises((TypeError, RuntimeError)):
+            yarutsk.YamlSequence(42)
 
-    def test_from_list_empty(self):
-        s = yarutsk.YamlSequence.from_list([])
+    def test_empty(self):
+        s = yarutsk.YamlSequence([])
         assert isinstance(s, yarutsk.YamlSequence)
         assert len(s) == 0
 

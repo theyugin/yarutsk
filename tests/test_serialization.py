@@ -3,7 +3,6 @@
 import io
 from textwrap import dedent
 
-import pytest
 
 import yarutsk
 
@@ -620,19 +619,25 @@ class TestAutoAnchor:
         # No alias should appear (anchor scope is per-document)
         assert "*id" not in out
 
-    # ── from_dict / from_list still raise on cycles ──────────────────────────
+    # ── Recursive structures are detected at dump time ──────────────────────
 
-    def test_from_dict_raises_on_recursive_dict(self):
+    def test_recursive_dict_detected_at_dump(self):
         d: dict = {}
         d["self"] = d
-        with pytest.raises(ValueError, match="recursive"):
-            yarutsk.YamlMapping.from_dict(d)
+        m = yarutsk.YamlMapping(d)  # construction succeeds
+        # Cycle is detected and emitted as anchor/alias
+        out = yarutsk.dumps(m)
+        assert "&id001" in out
+        assert "*id001" in out
 
-    def test_from_list_raises_on_recursive_list(self):
+    def test_recursive_list_detected_at_dump(self):
         lst: list = [1]
         lst.append(lst)
-        with pytest.raises(ValueError, match="recursive"):
-            yarutsk.YamlSequence.from_list(lst)
+        s = yarutsk.YamlSequence(lst)  # construction succeeds
+        # Cycle is detected and emitted as anchor/alias
+        out = yarutsk.dumps(s)
+        assert "&id001" in out
+        assert "*id001" in out
 
     # ── tagged / anchored PyYamlMapping / PyYamlSequence ────────────────────
     #

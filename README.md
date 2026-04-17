@@ -327,6 +327,7 @@ doc.tag_directives = [("!", "tag:example.com,2024:")]
 
 ```python
 import yarutsk
+import datetime
 
 doc = yarutsk.loads("x: placeholder\n")
 
@@ -337,13 +338,21 @@ yarutsk.dumps(doc)                     # 'x: "hello"\n'
 # Assign a plain string with a custom tag
 doc["x"] = yarutsk.YamlScalar("42", tag="!!str")
 yarutsk.dumps(doc)                     # 'x: !!str 42\n'
+
+# Binary data (auto-tagged !!binary, base64-encoded)
+doc["x"] = yarutsk.YamlScalar(b"hello")
+yarutsk.dumps(doc)                     # 'x: !!binary aGVsbG8=\n'
+
+# Dates and timestamps (auto-tagged !!timestamp, ISO-formatted)
+doc["x"] = yarutsk.YamlScalar(datetime.date(2024, 1, 15))
+yarutsk.dumps(doc)                     # 'x: !!timestamp 2024-01-15\n'
 ```
 
 Constructor signature: `YamlScalar(value, *, style="plain", tag=None)`
 
-- `value` — a Python primitive: `bool`, `int`, `float`, `str`, or `None`
+- `value` — `bool`, `int`, `float`, `str`, `None`, `bytes`, `bytearray`, `datetime.datetime`, or `datetime.date`
 - `style` — `"plain"` (default), `"single"`, `"double"`, `"literal"`, `"folded"`
-- `tag` — YAML tag string, e.g. `"!!str"`, `"!mytag"`, or `None`
+- `tag` — YAML tag string, e.g. `"!!str"`, `"!mytag"`, or `None`. For `bytes` defaults to `"!!binary"`, for datetime defaults to `"!!timestamp"`
 
 ### YamlMapping
 
@@ -362,7 +371,7 @@ yarutsk.dumps(doc)                     # 'point: {x: 1, y: 2}\n'
 
 Constructor signature: `YamlMapping(mapping=None, *, style="block", tag=None)`
 
-- `mapping` — optional initial data: a plain `dict`, another `YamlMapping` (inner metadata preserved), or any mapping; if omitted the mapping starts empty
+- `mapping` — optional initial data: a plain `dict`, another `YamlMapping` (inner metadata preserved), any `Mapping`, or an iterable of `(key, value)` pairs; if omitted the mapping starts empty
 - `style` — `"block"` (default) or `"flow"`
 - `tag` — YAML tag string, or `None`
 

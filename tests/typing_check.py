@@ -368,12 +368,12 @@ def check_public_type_aliases() -> None:
     _ = style, cstyle
 
 
-# ── YamlMapping.from_dict ─────────────────────────────────────────────────────
+# ── YamlMapping constructor ──────────────────────────────────────────────────
 
 
-def check_from_dict() -> None:
-    m: YamlMapping = YamlMapping.from_dict({"a": 1, "b": {"c": 2}})
-    m2: YamlMapping = YamlMapping.from_dict({"x": [1, 2, 3]})
+def check_mapping_constructor() -> None:
+    m: YamlMapping = YamlMapping({"a": 1, "b": {"c": 2}})
+    m2: YamlMapping = YamlMapping({"x": [1, 2, 3]})
     _ = m, m2
 
 
@@ -385,12 +385,12 @@ def check_mapping_nodes(m: YamlMapping) -> None:
     _ = pairs
 
 
-# ── YamlSequence.from_list ───────────────────────────────────────────────────
+# ── YamlSequence constructor ─────────────────────────────────────────────────
 
 
-def check_from_list() -> None:
-    s: YamlSequence = YamlSequence.from_list([1, 2, {"x": 3}])
-    s2: YamlSequence = YamlSequence.from_list(["a", "b"])
+def check_sequence_constructor() -> None:
+    s: YamlSequence = YamlSequence([1, 2, {"x": 3}])
+    s2: YamlSequence = YamlSequence(["a", "b"])
     _ = s, s2
 
 
@@ -437,18 +437,18 @@ def check_yaml_iter_protocol(it: YamlIter) -> None:
     _ = same, doc
 
 
-# ── from_dict / from_list with schema ───────────────────────────────────────
+# ── Constructor with schema ──────────────────────────────────────────────────
 
 
-def check_from_dict_with_schema() -> None:
+def check_mapping_constructor_with_schema() -> None:
     schema = yarutsk.Schema()
-    m: YamlMapping = YamlMapping.from_dict({"a": 1}, schema=schema)
+    m: YamlMapping = YamlMapping({"a": 1}, schema=schema)
     _ = m
 
 
-def check_from_list_with_schema() -> None:
+def check_sequence_constructor_with_schema() -> None:
     schema = yarutsk.Schema()
-    s: YamlSequence = YamlSequence.from_list([1, 2], schema=schema)
+    s: YamlSequence = YamlSequence([1, 2], schema=schema)
     _ = s
 
 

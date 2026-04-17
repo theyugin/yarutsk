@@ -433,13 +433,21 @@ fn emit_mapping_flow<W: FmtWrite>(m: &YamlMapping, out: &mut W) -> fmt::Result {
 /// Emit a tagged/commented container on a separate line, or use the inline-first
 /// variant when neither a tag nor inline comment is present.
 fn emit_tagged_or_inline_first<W: FmtWrite>(
+    anchor: Option<&str>,
     tag: Option<&str>,
     comment_inline: Option<&str>,
     emit_full: impl FnOnce(&mut W) -> fmt::Result,
     emit_inline: impl FnOnce(&mut W) -> fmt::Result,
     out: &mut W,
 ) -> fmt::Result {
-    if tag.is_some() || comment_inline.is_some() {
+    if anchor.is_some() || tag.is_some() || comment_inline.is_some() {
+        if let Some(anchor) = anchor {
+            out.write_char('&')?;
+            out.write_str(anchor)?;
+            if tag.is_some() || comment_inline.is_some() {
+                out.write_char(' ')?;
+            }
+        }
         if let Some(tag) = tag {
             out.write_str(&format_tag(tag))?;
             if comment_inline.is_some() {
@@ -496,6 +504,7 @@ fn emit_sequence<W: FmtWrite>(
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 emit_tagged_or_inline_first(
+                    nested.anchor.as_deref(),
                     nested.tag.as_deref(),
                     item.comment_inline.as_deref(),
                     |out| emit_mapping(nested, indent + step, step, out),
@@ -513,6 +522,7 @@ fn emit_sequence<W: FmtWrite>(
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 emit_tagged_or_inline_first(
+                    nested.anchor.as_deref(),
                     nested.tag.as_deref(),
                     item.comment_inline.as_deref(),
                     |out| emit_sequence(nested, indent + step, step, out),

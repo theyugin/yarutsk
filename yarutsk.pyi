@@ -8,6 +8,7 @@ types. Scalar leaves and null values are returned as native Python primitives.
 """
 
 from collections.abc import Mapping as _Mapping, Sequence as _Sequence
+import datetime as _datetime
 from typing import (
     Any,
     Callable,
@@ -24,6 +25,19 @@ _T = TypeVar("_T")
 
 # The value that __getitem__ can return for a scalar leaf.
 _Scalar = int | float | bool | str | None
+
+# Values accepted by the YamlScalar constructor.
+_ScalarInit = (
+    int
+    | float
+    | bool
+    | str
+    | bytes
+    | bytearray
+    | _datetime.datetime
+    | _datetime.date
+    | None
+)
 
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
@@ -76,26 +90,35 @@ class DumperError(YarutskError):
     ...
 
 class YamlScalar:
-    """A YAML scalar document node (int, float, bool, str, or null).
+    """A YAML scalar document node.
 
     Can be constructed directly to create a styled scalar for assignment or
     use in a Schema dumper::
 
         doc["key"] = yarutsk.YamlScalar("hello", style="double")
+        doc["data"] = yarutsk.YamlScalar(b"binary data")          # !!binary
+        doc["when"] = yarutsk.YamlScalar(datetime.date(2024, 1, 1))  # !!timestamp
         schema.add_dumper(MyType, lambda obj: ("!mytag", yarutsk.YamlScalar(str(obj), style="single")))
     """
 
     def __init__(
         self,
-        value: "_Scalar",
+        value: "_ScalarInit",
         *,
         style: "ScalarStyle" = "plain",
         tag: str | None = None,
     ) -> None:
-        """Create a scalar with the given primitive value, quoting style, and optional tag.
+        """Create a scalar with the given value, quoting style, and optional tag.
+
+        *value* can be ``str``, ``int``, ``float``, ``bool``, ``None``,
+        ``bytes``, ``bytearray``, ``datetime.datetime``, or ``datetime.date``.
+
+        ``bytes``/``bytearray`` values are base64-encoded and tagged ``!!binary``
+        by default. ``datetime``/``date`` values are ISO-formatted and tagged
+        ``!!timestamp`` by default. Pass *tag* to override the default tag.
 
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-        Raises ``TypeError`` if *value* is not a Python primitive.
+        Raises ``TypeError`` if *value* is not an accepted type.
         Raises ``ValueError`` for an unknown *style*.
         """
         ...
@@ -195,17 +218,21 @@ class YamlMapping(dict[str, Any]):
 
     def __init__(
         self,
-        mapping: "dict[str, Any] | YamlMapping | None" = None,
+        mapping: "_Mapping[str, Any] | YamlMapping | Iterable[tuple[str, Any]] | None" = None,
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
+        schema: "Schema | None" = None,
     ) -> None:
         """Create a mapping, optionally populated from *mapping*.
 
         If *mapping* is a ``YamlMapping``, inner metadata (comments, styles,
-        anchors) is preserved. If it is a plain ``dict`` or another mapping, it
-        is iterated and entries are set as plain values. Raises ``ValueError``
-        for an unknown *style*.
+        anchors) is preserved. Any other mapping (anything with a ``keys()``
+        method) or iterable of ``(key, value)`` pairs is accepted and entries
+        are set as plain values.
+
+        If *schema* is provided, schema dumpers are applied during conversion
+        of nested values. Raises ``ValueError`` for an unknown *style*.
         """
         ...
 
@@ -406,20 +433,6 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    @classmethod
-    def from_dict(
-        cls,
-        obj: "dict[str, Any]",
-        *,
-        schema: "Schema | None" = None,
-    ) -> "YamlMapping":
-        """Create a ``YamlMapping`` from a plain Python dict (or any dict-like object).
-
-        Nested dicts are recursively converted to ``YamlMapping``, nested lists to
-        ``YamlSequence``. Raises ``TypeError`` if *obj* is not dict-like.
-        """
-        ...
-
     def nodes(self) -> "list[tuple[str, YamlMapping | YamlSequence | YamlScalar]]":
         """Return a list of ``(key, node)`` pairs for all entries in this mapping.
 
@@ -454,12 +467,16 @@ class YamlSequence(list[Any]):
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
+        schema: "Schema | None" = None,
     ) -> None:
         """Create a sequence, optionally populated from *iterable*.
 
         If *iterable* is a ``YamlSequence``, inner metadata (comments, styles,
         anchors) is preserved. Any other iterable has its items appended as plain
-        values. Raises ``ValueError`` for an unknown *style*.
+        values.
+
+        If *schema* is provided, schema dumpers are applied during conversion
+        of nested values. Raises ``ValueError`` for an unknown *style*.
         """
         ...
 
@@ -651,20 +668,6 @@ class YamlSequence(list[Any]):
         ``blank_lines``: ``blank_lines_before`` zeroed; ``trailing_blank_lines`` zeroed.
         Tags, anchors, and document-level markers are always preserved.
         Recurses into all nested containers.
-        """
-        ...
-
-    @classmethod
-    def from_list(
-        cls,
-        obj: "list[Any]",
-        *,
-        schema: "Schema | None" = None,
-    ) -> "YamlSequence":
-        """Create a ``YamlSequence`` from a plain Python list (or any iterable).
-
-        Nested dicts are recursively converted to ``YamlMapping``, nested lists to
-        ``YamlSequence``. Raises ``TypeError`` if *obj* cannot be interpreted as a sequence.
         """
         ...
 
