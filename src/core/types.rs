@@ -73,6 +73,7 @@ impl ScalarValue {
     }
 
     /// Parse a raw YAML scalar string into a typed value.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> ScalarValue {
         if matches!(s, "" | "null" | "Null" | "NULL" | "~") {
             return ScalarValue::Null;

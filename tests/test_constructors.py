@@ -15,6 +15,7 @@ Covers:
 from textwrap import dedent
 
 import pytest
+
 import yarutsk
 
 
@@ -451,9 +452,7 @@ class TestDumperWithStyledNodes:
                 self.v = v
 
         schema = yarutsk.Schema()
-        schema.add_dumper(
-            Foo, lambda obj: ("!foo", yarutsk.YamlScalar(str(obj.v), style="double"))
-        )
+        schema.add_dumper(Foo, lambda obj: ("!foo", yarutsk.YamlScalar(str(obj.v), style="double")))
         doc = yarutsk.YamlMapping()
         doc["x"] = Foo("bar")
         out = yarutsk.dumps(doc, schema=schema)
@@ -539,9 +538,7 @@ class TestDumperWithStyledNodes:
                 self.v = v
 
         schema = yarutsk.Schema()
-        schema.add_dumper(
-            Name, lambda obj: ("!name", yarutsk.YamlScalar(obj.v, style="single"))
-        )
+        schema.add_dumper(Name, lambda obj: ("!name", yarutsk.YamlScalar(obj.v, style="single")))
         doc = yarutsk.YamlMapping()
         doc["n"] = Name("alice")
         out = yarutsk.dumps(doc, schema=schema)

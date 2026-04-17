@@ -95,9 +95,7 @@ def _load_test_cases() -> list:
 
             should_fail = bool(test.get("fail"))
             should_skip = bool(test.get("skip")) or file_skip is not None
-            skip_reason = (
-                test.get("note") or file_skip or "skipped by test-suite metadata"
-            )
+            skip_reason = test.get("note") or file_skip or "skipped by test-suite metadata"
 
             marks = []
             if should_skip:
@@ -207,8 +205,7 @@ class TestYamlSuite:
             re_docs = list(yarutsk.load_all(io.StringIO(result)))
         except Exception as e:
             pytest.fail(
-                f"Emitter produced invalid YAML: {e}\n"
-                f"Original:\n{yaml_src}\nEmitted:\n{result}"
+                f"Emitter produced invalid YAML: {e}\nOriginal:\n{yaml_src}\nEmitted:\n{result}"
             )
 
         # ── Hard check: re-parsed values must match original ─────────────────

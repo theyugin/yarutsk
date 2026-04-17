@@ -105,9 +105,9 @@ Each PyO3 container type holds a Rust `inner` field with the full data model; th
 
 Sequence variants use integer indices instead of string keys.
 
-### README
+### Docs
 
-When adding, changing, or removing public API methods, **update `README.md`** to match. The README is the primary user-facing reference; it must stay in sync with the implementation.
+When adding, changing, or removing public API methods, **update `docs/api.md`** (and `docs/integrations.md` if Schema behaviour changes) to match, alongside the `yarutsk.pyi` stub and the Rust source. The mkdocs site at <https://theyugin.github.io/yarutsk/> is the authoritative user-facing reference; `README.md` is a short landing page that points at the docs and should not duplicate API details.
 
 ### Schema / custom type handling
 

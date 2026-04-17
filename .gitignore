@@ -16,6 +16,9 @@ dist/
 # maturin / build output
 *.whl
 
+# mkdocs generated site
+/site/
+
 # Profiling output
 perf.data
 flamegraph.svg

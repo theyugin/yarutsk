@@ -190,7 +190,7 @@ pub struct Parser<T> {
 /// ```
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// # use yaml_rust2::parser::{Event, EventReceiver, Parser};
 /// #
 /// /// Sink of events. Collects them into an array.

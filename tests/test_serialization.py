@@ -3,7 +3,6 @@
 import io
 from textwrap import dedent
 
-
 import yarutsk
 
 
@@ -85,9 +84,7 @@ class TestDumpDumpAll:
         assert "a: 1" in result
 
     def test_dump_all_preserves_comments(self):
-        docs = yarutsk.load_all(
-            io.StringIO("# comment\n---\na: 1  # inline\n---\nb: 2")
-        )
+        docs = yarutsk.load_all(io.StringIO("# comment\n---\na: 1  # inline\n---\nb: 2"))
         out = io.StringIO()
         yarutsk.dump_all(docs, out)
         result = out.getvalue()
@@ -149,7 +146,7 @@ class TestMultiDocument:
         yarutsk.dump_all(docs, out)
         docs2 = yarutsk.load_all(io.StringIO(out.getvalue()))
         assert len(docs2) == 3
-        for d1, d2 in zip(docs, docs2):
+        for d1, d2 in zip(docs, docs2, strict=False):
             assert repr(d1) == repr(d2)
 
     def test_dump_all_single_doc_no_separator(self):
