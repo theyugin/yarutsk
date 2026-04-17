@@ -430,6 +430,33 @@ fn emit_mapping_flow<W: FmtWrite>(m: &YamlMapping, out: &mut W) -> fmt::Result {
     out.write_char('}')
 }
 
+/// Emit a tagged/commented container on a separate line, or use the inline-first
+/// variant when neither a tag nor inline comment is present.
+fn emit_tagged_or_inline_first<W: FmtWrite>(
+    tag: Option<&str>,
+    comment_inline: Option<&str>,
+    emit_full: impl FnOnce(&mut W) -> fmt::Result,
+    emit_inline: impl FnOnce(&mut W) -> fmt::Result,
+    out: &mut W,
+) -> fmt::Result {
+    if tag.is_some() || comment_inline.is_some() {
+        if let Some(tag) = tag {
+            out.write_str(&format_tag(tag))?;
+            if comment_inline.is_some() {
+                out.write_char(' ')?;
+            }
+        }
+        if let Some(ci) = comment_inline {
+            out.write_str("# ")?;
+            out.write_str(ci)?;
+        }
+        out.write_char('\n')?;
+        emit_full(out)
+    } else {
+        emit_inline(out)
+    }
+}
+
 fn emit_sequence<W: FmtWrite>(
     s: &YamlSequence,
     indent: usize,
@@ -468,24 +495,13 @@ fn emit_sequence<W: FmtWrite>(
                 out.write_char('\n')?;
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
-                if nested.tag.is_some() || item.comment_inline.is_some() {
-                    // Tagged or commented: emit tag/comment on the `-` line, content below.
-                    if let Some(tag) = &nested.tag {
-                        out.write_str(&format_tag(tag))?;
-                        if item.comment_inline.is_some() {
-                            out.write_char(' ')?;
-                        }
-                    }
-                    if let Some(ci) = &item.comment_inline {
-                        out.write_str("# ")?;
-                        out.write_str(ci)?;
-                    }
-                    out.write_char('\n')?;
-                    emit_mapping(nested, indent + step, step, out)?;
-                } else {
-                    // First entry inline with `-`, rest indented
-                    emit_mapping_inline_first(nested, indent + step, step, out)?;
-                }
+                emit_tagged_or_inline_first(
+                    nested.tag.as_deref(),
+                    item.comment_inline.as_deref(),
+                    |out| emit_mapping(nested, indent + step, step, out),
+                    |out| emit_mapping_inline_first(nested, indent + step, step, out),
+                    out,
+                )?;
             }
             YamlNode::Sequence(nested)
                 if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
@@ -496,24 +512,13 @@ fn emit_sequence<W: FmtWrite>(
                 out.write_char('\n')?;
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
-                if nested.tag.is_some() || item.comment_inline.is_some() {
-                    // Tagged or commented: emit tag/comment on the `-` line, content below.
-                    if let Some(tag) = &nested.tag {
-                        out.write_str(&format_tag(tag))?;
-                        if item.comment_inline.is_some() {
-                            out.write_char(' ')?;
-                        }
-                    }
-                    if let Some(ci) = &item.comment_inline {
-                        out.write_str("# ")?;
-                        out.write_str(ci)?;
-                    }
-                    out.write_char('\n')?;
-                    emit_sequence(nested, indent + step, step, out)?;
-                } else {
-                    // First inner item inline with `-`, rest indented
-                    emit_sequence_inline_first(nested, indent + step, step, out)?;
-                }
+                emit_tagged_or_inline_first(
+                    nested.tag.as_deref(),
+                    item.comment_inline.as_deref(),
+                    |out| emit_sequence(nested, indent + step, step, out),
+                    |out| emit_sequence_inline_first(nested, indent + step, step, out),
+                    out,
+                )?;
             }
             YamlNode::Scalar(scalar) if is_block_scalar(scalar) => {
                 // Block scalar directly in sequence

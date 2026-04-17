@@ -37,58 +37,38 @@ fn doc_meta(out: &mut builder::ParseOutput, i: usize) -> DocMeta {
     }
 }
 
-/// Return true if the Python doc object has `explicit_start = True`.
-fn get_explicit_start_flag(obj: &Bound<'_, PyAny>) -> bool {
-    if let Ok(m) = obj.cast::<PyYamlMapping>() {
-        return m.borrow().explicit_start;
-    }
-    if let Ok(s) = obj.cast::<PyYamlSequence>() {
-        return s.borrow().explicit_start;
-    }
-    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return sc.explicit_start;
-    }
-    false
+/// Extract a doc-level field from any of the three document types.
+macro_rules! doc_field {
+    ($name:ident -> $ret:ty : $field:ident, $default:expr) => {
+        fn $name(obj: &Bound<'_, PyAny>) -> $ret {
+            if let Ok(m) = obj.cast::<PyYamlMapping>() {
+                return m.borrow().$field.clone();
+            }
+            if let Ok(s) = obj.cast::<PyYamlSequence>() {
+                return s.borrow().$field.clone();
+            }
+            if let Ok(sc) = obj.extract::<PyYamlScalar>() {
+                return sc.$field.clone();
+            }
+            $default
+        }
+    };
 }
 
-/// Return true if the Python doc object has `explicit_end = True`.
-fn get_explicit_end_flag(obj: &Bound<'_, PyAny>) -> bool {
-    if let Ok(m) = obj.cast::<PyYamlMapping>() {
-        return m.borrow().explicit_end;
-    }
-    if let Ok(s) = obj.cast::<PyYamlSequence>() {
-        return s.borrow().explicit_end;
-    }
-    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return sc.explicit_end;
-    }
-    false
-}
+doc_field!(get_explicit_start_flag -> bool : explicit_start, false);
+doc_field!(get_explicit_end_flag   -> bool : explicit_end,   false);
+doc_field!(get_yaml_version_flag   -> Option<(u8, u8)> : yaml_version, None);
+doc_field!(get_tag_directives_flag -> Vec<(String, String)> : tag_directives, vec![]);
 
-fn get_yaml_version_flag(obj: &Bound<'_, PyAny>) -> Option<(u8, u8)> {
-    if let Ok(m) = obj.cast::<PyYamlMapping>() {
-        return m.borrow().yaml_version;
-    }
-    if let Ok(s) = obj.cast::<PyYamlSequence>() {
-        return s.borrow().yaml_version;
-    }
-    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return sc.yaml_version;
-    }
-    None
-}
-
-fn get_tag_directives_flag(obj: &Bound<'_, PyAny>) -> Vec<(String, String)> {
-    if let Ok(m) = obj.cast::<PyYamlMapping>() {
-        return m.borrow().tag_directives.clone();
-    }
-    if let Ok(s) = obj.cast::<PyYamlSequence>() {
-        return s.borrow().tag_directives.clone();
-    }
-    if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return sc.tag_directives.clone();
-    }
-    vec![]
+/// Extract a YamlNode from a Python doc object, handling anchor state setup/teardown.
+fn extract_doc_node(
+    doc: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<YamlNode> {
+    init_anchor_state(doc);
+    let result = extract_yaml_node(doc, schema);
+    clear_anchor_state();
+    result
 }
 
 fn emit_doc_to_string(
@@ -96,10 +76,7 @@ fn emit_doc_to_string(
     schema: Option<&Bound<'_, Schema>>,
     indent: usize,
 ) -> PyResult<String> {
-    init_anchor_state(doc);
-    let node_result = extract_yaml_node(doc, schema);
-    clear_anchor_state();
-    let node = node_result?;
+    let node = extract_doc_node(doc, schema)?;
     Ok(emit_docs(
         std::slice::from_ref(&node),
         &[get_explicit_start_flag(doc)],
@@ -117,10 +94,7 @@ fn emit_doc_to_stream(
     stream: &Bound<'_, PyAny>,
     indent: usize,
 ) -> PyResult<()> {
-    init_anchor_state(doc);
-    let node_result = extract_yaml_node(doc, schema);
-    clear_anchor_state();
-    let node = node_result?;
+    let node = extract_doc_node(doc, schema)?;
     let mut writer = PyStreamWriter::new(stream.clone().unbind());
     let _ = emit_docs_to(
         std::slice::from_ref(&node),

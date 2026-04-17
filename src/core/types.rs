@@ -18,8 +18,9 @@ pub enum YamlNode {
 }
 
 /// How a scalar value was written in the source.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ScalarStyle {
+    #[default]
     Plain,
     SingleQuoted,
     DoubleQuoted,

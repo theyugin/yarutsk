@@ -44,24 +44,86 @@ enum Frame {
     Sequence(SequenceFrame),
 }
 
+/// Metadata accumulated while waiting for the value half of a mapping entry.
+/// Populated when a key scalar (or alias/complex key) is seen; consumed when
+/// the corresponding value arrives.
+#[derive(Default)]
+struct PendingKey {
+    /// The string form of the key (None for complex non-scalar keys).
+    key: Option<String>,
+    /// For complex (non-scalar) keys: the key node.  When this is Some,
+    /// `key` is None but we are in "have key, waiting for value" state.
+    key_node: Option<YamlNode>,
+    comment_before: Option<String>,
+    comment_inline: Option<String>,
+    /// Blank lines before the current entry.
+    blank_lines: u8,
+    /// The quoting style of the key scalar.
+    key_style: ScalarStyle,
+    /// Anchor declared on the key scalar, if any.
+    key_anchor: Option<String>,
+    /// If the key was written as an alias, the alias name.
+    key_alias: Option<String>,
+    /// Tag on the key scalar, if any.
+    key_tag: Option<String>,
+}
+
+impl PendingKey {
+    /// Returns true if a key (scalar or complex) has been recorded.
+    fn has_key(&self) -> bool {
+        self.key.is_some() || self.key_node.is_some()
+    }
+
+    /// Consume the pending key and insert a new entry into `mapping`.
+    /// Returns `None` on success.  If no key is pending (i.e. this node IS
+    /// the complex key), returns `Some(value)` so the caller can store it.
+    fn insert_entry(&mut self, mapping: &mut YamlMapping, value: YamlNode) -> Option<YamlNode> {
+        if let Some(key) = self.key.take() {
+            let entry = YamlEntry {
+                value,
+                comment_before: self.comment_before.take(),
+                comment_inline: self.comment_inline.take(),
+                blank_lines_before: self.blank_lines,
+                key_style: self.key_style,
+                key_anchor: self.key_anchor.take(),
+                key_alias: self.key_alias.take(),
+                key_tag: self.key_tag.take(),
+                key_node: self.key_node.take().map(Box::new),
+            };
+            self.blank_lines = 0;
+            mapping.entries.insert(key, entry);
+            None
+        } else if self.key_node.is_some() {
+            // Complex key already saved; this node is the VALUE.
+            let key = format!("\x00{}", mapping.entries.len());
+            let entry = YamlEntry {
+                value,
+                comment_before: self.comment_before.take(),
+                comment_inline: self.comment_inline.take(),
+                blank_lines_before: self.blank_lines,
+                key_style: ScalarStyle::Plain,
+                key_anchor: None,
+                key_alias: None,
+                key_tag: None,
+                key_node: self.key_node.take().map(Box::new),
+            };
+            self.blank_lines = 0;
+            mapping.entries.insert(key, entry);
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    /// Store a complex (non-scalar) node as the key.
+    fn set_complex_key(&mut self, node: YamlNode) {
+        self.key_node = Some(node);
+    }
+}
+
 struct MappingFrame {
     mapping: YamlMapping,
-    current_key: Option<String>,
-    current_comment_before: Option<String>,
-    current_comment_inline: Option<String>,
-    /// Blank lines before the current entry (computed when the key scalar is seen).
-    current_blank_lines: u8,
-    /// The quoting style of the current key scalar.
-    current_key_style: ScalarStyle,
-    /// Anchor declared on the key scalar, if any.
-    current_key_anchor: Option<String>,
-    /// If the key was written as an alias, the alias name.
-    current_key_alias: Option<String>,
-    /// Tag on the key scalar, if any.
-    current_key_tag: Option<String>,
-    /// For complex (non-scalar) keys: the key node.  When this is Some,
-    /// current_key is None but we are in "have key, waiting for value" state.
-    current_key_node: Option<YamlNode>,
+    pending: PendingKey,
     /// Anchor name declared on the MappingStart event, if any.
     anchor_name: Option<String>,
 }
@@ -142,9 +204,9 @@ impl Builder {
     fn attach_inline(&mut self, text: String) {
         match self.stack.last_mut() {
             Some(Frame::Mapping(mf)) => {
-                if mf.current_key.is_some() || mf.current_key_node.is_some() {
+                if mf.pending.has_key() {
                     // Key was last; value not yet seen → store inline on frame
-                    mf.current_comment_inline = Some(text);
+                    mf.pending.comment_inline = Some(text);
                 } else {
                     // Value was just finalized → update last inserted entry
                     if let Some((_, entry)) = mf.mapping.entries.last_mut() {
@@ -214,59 +276,9 @@ impl Builder {
                 self.docs.push(node);
             }
             Some(Frame::Mapping(mf)) => {
-                if let Some(key) = mf.current_key.take() {
-                    // Scalar key (or sentinel for complex key already stored in key_node).
-                    let comment_before = mf.current_comment_before.take();
-                    let comment_inline = mf.current_comment_inline.take();
-                    let blank_lines_before = mf.current_blank_lines;
-                    let key_style = mf.current_key_style;
-                    let key_anchor = mf.current_key_anchor.take();
-                    let key_alias = mf.current_key_alias.take();
-                    let key_tag = mf.current_key_tag.take();
-                    let key_node = mf.current_key_node.take().map(Box::new);
-                    mf.current_blank_lines = 0;
-                    mf.mapping.entries.insert(
-                        key,
-                        YamlEntry {
-                            value: node,
-                            comment_before,
-                            comment_inline,
-                            blank_lines_before,
-                            key_style,
-                            key_anchor,
-                            key_alias,
-                            key_tag,
-                            key_node,
-                        },
-                    );
-                } else if mf.current_key_node.is_some() {
-                    // Complex key was saved; this node is the VALUE.
-                    let comment_before = mf.current_comment_before.take();
-                    let comment_inline = mf.current_comment_inline.take();
-                    let blank_lines_before = mf.current_blank_lines;
-                    let key_node = mf.current_key_node.take().map(Box::new);
-                    mf.current_blank_lines = 0;
-                    // Synthetic string key: null-prefixed index ensures uniqueness and
-                    // distinguishes from real YAML keys.
-                    let key = format!("\x00{}", mf.mapping.entries.len());
-                    mf.mapping.entries.insert(
-                        key,
-                        YamlEntry {
-                            value: node,
-                            comment_before,
-                            comment_inline,
-                            blank_lines_before,
-                            key_style: ScalarStyle::Plain,
-                            key_anchor: None,
-                            key_alias: None,
-                            key_tag: None,
-                            key_node,
-                        },
-                    );
-                } else {
-                    // current_key is None AND current_key_node is None:
-                    // this node is the COMPLEX KEY itself.
-                    mf.current_key_node = Some(node);
+                if let Some(node) = mf.pending.insert_entry(&mut mf.mapping, node) {
+                    // No pending key: this node IS the complex key itself.
+                    mf.pending.set_complex_key(node);
                 }
             }
             Some(Frame::Sequence(sf)) => {
@@ -344,15 +356,7 @@ impl Builder {
                 mapping.anchor = anchor_name.clone();
                 self.stack.push(Frame::Mapping(Box::new(MappingFrame {
                     mapping,
-                    current_key: None,
-                    current_comment_before: None,
-                    current_comment_inline: None,
-                    current_blank_lines: 0,
-                    current_key_style: ScalarStyle::Plain,
-                    current_key_anchor: None,
-                    current_key_alias: None,
-                    current_key_tag: None,
-                    current_key_node: None,
+                    pending: PendingKey::default(),
                     anchor_name,
                 })));
             }
@@ -506,11 +510,9 @@ impl Builder {
                 // mapping key or sequence item — both need blank-line / before-comment
                 // context.  We peek immutably here so we can call self methods freely
                 // before taking the mutable borrow needed for insertion below.
-                // A scalar is a KEY if: in mapping context AND no current_key AND no current_key_node.
+                // A scalar is a KEY if: in mapping context AND no pending key.
                 let needs_context = match self.stack.last() {
-                    Some(Frame::Mapping(mf)) => {
-                        mf.current_key.is_none() && mf.current_key_node.is_none()
-                    }
+                    Some(Frame::Mapping(mf)) => !mf.pending.has_key(),
                     Some(Frame::Sequence(_)) => true,
                     None => false,
                 };
@@ -546,7 +548,7 @@ impl Builder {
                         self.last_content_line = Some(effective_scalar_end_line);
                     }
                     Some(Frame::Mapping(mf)) => {
-                        if mf.current_key.is_none() && mf.current_key_node.is_none() {
+                        if !mf.pending.has_key() {
                             // Mapping key — store key string and positioning metadata.
                             // Register anchor for key scalars so they can be aliased as values.
                             if anchor_name.is_some() {
@@ -558,14 +560,14 @@ impl Builder {
                                     anchor_name.clone(),
                                 ));
                             }
-                            mf.current_key = Some(value);
-                            mf.current_comment_before = comment_before;
-                            mf.current_comment_inline = None;
-                            mf.current_blank_lines = blank_lines;
-                            mf.current_key_style = scalar_style;
-                            mf.current_key_anchor = anchor_name.clone();
-                            mf.current_key_tag = scalar_tag.clone();
-                            mf.current_key_alias = None;
+                            mf.pending.key = Some(value);
+                            mf.pending.comment_before = comment_before;
+                            mf.pending.comment_inline = None;
+                            mf.pending.blank_lines = blank_lines;
+                            mf.pending.key_style = scalar_style;
+                            mf.pending.key_anchor = anchor_name.clone();
+                            mf.pending.key_tag = scalar_tag.clone();
+                            mf.pending.key_alias = None;
                             self.last_content_line = Some(effective_scalar_end_line);
                         } else {
                             // Mapping value — insert entry under the pending key.
@@ -579,53 +581,7 @@ impl Builder {
                             if anchor_name.is_some() {
                                 anchor_node = Some(node.clone());
                             }
-                            if let Some(key) = mf.current_key.take() {
-                                let comment_before = mf.current_comment_before.take();
-                                let comment_inline = mf.current_comment_inline.take();
-                                let blank_lines_before = mf.current_blank_lines;
-                                let key_style = mf.current_key_style;
-                                let key_anchor = mf.current_key_anchor.take();
-                                let key_alias = mf.current_key_alias.take();
-                                let key_tag = mf.current_key_tag.take();
-                                let key_node = mf.current_key_node.take().map(Box::new);
-                                mf.current_blank_lines = 0;
-                                mf.mapping.entries.insert(
-                                    key,
-                                    YamlEntry {
-                                        value: node,
-                                        comment_before,
-                                        comment_inline,
-                                        blank_lines_before,
-                                        key_style,
-                                        key_anchor,
-                                        key_alias,
-                                        key_tag,
-                                        key_node,
-                                    },
-                                );
-                            } else if mf.current_key_node.is_some() {
-                                // Complex key already saved; store value.
-                                let comment_before = mf.current_comment_before.take();
-                                let comment_inline = mf.current_comment_inline.take();
-                                let blank_lines_before = mf.current_blank_lines;
-                                let key_node = mf.current_key_node.take().map(Box::new);
-                                mf.current_blank_lines = 0;
-                                let key = format!("\x00{}", mf.mapping.entries.len());
-                                mf.mapping.entries.insert(
-                                    key,
-                                    YamlEntry {
-                                        value: node,
-                                        comment_before,
-                                        comment_inline,
-                                        blank_lines_before,
-                                        key_style: ScalarStyle::Plain,
-                                        key_anchor: None,
-                                        key_alias: None,
-                                        key_tag: None,
-                                        key_node,
-                                    },
-                                );
-                            }
+                            let _ = mf.pending.insert_entry(&mut mf.mapping, node);
                             self.last_content_line = Some(effective_scalar_end_line);
                         }
                     }
@@ -666,19 +622,18 @@ impl Builder {
                     .unwrap_or(YamlNode::Null);
                 // If the alias is in mapping key position, record it as an alias key.
                 if let Some(Frame::Mapping(mf)) = self.stack.last_mut()
-                    && mf.current_key.is_none()
-                    && mf.current_key_node.is_none()
+                    && !mf.pending.has_key()
                 {
                     // Use the resolved scalar value as the key string (for Python access).
-                    mf.current_key = Some(match &resolved {
+                    mf.pending.key = Some(match &resolved {
                         YamlNode::Scalar(s) => s.value.to_key_string(),
                         _ => String::new(),
                     });
                     // Preserve the alias name so the emitter can emit `*name:`.
-                    mf.current_key_alias = Some(name);
-                    mf.current_key_anchor = None;
-                    mf.current_key_tag = None;
-                    mf.current_key_style = ScalarStyle::Plain;
+                    mf.pending.key_alias = Some(name);
+                    mf.pending.key_anchor = None;
+                    mf.pending.key_tag = None;
+                    mf.pending.key_style = ScalarStyle::Plain;
                     return;
                 }
                 self.push_node(YamlNode::Alias {

@@ -14,7 +14,7 @@ from typing import Any, Callable
 from collections.abc import KeysView
 
 import yarutsk
-from yarutsk import Schema, YamlMapping, YamlScalar, YamlSequence
+from yarutsk import Schema, YamlIter, YamlMapping, YamlScalar, YamlSequence
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -415,6 +415,41 @@ def check_sequence_copy(s: YamlSequence) -> None:
     copy_shallow: YamlSequence = copy.copy(s)
     copy_deep: YamlSequence = copy.deepcopy(s)
     _ = shallow, deep, copy_shallow, copy_deep
+
+
+# ── iter_load_all / iter_loads_all ────────────────────────────────────────────
+
+
+def check_iter_loads_all() -> None:
+    it: YamlIter = yarutsk.iter_loads_all("a: 1\n---\nb: 2\n")
+    _ = it
+
+
+def check_iter_load_all() -> None:
+    stream = io.StringIO("a: 1\n---\nb: 2\n")
+    it: YamlIter = yarutsk.iter_load_all(stream)
+    _ = it
+
+
+def check_yaml_iter_protocol(it: YamlIter) -> None:
+    same: YamlIter = iter(it)
+    doc: YamlMapping | YamlSequence | YamlScalar = next(it)
+    _ = same, doc
+
+
+# ── from_dict / from_list with schema ───────────────────────────────────────
+
+
+def check_from_dict_with_schema() -> None:
+    schema = yarutsk.Schema()
+    m: YamlMapping = YamlMapping.from_dict({"a": 1}, schema=schema)
+    _ = m
+
+
+def check_from_list_with_schema() -> None:
+    schema = yarutsk.Schema()
+    s: YamlSequence = YamlSequence.from_list([1, 2], schema=schema)
+    _ = s
 
 
 # ── Type errors that mypy should catch (kept as comments to document intent) ──
