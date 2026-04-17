@@ -15,7 +15,6 @@ import io
 from textwrap import dedent
 
 import pytest
-
 import yarutsk
 
 
@@ -75,11 +74,11 @@ class TestMalformedYaml:
 
 class TestInvalidDumpTypes:
     def test_object_raises(self):
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(object())
 
     def test_lambda_raises(self):
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(lambda: None)
 
     def test_nested_object_in_sequence_raises(self):
@@ -90,7 +89,7 @@ class TestInvalidDumpTypes:
         """)
         )
         doc.append(object())
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(doc)
 
     def test_tuple_accepted_as_sequence(self):
@@ -118,12 +117,12 @@ class TestInvalidDumpTypes:
 
     def test_dump_invalid_type_to_stream_raises(self):
         buf = io.StringIO()
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dump(object(), buf)
 
     def test_dumps_all_with_invalid_item(self):
         doc = yarutsk.loads("a: 1\n")
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps_all([doc, object()])
 
 
@@ -162,7 +161,7 @@ class TestSchemaDumperErrors:
         schema.add_dumper(_Opaque, lambda x: ("!opaque", object()))
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(doc, schema=schema)
 
     def test_dumper_raises_exception_propagates(self):
@@ -179,7 +178,7 @@ class TestSchemaDumperErrors:
 
     def test_no_dumper_registered_raises(self):
         """Dumping an unknown type without a schema raises RuntimeError."""
-        with pytest.raises((RuntimeError, TypeError)):
+        with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(_Opaque())
 
 
@@ -250,7 +249,7 @@ class TestStreamEdgeCases:
 
     def test_load_non_utf8_bytes(self):
         stream = io.BytesIO(b"\xff\xfe invalid utf-8")
-        with pytest.raises(RuntimeError, match="[Uu][Tt][Ff]"):
+        with pytest.raises(RuntimeError, match=r"[Uu][Tt][Ff]"):
             yarutsk.load(stream)
 
     def test_dump_no_write_method(self):

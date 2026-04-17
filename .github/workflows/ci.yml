@@ -22,8 +22,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -79,8 +79,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -147,8 +147,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
@@ -160,6 +160,36 @@ jobs:
 
       - name: rustfmt
         run: cargo fmt --check
+
+  # ── cargo-deny (license + advisory audit) ────────────────────────────────
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          log-level: warn
+          command: check
+
+  # ── sdist smoke build (every PR) ──────────────────────────────────────────
+  sdist:
+    name: sdist build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: List sdist
+        run: ls -la dist/
 
   # ── Build release wheels ───────────────────────────────────────────────────
   build-wheels:
@@ -182,8 +212,8 @@ jobs:
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           rm -f Cargo.toml.bak
 
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -203,7 +233,7 @@ jobs:
           command: build
           args: --release --out dist --interpreter ${{ matrix.python-version }}
           manylinux: auto
-          rust-toolchain: nightly
+          rust-toolchain: stable
 
       - name: Build wheels (macOS)
         if: matrix.os == 'macos-latest'
@@ -214,7 +244,7 @@ jobs:
             --release --out dist
             --interpreter ${{ steps.python.outputs.python-path }}
             --target universal2-apple-darwin
-          rust-toolchain: nightly
+          rust-toolchain: stable
 
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
@@ -224,7 +254,7 @@ jobs:
           args: >-
             --release --out dist
             --interpreter ${{ steps.python.outputs.python-path }}
-          rust-toolchain: nightly
+          rust-toolchain: stable
 
       - name: Build sdist
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'

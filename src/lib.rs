@@ -1,15 +1,13 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
-mod core;
+#[doc(hidden)]
+pub mod core;
 mod py;
 
 use core::builder;
 use core::emitter::{emit_docs, emit_docs_to};
 use core::types::YamlNode;
-use py::convert::{
-    DocMeta, clear_anchor_state, extract_yaml_node, init_anchor_state, node_to_doc, parse_stream,
-    parse_text,
-};
+use py::convert::{AnchorGuard, DocMeta, extract_yaml_node, node_to_doc, parse_stream, parse_text};
 use py::py_iter::{PyYamlIter, YamlIterInner};
 use py::py_mapping::PyYamlMapping;
 use py::py_scalar::PyYamlScalar;
@@ -27,13 +25,14 @@ pyo3::create_exception!(yarutsk, DumperError, YarutskError);
 
 // ─── Module-level helpers ─────────────────────────────────────────────────────
 
-/// Build a `DocMeta` for document index `i` from a `ParseOutput`.
-fn doc_meta(out: &mut builder::ParseOutput, i: usize) -> DocMeta {
+/// Build a `DocMeta` for document index `i` from a slice of `DocMetadata`.
+fn doc_meta(meta: &[builder::DocMetadata], i: usize) -> DocMeta {
+    let m = meta.get(i).cloned().unwrap_or_default();
     DocMeta {
-        explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
-        explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
-        yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
-        tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
+        explicit_start: m.explicit_start,
+        explicit_end: m.explicit_end,
+        yaml_version: m.yaml_version,
+        tag_directives: m.tag_directives,
     }
 }
 
@@ -60,15 +59,25 @@ doc_field!(get_explicit_end_flag   -> bool : explicit_end,   false);
 doc_field!(get_yaml_version_flag   -> Option<(u8, u8)> : yaml_version, None);
 doc_field!(get_tag_directives_flag -> Vec<(String, String)> : tag_directives, vec![]);
 
-/// Extract a YamlNode from a Python doc object, handling anchor state setup/teardown.
-fn extract_doc_node(
+/// Build a single-doc `DocMetadata` from a Python doc object's flags.
+fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> builder::DocMetadata {
+    builder::DocMetadata {
+        explicit_start: get_explicit_start_flag(doc),
+        explicit_end: get_explicit_end_flag(doc),
+        yaml_version: get_yaml_version_flag(doc),
+        tag_directives: get_tag_directives_flag(doc),
+    }
+}
+
+/// Extract a `YamlNode` plus its per-doc metadata from a Python doc object.
+/// Manages anchor state via [`AnchorGuard`].
+fn extract_doc_and_meta(
     doc: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
-) -> PyResult<YamlNode> {
-    init_anchor_state(doc);
-    let result = extract_yaml_node(doc, schema);
-    clear_anchor_state();
-    result
+) -> PyResult<(YamlNode, builder::DocMetadata)> {
+    let _guard = AnchorGuard::new(doc);
+    let node = extract_yaml_node(doc, schema)?;
+    Ok((node, doc_meta_from_py(doc)))
 }
 
 fn emit_doc_to_string(
@@ -76,15 +85,8 @@ fn emit_doc_to_string(
     schema: Option<&Bound<'_, Schema>>,
     indent: usize,
 ) -> PyResult<String> {
-    let node = extract_doc_node(doc, schema)?;
-    Ok(emit_docs(
-        std::slice::from_ref(&node),
-        &[get_explicit_start_flag(doc)],
-        &[get_explicit_end_flag(doc)],
-        &[get_yaml_version_flag(doc)],
-        &[get_tag_directives_flag(doc)],
-        indent,
-    ))
+    let (node, meta) = extract_doc_and_meta(doc, schema)?;
+    Ok(emit_docs(std::slice::from_ref(&node), &[meta], indent))
 }
 
 /// Emit a single document directly to a Python IO stream via [`PyStreamWriter`].
@@ -94,17 +96,9 @@ fn emit_doc_to_stream(
     stream: &Bound<'_, PyAny>,
     indent: usize,
 ) -> PyResult<()> {
-    let node = extract_doc_node(doc, schema)?;
+    let (node, meta) = extract_doc_and_meta(doc, schema)?;
     let mut writer = PyStreamWriter::new(stream.clone().unbind());
-    let _ = emit_docs_to(
-        std::slice::from_ref(&node),
-        &[get_explicit_start_flag(doc)],
-        &[get_explicit_end_flag(doc)],
-        &[get_yaml_version_flag(doc)],
-        &[get_tag_directives_flag(doc)],
-        indent,
-        &mut writer,
-    );
+    let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
     if let Some(err) = writer.take_error() {
         return Err(err);
     }
@@ -126,7 +120,7 @@ fn load(
     if out.docs.is_empty() {
         return Ok(py.None());
     }
-    let meta = doc_meta(&mut out, 0);
+    let meta = doc_meta(&out.docs_meta, 0);
     node_to_doc(py, out.docs.swap_remove(0), meta, sb)
 }
 
@@ -139,7 +133,7 @@ fn loads(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<
     if out.docs.is_empty() {
         return Ok(py.None());
     }
-    let meta = doc_meta(&mut out, 0);
+    let meta = doc_meta(&out.docs_meta, 0);
     node_to_doc(py, out.docs.swap_remove(0), meta, sb)
 }
 
@@ -152,20 +146,11 @@ fn load_all(
 ) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let mut out = parse_stream(stream, sb_borrow.as_deref())?;
-    let pydocs: Vec<Py<PyAny>> = out
-        .docs
-        .drain(..)
+    let builder::ParseOutput { docs, docs_meta } = parse_stream(stream, sb_borrow.as_deref())?;
+    let pydocs: Vec<Py<PyAny>> = docs
+        .into_iter()
         .enumerate()
-        .map(|(i, d)| {
-            let meta = DocMeta {
-                explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
-                explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
-                yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
-                tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
-            };
-            node_to_doc(py, d, meta, sb)
-        })
+        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
@@ -175,20 +160,11 @@ fn load_all(
 fn loads_all(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let mut out = parse_text(text, sb_borrow.as_deref())?;
-    let pydocs: Vec<Py<PyAny>> = out
-        .docs
-        .drain(..)
+    let builder::ParseOutput { docs, docs_meta } = parse_text(text, sb_borrow.as_deref())?;
+    let pydocs: Vec<Py<PyAny>> = docs
+        .into_iter()
         .enumerate()
-        .map(|(i, d)| {
-            let meta = DocMeta {
-                explicit_start: out.doc_explicit.get(i).copied().unwrap_or(false),
-                explicit_end: out.doc_explicit_end.get(i).copied().unwrap_or(false),
-                yaml_version: out.doc_yaml_version.get(i).and_then(|v| *v),
-                tag_directives: out.doc_tag_directives.get(i).cloned().unwrap_or_default(),
-            };
-            node_to_doc(py, d, meta, sb)
-        })
+        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, pydocs)?.into_any().unbind())
 }
@@ -282,22 +258,11 @@ fn dump_all(
     let n = items.len();
     let mut writer = PyStreamWriter::new(stream.clone().unbind());
     for (i, item) in items.iter().enumerate() {
-        init_anchor_state(item);
-        let node_result = extract_yaml_node(item, sb);
-        clear_anchor_state();
-        let node = node_result?;
-        // Pass `n > 1` via a synthetic explicit_start so that multi-doc streams
-        // always emit `---` separators (matching the original emit_docs behaviour).
-        let want_start = get_explicit_start_flag(item) || (n > 1 && i == 0) || i > 0;
-        let _ = emit_docs_to(
-            std::slice::from_ref(&node),
-            &[want_start],
-            &[get_explicit_end_flag(item)],
-            &[get_yaml_version_flag(item)],
-            &[get_tag_directives_flag(item)],
-            indent,
-            &mut writer,
-        );
+        let (node, mut meta) = extract_doc_and_meta(item, sb)?;
+        // Synthetic explicit_start so that multi-doc streams always emit `---`
+        // separators (matches the emit_docs behaviour for batched emit).
+        meta.explicit_start |= (n > 1 && i == 0) || i > 0;
+        let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
         if let Some(err) = writer.take_error() {
             return Err(err);
         }
@@ -315,21 +280,13 @@ fn dumps_all(
 ) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
-    let nodes: Vec<YamlNode> = items
+    let (nodes, meta): (Vec<YamlNode>, Vec<builder::DocMetadata>) = items
         .iter()
-        .map(|i| {
-            init_anchor_state(i);
-            let node = extract_yaml_node(i, sb);
-            clear_anchor_state();
-            node
-        })
-        .collect::<PyResult<_>>()?;
-    let starts: Vec<bool> = items.iter().map(|i| get_explicit_start_flag(i)).collect();
-    let ends: Vec<bool> = items.iter().map(|i| get_explicit_end_flag(i)).collect();
-    let versions: Vec<Option<(u8, u8)>> = items.iter().map(|i| get_yaml_version_flag(i)).collect();
-    let tags: Vec<Vec<(String, String)>> =
-        items.iter().map(|i| get_tag_directives_flag(i)).collect();
-    Ok(emit_docs(&nodes, &starts, &ends, &versions, &tags, indent))
+        .map(|i| extract_doc_and_meta(i, sb))
+        .collect::<PyResult<Vec<_>>>()?
+        .into_iter()
+        .unzip();
+    Ok(emit_docs(&nodes, &meta, indent))
 }
 
 /// The yarutsk module.

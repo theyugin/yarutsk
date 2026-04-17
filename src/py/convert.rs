@@ -141,9 +141,8 @@ fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
 
 /// Initialise per-document anchor state.  Run the pre-pass over *doc* to find
 /// all plain containers that appear more than once, then store the result in the
-/// thread-local `ANCHOR_EMIT`.  Call `clear_anchor_state` when serialisation is
-/// complete.
-pub(crate) fn init_anchor_state(doc: &Bound<'_, PyAny>) {
+/// thread-local `ANCHOR_EMIT`.
+fn init_anchor_state(doc: &Bound<'_, PyAny>) {
     let mut ref_count: HashMap<usize, usize> = HashMap::new();
     prepass(doc, &mut ref_count);
     let anchors = ref_count
@@ -160,10 +159,28 @@ pub(crate) fn init_anchor_state(doc: &Bound<'_, PyAny>) {
 }
 
 /// Clear the anchor state after serialising a document.
-pub(crate) fn clear_anchor_state() {
+fn clear_anchor_state() {
     ANCHOR_EMIT.with(|s| {
         *s.borrow_mut() = None;
     });
+}
+
+/// RAII wrapper around the per-document anchor state.  Created when serialising
+/// a document, cleared when dropped — so the thread-local `ANCHOR_EMIT` is
+/// always reset even if extraction returns an error or panics mid-way.
+pub(crate) struct AnchorGuard;
+
+impl AnchorGuard {
+    pub(crate) fn new(doc: &Bound<'_, PyAny>) -> Self {
+        init_anchor_state(doc);
+        AnchorGuard
+    }
+}
+
+impl Drop for AnchorGuard {
+    fn drop(&mut self) {
+        clear_anchor_state();
+    }
 }
 
 /// Check whether *ptr* needs special anchor/alias treatment during emit.

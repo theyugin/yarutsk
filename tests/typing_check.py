@@ -10,12 +10,11 @@ mypy will error if the inferred types contradict the declared ones.
 from __future__ import annotations
 
 import io
-from typing import Any, Callable
-from collections.abc import KeysView
+from collections.abc import Callable, KeysView
+from typing import Any
 
 import yarutsk
 from yarutsk import Schema, YamlIter, YamlMapping, YamlScalar, YamlSequence
-
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -41,12 +40,8 @@ def check_schema_add_dumper() -> None:
 
 
 def check_load_from_stream() -> None:
-    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
-        io.StringIO("key: val")
-    )
-    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
-        io.BytesIO(b"key: val")
-    )
+    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.StringIO("key: val"))
+    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.BytesIO(b"key: val"))
     _ = doc, doc2
 
 
@@ -64,9 +59,7 @@ def check_load_all() -> None:
 
 
 def check_loads_all() -> None:
-    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all(
-        "---\na: 1\n---\nb: 2"
-    )
+    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all("---\na: 1\n---\nb: 2")
     _ = docs
 
 
@@ -75,9 +68,7 @@ def check_load_with_schema() -> None:
     doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
         io.StringIO("key: val"), schema=schema
     )
-    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads(
-        "key: val", schema=schema
-    )
+    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("key: val", schema=schema)
     _ = doc, doc2
 
 
@@ -86,9 +77,7 @@ def check_load_all_with_schema() -> None:
     docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.load_all(
         io.StringIO("a: 1"), schema=schema
     )
-    docs2: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all(
-        "a: 1", schema=schema
-    )
+    docs2: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all("a: 1", schema=schema)
     _ = docs, docs2
 
 

@@ -1,0 +1,42 @@
+[package]
+name = "yarutsk-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.yarutsk]
+path = ".."
+
+# Prevent this Cargo.toml from being picked up as a workspace member of the
+# parent crate. cargo-fuzz manages this sub-crate independently.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "scanner"
+path = "fuzz_targets/scanner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser"
+path = "fuzz_targets/parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false

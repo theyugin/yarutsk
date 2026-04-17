@@ -1,13 +1,14 @@
 [package]
 name = "yarutsk"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
+rust-version = "1.85"
 description = "A YAML round-trip library that preserves comments and insertion order"
 license = "MIT"
 
 [lib]
 name = "yarutsk"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 indexmap = "2"
@@ -17,3 +18,9 @@ base64 = "0.22"
 
 [profile.release]
 lto = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

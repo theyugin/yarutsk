@@ -15,7 +15,6 @@ import io
 import threading
 from textwrap import dedent
 
-
 import yarutsk
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

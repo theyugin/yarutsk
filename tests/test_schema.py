@@ -4,7 +4,6 @@ import datetime
 from textwrap import dedent
 
 import pytest
-
 import yarutsk
 
 
@@ -111,9 +110,7 @@ class TestCustomMappingType:
 class TestCustomScalarType:
     def setup_method(self) -> None:
         self.schema = yarutsk.Schema()
-        self.schema.add_loader(
-            "!color", lambda s: Color(*[int(x) for x in s.split(",")])
-        )
+        self.schema.add_loader("!color", lambda s: Color(*[int(x) for x in s.split(",")]))
         self.schema.add_dumper(Color, lambda c: ("!color", f"{c.r},{c.g},{c.b}"))
 
     def test_load_scalar_tag(self) -> None:
@@ -172,9 +169,7 @@ class TestOverrideBuiltinTags:
     def test_override_bool_receives_raw_string(self) -> None:
         received: list[str] = []
         schema = yarutsk.Schema()
-        schema.add_loader(
-            "!!bool", lambda raw: received.append(raw) or (raw.lower() == "true")
-        )
+        schema.add_loader("!!bool", lambda raw: received.append(raw) or (raw.lower() == "true"))
 
         doc = yarutsk.loads("x: !!bool true\n", schema=schema)
         assert doc["x"] is True
@@ -553,9 +548,7 @@ class TestSchemaErrors:
 
     def test_loader_receives_sequence_raises_loader_error(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_loader(
-            "!color", lambda s: s.split(",")
-        )  # expects str, gets sequence
+        schema.add_loader("!color", lambda s: s.split(","))  # expects str, gets sequence
 
         with pytest.raises(yarutsk.LoaderError) as exc_info:
             yarutsk.loads(
@@ -566,9 +559,7 @@ class TestSchemaErrors:
 
     def test_loader_raises_on_valid_input(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_loader(
-            "!boom", lambda s: (_ for _ in ()).throw(ValueError("intentional"))
-        )
+        schema.add_loader("!boom", lambda s: (_ for _ in ()).throw(ValueError("intentional")))
 
         with pytest.raises(yarutsk.LoaderError) as exc_info:
             yarutsk.loads("x: !boom value\n", schema=schema)
@@ -576,9 +567,7 @@ class TestSchemaErrors:
 
     def test_dumper_raises_loader_error(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_dumper(
-            Point, lambda p: (_ for _ in ()).throw(RuntimeError("dump fail"))
-        )
+        schema.add_dumper(Point, lambda p: (_ for _ in ()).throw(RuntimeError("dump fail")))
 
         doc = yarutsk.loads("x: placeholder\n")
         doc["x"] = Point(1, 2)

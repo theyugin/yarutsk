@@ -14,22 +14,30 @@ pub struct TagPolicy {
     pub raw_tags: HashSet<String>,
 }
 
+/// Document-level metadata for one parsed YAML document.
+#[derive(Debug, Default, Clone)]
+pub struct DocMetadata {
+    /// Whether the doc had an explicit `---` marker.
+    pub explicit_start: bool,
+    /// Whether the doc had an explicit `...` end marker.
+    pub explicit_end: bool,
+    /// `%YAML major.minor` directive, if present.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs (empty if none).
+    pub tag_directives: Vec<(String, String)>,
+}
+
 pub struct Builder {
     stack: Vec<Frame>,
     pub docs: Vec<YamlNode>,
-    /// Whether each doc in `docs` had an explicit `---` marker.
-    pub doc_explicit: Vec<bool>,
-    /// Whether each doc in `docs` had an explicit `...` end marker.
-    pub doc_explicit_end: Vec<bool>,
-    /// `%YAML major.minor` directive for each doc, if present.
-    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
-    /// `%TAG handle prefix` pairs for each doc (empty vec if none).
-    pub doc_tag_directives: Vec<Vec<(String, String)>>,
-    /// Whether the next document to be pushed had an explicit `---` marker.
-    next_explicit: bool,
-    /// Directives captured from the current `DocumentStart` event.
-    next_yaml_version: Option<(u8, u8)>,
-    next_tag_directives: Vec<(String, String)>,
+    /// Per-document metadata, indexed by document position in `docs`.
+    pub docs_meta: Vec<DocMetadata>,
+    /// Staging slot for the current DocumentStart's metadata.  Consumed and
+    /// pushed onto `docs_meta` when the document's root node is pushed.
+    next_meta: DocMetadata,
+    /// Monotonically increasing count of DocumentEnd events processed.  Used
+    /// by the streaming iterator to detect when a full document is ready.
+    pub doc_end_count: usize,
     /// Line of the last SCALAR content token (key or value), for inline comment detection.
     /// Only scalars update this; MappingEnd/SequenceEnd do not.
     last_content_line: Option<usize>,
@@ -171,22 +179,29 @@ fn map_scalar_style(style: TScalarStyle) -> ScalarStyle {
     }
 }
 
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Builder {
     pub fn new() -> Self {
         Builder {
             stack: Vec::new(),
             docs: Vec::new(),
-            doc_explicit: Vec::new(),
-            doc_explicit_end: Vec::new(),
-            doc_yaml_version: Vec::new(),
-            doc_tag_directives: Vec::new(),
-            next_explicit: false,
-            next_yaml_version: None,
-            next_tag_directives: Vec::new(),
+            docs_meta: Vec::new(),
+            next_meta: DocMetadata::default(),
+            doc_end_count: 0,
             last_content_line: None,
             pending_before: Vec::new(),
             anchor_table: HashMap::new(),
         }
+    }
+
+    /// Commit staged `next_meta` as the metadata for the doc about to be pushed.
+    fn commit_next_meta(&mut self) {
+        self.docs_meta.push(std::mem::take(&mut self.next_meta));
     }
 
     /// Process newly collected comments: inline if on same line as last scalar, else before-key.
@@ -269,10 +284,7 @@ impl Builder {
     fn push_node(&mut self, node: YamlNode) {
         match self.stack.last_mut() {
             None => {
-                self.doc_explicit.push(self.next_explicit);
-                self.doc_yaml_version.push(self.next_yaml_version.take());
-                self.doc_tag_directives
-                    .push(std::mem::take(&mut self.next_tag_directives));
+                self.commit_next_meta();
                 self.docs.push(node);
             }
             Some(Frame::Mapping(mf)) => {
@@ -308,16 +320,31 @@ impl Builder {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
 
             Event::DocumentStart(explicit, version, tag_dirs) => {
-                self.next_explicit = explicit;
-                self.next_yaml_version = version;
-                self.next_tag_directives = tag_dirs;
+                self.next_meta = DocMetadata {
+                    explicit_start: explicit,
+                    explicit_end: false,
+                    yaml_version: version,
+                    tag_directives: tag_dirs,
+                };
                 // Record the document-start line so blank lines between `---` and
                 // the first key are counted correctly by count_blank_lines.
                 self.last_content_line = Some(mark.line());
             }
 
             Event::DocumentEnd(explicit_end) => {
-                self.doc_explicit_end.push(explicit_end);
+                self.doc_end_count += 1;
+                // The doc root node has been pushed, so `docs_meta` has an entry
+                // for this doc.  Update its end marker.
+                if let Some(m) = self.docs_meta.last_mut() {
+                    m.explicit_end = explicit_end;
+                } else {
+                    // No root node (empty doc): push an otherwise-default entry
+                    // so `docs_meta.len()` tracks the end count.
+                    self.docs_meta.push(DocMetadata {
+                        explicit_end,
+                        ..DocMetadata::default()
+                    });
+                }
             }
 
             Event::MappingStart(anchor_name, tag, is_flow) => {
@@ -539,10 +566,7 @@ impl Builder {
 
                 match self.stack.last_mut() {
                     None => {
-                        self.doc_explicit.push(self.next_explicit);
-                        self.doc_yaml_version.push(self.next_yaml_version.take());
-                        self.doc_tag_directives
-                            .push(std::mem::take(&mut self.next_tag_directives));
+                        self.commit_next_meta();
                         self.docs.push(node);
                     }
                     Some(Frame::Mapping(mf)) => {
@@ -639,10 +663,7 @@ fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
 /// Parsed output from a YAML input string.
 pub struct ParseOutput {
     pub docs: Vec<YamlNode>,
-    pub doc_explicit: Vec<bool>,
-    pub doc_explicit_end: Vec<bool>,
-    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
-    pub doc_tag_directives: Vec<Vec<(String, String)>>,
+    pub docs_meta: Vec<DocMetadata>,
 }
 
 pub fn parse_iter<T: Iterator<Item = char>>(
@@ -675,10 +696,7 @@ pub fn parse_iter<T: Iterator<Item = char>>(
 
     Ok(ParseOutput {
         docs: builder.docs,
-        doc_explicit: builder.doc_explicit,
-        doc_explicit_end: builder.doc_explicit_end,
-        doc_yaml_version: builder.doc_yaml_version,
-        doc_tag_directives: builder.doc_tag_directives,
+        docs_meta: builder.docs_meta,
     })
 }
 
@@ -696,14 +714,7 @@ mod tests {
     /// Full round-trip: parse `src`, emit, assert output == `src`.
     fn rt(src: &str) {
         let out_data = parse_str(src, None).expect("parse failed");
-        let out = emit_docs(
-            &out_data.docs,
-            &out_data.doc_explicit,
-            &out_data.doc_explicit_end,
-            &out_data.doc_yaml_version,
-            &out_data.doc_tag_directives,
-            2,
-        );
+        let out = emit_docs(&out_data.docs, &out_data.docs_meta, 2);
         assert_eq!(
             out, src,
             "round-trip mismatch\n---expected---\n{src}\n---got---\n{out}\n"
@@ -723,8 +734,7 @@ mod tests {
     fn empty_input_produces_no_docs() {
         let out = parse_str("", None).unwrap();
         assert!(out.docs.is_empty());
-        assert!(out.doc_explicit.is_empty());
-        assert!(out.doc_explicit_end.is_empty());
+        assert!(out.docs_meta.is_empty());
     }
 
     #[test]
@@ -1125,26 +1135,46 @@ mod tests {
     #[test]
     fn explicit_start_marker_recorded() {
         let out = parse_str("---\na: 1\n", None).unwrap();
-        assert_eq!(out.doc_explicit, [true]);
+        assert_eq!(
+            out.docs_meta
+                .iter()
+                .map(|m| m.explicit_start)
+                .collect::<Vec<_>>(),
+            [true]
+        );
     }
 
     #[test]
     fn no_explicit_start_without_dashes() {
         let out = parse_str("a: 1\n", None).unwrap();
-        assert_eq!(out.doc_explicit, [false]);
+        assert_eq!(
+            out.docs_meta
+                .iter()
+                .map(|m| m.explicit_start)
+                .collect::<Vec<_>>(),
+            [false]
+        );
     }
 
     #[test]
     fn explicit_end_marker_recorded() {
         let out = parse_str("a: 1\n...\n", None).unwrap();
-        assert_eq!(out.doc_explicit_end, [true]);
+        assert_eq!(
+            out.docs_meta
+                .iter()
+                .map(|m| m.explicit_end)
+                .collect::<Vec<_>>(),
+            [true]
+        );
     }
 
     #[test]
     fn both_markers_recorded() {
         let out = parse_str("---\na: 1\n...\n", None).unwrap();
-        assert_eq!(out.doc_explicit, [true]);
-        assert_eq!(out.doc_explicit_end, [true]);
+        let starts: Vec<_> = out.docs_meta.iter().map(|m| m.explicit_start).collect();
+        let ends: Vec<_> = out.docs_meta.iter().map(|m| m.explicit_end).collect();
+        assert_eq!(starts, [true]);
+        assert_eq!(ends, [true]);
     }
 
     // ── Multiple documents ────────────────────────────────────────────────────
@@ -1153,8 +1183,10 @@ mod tests {
     fn two_docs_parsed() {
         let out = parse_str("---\na: 1\n---\nb: 2\n", None).unwrap();
         assert_eq!(out.docs.len(), 2);
-        assert_eq!(out.doc_explicit, [true, true]);
-        assert_eq!(out.doc_explicit_end, [false, false]);
+        let starts: Vec<_> = out.docs_meta.iter().map(|m| m.explicit_start).collect();
+        let ends: Vec<_> = out.docs_meta.iter().map(|m| m.explicit_end).collect();
+        assert_eq!(starts, [true, true]);
+        assert_eq!(ends, [false, false]);
     }
 
     // ── Block scalars ─────────────────────────────────────────────────────────

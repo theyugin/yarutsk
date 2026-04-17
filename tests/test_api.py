@@ -5,7 +5,6 @@ import io
 from textwrap import dedent
 
 import pytest
-
 import yarutsk
 
 
@@ -1571,7 +1570,7 @@ class TestMappingInnerSync:
 
     def test_popitem_syncs_inner(self):
         doc = yarutsk.loads("a: 1\nb: 2\n")
-        k, v = doc.popitem()
+        k, _v = doc.popitem()
         assert k not in doc
         out = yarutsk.dumps(doc)
         assert k not in out
@@ -1786,7 +1785,7 @@ class TestYamlIter:
         expected = yarutsk.loads_all(text)
         actual = list(yarutsk.iter_loads_all(text))
         assert len(actual) == len(expected)
-        for exp, act in zip(expected, actual):
+        for exp, act in zip(expected, actual, strict=False):
             assert yarutsk.dumps(exp) == yarutsk.dumps(act)
 
     def test_iter_load_all_results_match_load_all(self):
@@ -1794,5 +1793,5 @@ class TestYamlIter:
         expected = yarutsk.loads_all(text)
         actual = list(yarutsk.iter_load_all(io.StringIO(text)))
         assert len(actual) == len(expected)
-        for exp, act in zip(expected, actual):
+        for exp, act in zip(expected, actual, strict=False):
             assert yarutsk.dumps(exp) == yarutsk.dumps(act)

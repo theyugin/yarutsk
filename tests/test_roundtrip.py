@@ -1,9 +1,10 @@
 """Tests for round-trip fidelity: scalar styles, container styles,
 alias expansion, tags, and explicit document markers."""
 
-import pytest
+import io
 from textwrap import dedent
 
+import pytest
 import yarutsk
 
 
@@ -901,6 +902,7 @@ class TestTimestampTagRoundTrip:
 
     def test_timestamp_dump_from_datetime(self):
         import datetime
+
         import yarutsk as yr
 
         mapping = yr.loads("x: placeholder\n")
@@ -1088,3 +1090,32 @@ class TestContainerStyleSetter:
         doc = yarutsk.loads("- hello\n")
         doc.container_style(0, "flow")
         assert yarutsk.dumps(doc) == "- hello\n"
+
+
+class TestStreamRoundTrip:
+    """load(stream) -> dump(stream) loops should preserve the source byte-for-byte."""
+
+    def test_stringio_roundtrip(self):
+        src = dedent("""\
+            # a greeting
+            hello: world
+            nums: [1, 2, 3]
+        """)
+        doc = yarutsk.load(io.StringIO(src))
+        buf = io.StringIO()
+        yarutsk.dump(doc, buf)
+        assert buf.getvalue() == src
+
+    def test_bytesio_roundtrip(self):
+        src = b"# a greeting\nhello: world\nnums: [1, 2, 3]\n"
+        doc = yarutsk.load(io.BytesIO(src))
+        buf = io.BytesIO()
+        yarutsk.dump(doc, buf)
+        assert buf.getvalue() == src
+
+    def test_multidoc_stream_roundtrip(self):
+        src = b"---\na: 1\n...\n---\nb: 2\n...\n"
+        docs = list(yarutsk.iter_load_all(io.BytesIO(src)))
+        buf = io.BytesIO()
+        yarutsk.dump_all(docs, buf)
+        assert buf.getvalue() == src

@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
+use super::builder::DocMetadata;
 use super::types::*;
 
 // ─── LastCharTracker ─────────────────────────────────────────────────────────
@@ -123,19 +124,18 @@ pub fn emit_node<W: FmtWrite>(
 /// Any slice may be shorter than `docs`; missing entries default to `false` / `None` / empty.
 pub fn emit_docs_to<W: FmtWrite>(
     docs: &[YamlNode],
-    explicit_starts: &[bool],
-    explicit_ends: &[bool],
-    yaml_versions: &[Option<(u8, u8)>],
-    tag_directives: &[Vec<(String, String)>],
+    meta: &[DocMetadata],
     indent_step: usize,
     out: &mut W,
 ) -> fmt::Result {
     let step = if indent_step == 0 { 2 } else { indent_step };
+    let empty_meta = DocMetadata::default();
     for (i, doc) in docs.iter().enumerate() {
-        let want_start = explicit_starts.get(i).copied().unwrap_or(false);
-        let want_end = explicit_ends.get(i).copied().unwrap_or(false);
-        let version = yaml_versions.get(i).and_then(|v| *v);
-        let tags = tag_directives.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let m = meta.get(i).unwrap_or(&empty_meta);
+        let want_start = m.explicit_start;
+        let want_end = m.explicit_end;
+        let version = m.yaml_version;
+        let tags = m.tag_directives.as_slice();
         let has_directives = version.is_some() || !tags.is_empty();
         if has_directives || docs.len() > 1 || want_start {
             if let Some((major, minor)) = version {
@@ -163,25 +163,9 @@ pub fn emit_docs_to<W: FmtWrite>(
 
 /// Emit a full document list to a `String`.
 /// Convenience wrapper around [`emit_docs_to`] for callers that need a `String`.
-pub fn emit_docs(
-    docs: &[YamlNode],
-    explicit_starts: &[bool],
-    explicit_ends: &[bool],
-    yaml_versions: &[Option<(u8, u8)>],
-    tag_directives: &[Vec<(String, String)>],
-    indent_step: usize,
-) -> String {
+pub fn emit_docs(docs: &[YamlNode], meta: &[DocMetadata], indent_step: usize) -> String {
     let mut out = String::with_capacity(256);
-    emit_docs_to(
-        docs,
-        explicit_starts,
-        explicit_ends,
-        yaml_versions,
-        tag_directives,
-        indent_step,
-        &mut out,
-    )
-    .expect("writing to String is infallible");
+    emit_docs_to(docs, meta, indent_step, &mut out).expect("writing to String is infallible");
     out
 }
 
@@ -1211,7 +1195,7 @@ mod tests {
     #[test]
     fn emit_float() {
         let s = make_scalar_node(
-            ScalarValue::Float(3.14),
+            ScalarValue::Float(2.5),
             ScalarStyle::Plain,
             None,
             None,
@@ -1463,31 +1447,40 @@ mod tests {
 
     // ── emit_docs: single doc ─────────────────────────────────────────────────
 
+    fn meta(explicit_start: bool, explicit_end: bool) -> DocMetadata {
+        DocMetadata {
+            explicit_start,
+            explicit_end,
+            yaml_version: None,
+            tag_directives: Vec::new(),
+        }
+    }
+
     #[test]
     fn emit_single_doc_no_markers() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[false], &[false], &[None], &[vec![]], 2);
+        let out = emit_docs(&[m], &[meta(false, false)], 2);
         assert_eq!(out, "a: 1\n");
     }
 
     #[test]
     fn emit_single_doc_with_start_marker() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[true], &[false], &[None], &[vec![]], 2);
+        let out = emit_docs(&[m], &[meta(true, false)], 2);
         assert_eq!(out, "---\na: 1\n");
     }
 
     #[test]
     fn emit_single_doc_with_end_marker() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[false], &[true], &[None], &[vec![]], 2);
+        let out = emit_docs(&[m], &[meta(false, true)], 2);
         assert_eq!(out, "a: 1\n...\n");
     }
 
     #[test]
     fn emit_single_doc_with_both_markers() {
         let m = YamlNode::Mapping(make_mapping(&[("a", plain_int(1))]));
-        let out = emit_docs(&[m], &[true], &[true], &[None], &[vec![]], 2);
+        let out = emit_docs(&[m], &[meta(true, true)], 2);
         assert_eq!(out, "---\na: 1\n...\n");
     }
 
@@ -1497,14 +1490,7 @@ mod tests {
     fn emit_two_docs_adds_start_markers() {
         let d1 = plain_str("hello");
         let d2 = plain_str("world");
-        let out = emit_docs(
-            &[d1, d2],
-            &[false, false],
-            &[false, false],
-            &[None, None],
-            &[vec![], vec![]],
-            2,
-        );
+        let out = emit_docs(&[d1, d2], &[meta(false, false), meta(false, false)], 2);
         assert!(
             out.starts_with("---\n"),
             "expected --- before first doc: {out}"
@@ -1517,7 +1503,7 @@ mod tests {
 
     #[test]
     fn emit_empty_docs_slice() {
-        let out = emit_docs(&[], &[], &[], &[], &[], 2);
+        let out = emit_docs(&[], &[], 2);
         assert_eq!(out, "");
     }
 
@@ -1531,7 +1517,7 @@ mod tests {
             ("m", plain_int(3)),
         ]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "z: 1");
         assert_eq!(lines[1], "a: 2");
@@ -1542,7 +1528,7 @@ mod tests {
     fn emit_empty_mapping() {
         let m = make_mapping(&[]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "{}\n");
     }
 
@@ -1551,7 +1537,7 @@ mod tests {
         let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
         m.style = ContainerStyle::Flow;
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "{a: 1, b: 2}");
     }
 
@@ -1562,7 +1548,7 @@ mod tests {
         entry.comment_inline = Some("a comment".to_owned());
         m.entries.insert("key".to_owned(), entry);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: 1  # a comment\n");
     }
 
@@ -1573,7 +1559,7 @@ mod tests {
         entry.comment_before = Some("header".to_owned());
         m.entries.insert("key".to_owned(), entry);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "# header\nkey: 1\n");
     }
 
@@ -1582,7 +1568,7 @@ mod tests {
         let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
         m.entries.get_mut("b").unwrap().blank_lines_before = 1;
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "a: 1\n\nb: 2\n");
     }
 
@@ -1591,7 +1577,7 @@ mod tests {
         let empty = YamlNode::Mapping(make_mapping(&[]));
         let m = make_mapping(&[("key", empty)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: {}\n");
     }
 
@@ -1600,7 +1586,7 @@ mod tests {
         let empty = YamlNode::Sequence(make_seq(&[]));
         let m = make_mapping(&[("key", empty)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert_eq!(out, "key: []\n");
     }
 
@@ -1610,7 +1596,7 @@ mod tests {
     fn emit_sequence_items() {
         let s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "- 1\n- 2\n- 3\n");
     }
 
@@ -1618,7 +1604,7 @@ mod tests {
     fn emit_empty_sequence() {
         let s = make_seq(&[]);
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "[]\n");
     }
 
@@ -1627,7 +1613,7 @@ mod tests {
         let mut s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
         s.style = ContainerStyle::Flow;
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "[1, 2, 3]");
     }
 
@@ -1641,7 +1627,7 @@ mod tests {
             blank_lines_before: 0,
         });
         let mut out = String::new();
-        emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Sequence(s), 0, 2, &mut out);
         assert_eq!(out, "- 1  # one\n");
     }
 
@@ -1660,7 +1646,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |\n"),
             "expected block indicator: {out}"
@@ -1684,7 +1670,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: >\n"),
             "expected folded indicator: {out}"
@@ -1712,7 +1698,7 @@ mod tests {
                 }),
             )]);
             let mut out = String::new();
-            emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+            let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
             let re_parsed = crate::core::builder::parse_str(&out, None).expect("re-parse failed");
             let re_docs = re_parsed.docs;
             if let YamlNode::Mapping(m2) = &re_docs[0] {
@@ -1741,7 +1727,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |-\n"),
             "expected strip chomping: {out}"
@@ -1762,7 +1748,7 @@ mod tests {
             }),
         )]);
         let mut out = String::new();
-        emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
+        let _ = emit_node(&YamlNode::Mapping(m), 0, 2, &mut out);
         assert!(
             out.starts_with("text: |+\n"),
             "expected keep chomping: {out}"

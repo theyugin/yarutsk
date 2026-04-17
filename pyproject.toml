@@ -27,6 +27,9 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/theyugin/yarutsk"
 Repository = "https://github.com/theyugin/yarutsk"
+Documentation = "https://github.com/theyugin/yarutsk/blob/main/README.md"
+Changelog = "https://github.com/theyugin/yarutsk/blob/main/CHANGELOG.md"
+Issues = "https://github.com/theyugin/yarutsk/issues"
 
 [tool.maturin]
 include = ["yarutsk.pyi"]
@@ -38,6 +41,30 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["yaml-test-suite", ".venv", "target"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",  # line-too-long (formatter handles this)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [dependency-groups]
 dev = [
@@ -51,4 +78,8 @@ benchmark = [
     "pyyaml>=6.0",
     "ruamel.yaml>=0.18",
     "pytest-benchmark[histogram]>=5.0",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
 ]

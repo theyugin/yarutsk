@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use super::convert::{DocMeta, node_to_doc};
 use super::schema::Schema;
 use super::streaming::CharsSource;
-use crate::core::builder::{Builder, TagPolicy};
+use crate::core::builder::{Builder, DocMetadata, TagPolicy};
 use crate::core::parser::{Event, Parser};
 
 // ─── Inner state ──────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ impl PyYamlIter {
             Some(i) => i,
         };
 
-        let docs_before = inner.builder.doc_explicit_end.len();
+        let ends_before = inner.builder.doc_end_count;
 
         loop {
             let (ev, mark) = inner
@@ -81,7 +81,7 @@ impl PyYamlIter {
                 break;
             }
 
-            if inner.builder.doc_explicit_end.len() > docs_before {
+            if inner.builder.doc_end_count > ends_before {
                 // A DocumentEnd event was processed — one full doc is ready.
                 break;
             }
@@ -91,34 +91,19 @@ impl PyYamlIter {
             return Ok(None);
         }
 
-        // Extract the first (oldest) document from all five parallel vecs.
+        // Pop the oldest document off the front of both parallel vecs.
         let doc_node = inner.builder.docs.remove(0);
-        let explicit_start = if inner.builder.doc_explicit.is_empty() {
-            false
+        let m = if inner.builder.docs_meta.is_empty() {
+            DocMetadata::default()
         } else {
-            inner.builder.doc_explicit.remove(0)
-        };
-        let explicit_end = if inner.builder.doc_explicit_end.is_empty() {
-            false
-        } else {
-            inner.builder.doc_explicit_end.remove(0)
-        };
-        let yaml_version = if inner.builder.doc_yaml_version.is_empty() {
-            None
-        } else {
-            inner.builder.doc_yaml_version.remove(0)
-        };
-        let tag_directives = if inner.builder.doc_tag_directives.is_empty() {
-            vec![]
-        } else {
-            inner.builder.doc_tag_directives.remove(0)
+            inner.builder.docs_meta.remove(0)
         };
 
         let meta = DocMeta {
-            explicit_start,
-            explicit_end,
-            yaml_version,
-            tag_directives,
+            explicit_start: m.explicit_start,
+            explicit_end: m.explicit_end,
+            yaml_version: m.yaml_version,
+            tag_directives: m.tag_directives,
         };
 
         let py_doc = node_to_doc(py, doc_node, meta, schema.as_ref())?;

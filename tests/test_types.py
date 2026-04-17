@@ -3,7 +3,6 @@ special-character strings."""
 
 from textwrap import dedent
 
-
 import yarutsk
 
 

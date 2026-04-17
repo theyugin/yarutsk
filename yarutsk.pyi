@@ -7,16 +7,15 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from collections.abc import Mapping as _Mapping, Sequence as _Sequence
 import datetime as _datetime
+from collections.abc import Callable, Iterable
+from collections.abc import Mapping as _Mapping
+from collections.abc import Sequence as _Sequence
 from typing import (
-    Any,
-    Callable,
     IO,
-    Iterable,
+    Any,
     Literal,
     SupportsIndex,
-    TypeAlias,
     TypeVar,
     overload,
 )
@@ -28,15 +27,7 @@ _Scalar = int | float | bool | str | None
 
 # Values accepted by the YamlScalar constructor.
 _ScalarInit = (
-    int
-    | float
-    | bool
-    | str
-    | bytes
-    | bytearray
-    | _datetime.datetime
-    | _datetime.date
-    | None
+    int | float | bool | str | bytes | bytearray | _datetime.datetime | _datetime.date | None
 )
 
 # Any top-level document node.
@@ -44,17 +35,17 @@ _Doc = "YamlMapping | YamlSequence | YamlScalar"
 
 # Any value accepted by dump/dumps — the Yaml types, abstract containers,
 # bytes, and scalar primitives.
-_Dumpable: TypeAlias = "YamlMapping | YamlSequence | YamlScalar | _Mapping[str, Any] | Iterable[Any] | bytes | bytearray | int | float | bool | str | None"
+type _Dumpable = "YamlMapping | YamlSequence | YamlScalar | _Mapping[str, Any] | Iterable[Any] | bytes | bytearray | int | float | bool | str | None"
 
 # ── Public type aliases ───────────────────────────────────────────────────────
 
-ScalarStyle: TypeAlias = Literal["plain", "single", "double", "literal", "folded"]
+type ScalarStyle = Literal["plain", "single", "double", "literal", "folded"]
 """The quoting style of a YAML scalar."""
 
-ContainerStyle: TypeAlias = Literal["block", "flow"]
+type ContainerStyle = Literal["block", "flow"]
 """The layout style of a YAML mapping or sequence."""
 
-YamlNode: TypeAlias = "YamlMapping | YamlSequence | YamlScalar"
+type YamlNode = "YamlMapping | YamlSequence | YamlScalar"
 """Any YAML document node (mapping, sequence, or scalar)."""
 
 class YarutskError(Exception):
@@ -103,9 +94,9 @@ class YamlScalar:
 
     def __init__(
         self,
-        value: "_ScalarInit",
+        value: _ScalarInit,
         *,
-        style: "ScalarStyle" = "plain",
+        style: ScalarStyle = "plain",
         tag: str | None = None,
     ) -> None:
         """Create a scalar with the given value, quoting style, and optional tag.
@@ -124,17 +115,17 @@ class YamlScalar:
         ...
 
     @property
-    def value(self) -> "_Scalar":
+    def value(self) -> _Scalar:
         """The Python primitive value of this scalar."""
         ...
 
     @property
-    def style(self) -> "ScalarStyle":
+    def style(self) -> ScalarStyle:
         """The scalar quoting style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``."""
         ...
 
     @style.setter
-    def style(self, value: "ScalarStyle") -> None: ...
+    def style(self, value: ScalarStyle) -> None: ...
     @property
     def explicit_start(self) -> bool:
         """Whether the source document had an explicit ``---`` marker."""
@@ -193,7 +184,7 @@ class YamlScalar:
         """
         ...
 
-    def to_python(self) -> "_Scalar":
+    def to_python(self) -> _Scalar:
         """Return the Python primitive value."""
         ...
 
@@ -218,11 +209,11 @@ class YamlMapping(dict[str, Any]):
 
     def __init__(
         self,
-        mapping: "_Mapping[str, Any] | YamlMapping | Iterable[tuple[str, Any]] | None" = None,
+        mapping: _Mapping[str, Any] | YamlMapping | Iterable[tuple[str, Any]] | None = None,
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
-        schema: "Schema | None" = None,
+        schema: Schema | None = None,
     ) -> None:
         """Create a mapping, optionally populated from *mapping*.
 
@@ -287,18 +278,18 @@ class YamlMapping(dict[str, Any]):
     def style(self, value: Literal["block", "flow"]) -> None: ...
     @property
     def trailing_blank_lines(self) -> int:
-        """Number of blank lines emitted after the last entry in this mapping (0–255)."""
+        """Number of blank lines emitted after the last entry in this mapping (0-255)."""
         ...
 
     @trailing_blank_lines.setter
     def trailing_blank_lines(self, value: int) -> None: ...
-    def node(self, key: str) -> "YamlMapping | YamlSequence | YamlScalar":
+    def node(self, key: str) -> YamlMapping | YamlSequence | YamlScalar:
         """Return the underlying YAML node for *key*, preserving style/tag metadata.
         Raises ``KeyError`` if *key* is absent.
         """
         ...
 
-    def scalar_style(self, key: str, style: "ScalarStyle") -> None:
+    def scalar_style(self, key: str, style: ScalarStyle) -> None:
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
@@ -323,7 +314,7 @@ class YamlMapping(dict[str, Any]):
 
     @overload
     def blank_lines_before(self, key: str, n: int) -> None:
-        """Set the number of blank lines before *key*. Values are clamped to 0–255.
+        """Set the number of blank lines before *key*. Values are clamped to 0-255.
         Raises ``KeyError`` if *key* is absent.
         """
         ...
@@ -433,7 +424,7 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    def nodes(self) -> "list[tuple[str, YamlMapping | YamlSequence | YamlScalar]]":
+    def nodes(self) -> list[tuple[str, YamlMapping | YamlSequence | YamlScalar]]:
         """Return a list of ``(key, node)`` pairs for all entries in this mapping.
 
         Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
@@ -442,9 +433,9 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    def copy(self) -> "YamlMapping": ...
-    def __copy__(self) -> "YamlMapping": ...
-    def __deepcopy__(self, memo: "dict[int, Any]") -> "YamlMapping": ...
+    def copy(self) -> YamlMapping: ...
+    def __copy__(self) -> YamlMapping: ...
+    def __deepcopy__(self, memo: dict[int, Any]) -> YamlMapping: ...
 
 class YamlSequence(list[Any]):
     """A YAML sequence node. Subclass of list — all standard list operations work.
@@ -463,11 +454,11 @@ class YamlSequence(list[Any]):
 
     def __init__(
         self,
-        iterable: "Iterable[Any] | None" = None,
+        iterable: Iterable[Any] | None = None,
         *,
         style: Literal["block", "flow"] = "block",
         tag: str | None = None,
-        schema: "Schema | None" = None,
+        schema: Schema | None = None,
     ) -> None:
         """Create a sequence, optionally populated from *iterable*.
 
@@ -531,12 +522,12 @@ class YamlSequence(list[Any]):
     def style(self, value: Literal["block", "flow"]) -> None: ...
     @property
     def trailing_blank_lines(self) -> int:
-        """Number of blank lines emitted after the last item in this sequence (0–255)."""
+        """Number of blank lines emitted after the last item in this sequence (0-255)."""
         ...
 
     @trailing_blank_lines.setter
     def trailing_blank_lines(self, value: int) -> None: ...
-    def scalar_style(self, idx: int, style: "ScalarStyle") -> None:
+    def scalar_style(self, idx: int, style: ScalarStyle) -> None:
         """Set the scalar quoting style for the item at *idx*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
@@ -556,9 +547,7 @@ class YamlSequence(list[Any]):
         """Remove all items from this sequence."""
         ...
 
-    def index(
-        self, value: object, start: SupportsIndex = ..., stop: SupportsIndex = ...
-    ) -> int:
+    def index(self, value: object, start: SupportsIndex = ..., stop: SupportsIndex = ...) -> int:
         """Return the index of the first occurrence of *value*."""
         ...
 
@@ -650,7 +639,7 @@ class YamlSequence(list[Any]):
 
     @overload
     def blank_lines_before(self, idx: int, n: int) -> None:
-        """Set the number of blank lines before the item at *idx*. Values are clamped to 0–255."""
+        """Set the number of blank lines before the item at *idx*. Values are clamped to 0-255."""
         ...
 
     def format(
@@ -671,8 +660,8 @@ class YamlSequence(list[Any]):
         """
         ...
 
-    def __copy__(self) -> "YamlSequence": ...
-    def __deepcopy__(self, memo: "dict[int, Any]") -> "YamlSequence": ...
+    def __copy__(self) -> YamlSequence: ...
+    def __deepcopy__(self, memo: dict[int, Any]) -> YamlSequence: ...
 
 class Schema:
     """A per-call type registry for customising load and dump behaviour.
@@ -697,22 +686,24 @@ class Schema:
     def add_loader(self, tag: str, func: Callable[[Any], Any]) -> None:
         """Register a loader callable for *tag*.
 
-        The callable receives the default-converted Python value:
+        For a tagged scalar node, the callable receives the default-converted
+        Python value (``str``, ``int``, ``float``, ``bool``, or ``None``). For
+        a tagged mapping or sequence node, it receives a ``YamlMapping`` or
+        ``YamlSequence`` respectively.
 
-        - For scalar nodes: ``str``, ``int``, ``float``, ``bool``, or ``None``
-          (for built-in coercion tags such as ``!!int`` / ``!!bool`` / ``!!null`` /
-          ``!!float`` / ``!!str``, the builder is bypassed and the raw YAML string
-          is passed instead, giving full control over parsing)
-        - For mapping nodes: a ``YamlMapping``
-        - For sequence nodes: a ``YamlSequence``
+        **Coercion tags are special.** If *tag* is a built-in YAML coercion
+        tag — ``!!int``, ``!!bool``, ``!!null``, ``!!float``, or ``!!str`` —
+        your loader receives the **raw YAML source string** instead of the
+        coerced value. Registering a loader on such a tag disables the
+        library's built-in coercion for that tag across the whole document
+        so you can parse it yourself (e.g. to accept ``1_000`` as an integer,
+        or to reject values the default coercion would accept).
 
         The return value replaces the node in the loaded document.
         """
         ...
 
-    def add_dumper(
-        self, py_type: type[_T], func: Callable[[_T], tuple[str, Any]]
-    ) -> None:
+    def add_dumper(self, py_type: type[_T], func: Callable[[_T], tuple[str, Any]]) -> None:
         """Register a dumper callable for *py_type*.
 
         Dumpers are checked in registration order; the first ``isinstance`` match
@@ -744,14 +735,14 @@ class YamlIter:
             process(doc)
     """
 
-    def __iter__(self) -> "YamlIter": ...
-    def __next__(self) -> "YamlMapping | YamlSequence | YamlScalar": ...
+    def __iter__(self) -> YamlIter: ...
+    def __next__(self) -> YamlMapping | YamlSequence | YamlScalar: ...
 
 def load(
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
-) -> "YamlMapping | YamlSequence | YamlScalar | None":
+) -> YamlMapping | YamlSequence | YamlScalar | None:
     """Parse the first YAML document from a stream. Returns ``None`` for empty input."""
     ...
 
@@ -759,7 +750,7 @@ def loads(
     text: str,
     *,
     schema: Schema | None = None,
-) -> "YamlMapping | YamlSequence | YamlScalar | None":
+) -> YamlMapping | YamlSequence | YamlScalar | None:
     """Parse the first YAML document from a string. Returns ``None`` for empty input."""
     ...
 
@@ -767,7 +758,7 @@ def load_all(
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
-) -> "list[YamlMapping | YamlSequence | YamlScalar]":
+) -> list[YamlMapping | YamlSequence | YamlScalar]:
     """Parse all YAML documents from a stream, returning a list."""
     ...
 
@@ -775,7 +766,7 @@ def loads_all(
     text: str,
     *,
     schema: Schema | None = None,
-) -> "list[YamlMapping | YamlSequence | YamlScalar]":
+) -> list[YamlMapping | YamlSequence | YamlScalar]:
     """Parse all YAML documents from a string, returning a list."""
     ...
 
@@ -798,7 +789,7 @@ def iter_loads_all(
     ...
 
 def dump(
-    doc: "_Dumpable",
+    doc: _Dumpable,
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
@@ -814,7 +805,7 @@ def dump(
     ...
 
 def dumps(
-    doc: "_Dumpable",
+    doc: _Dumpable,
     *,
     schema: Schema | None = None,
     indent: int = 2,
@@ -829,7 +820,7 @@ def dumps(
     ...
 
 def dump_all(
-    docs: "_Sequence[_Dumpable]",
+    docs: _Sequence[_Dumpable],
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
@@ -842,7 +833,7 @@ def dump_all(
     ...
 
 def dumps_all(
-    docs: "_Sequence[_Dumpable]",
+    docs: _Sequence[_Dumpable],
     *,
     schema: Schema | None = None,
     indent: int = 2,
