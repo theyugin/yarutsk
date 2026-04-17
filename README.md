@@ -116,6 +116,8 @@ text = yarutsk.dumps(doc, indent=4)
 
 `load` / `loads` return a `YamlMapping`, `YamlSequence`, or `YamlScalar` (for a top-level scalar document), or `None` for empty input. Nested container nodes are `YamlMapping` or `YamlSequence`; scalar leaves inside mappings and sequences are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
 
+`dump` / `dumps` accept `YamlMapping`, `YamlSequence`, and `YamlScalar` objects (preserving comments, styles, and tags), but also plain Python types: `dict`, `list`, `tuple`, `set`, `frozenset`, `bytes`, `bytearray`, scalar primitives, and any `collections.abc.Mapping` or iterable. Plain types are auto-converted with default formatting.
+
 `iter_load_all` and `iter_loads_all` return a `YamlIter` object — an iterator that drives the parser on demand and yields documents one at a time. This lets you process large multi-document streams without holding all documents in memory simultaneously:
 
 ```python
@@ -731,10 +733,10 @@ try:
 except yarutsk.DumperError as e:
     print(e)   # Schema dumper for MyType must return (tag, data) tuple: ...
 
-# Unsupported Python type (no schema dumper registered) → TypeError
+# Unsupported Python type (no schema dumper registered) → RuntimeError
 try:
-    yarutsk.dumps({"key": {1, 2}})  # sets are not supported
-except TypeError as e:
+    yarutsk.dumps(object())
+except RuntimeError as e:
     print(e)
 
 # Missing key → KeyError  (standard dict behaviour)
