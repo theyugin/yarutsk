@@ -699,3 +699,69 @@ class TestAutoAnchor:
         assert "*id001" in out  # self-ref becomes alias
         assert "!!mytype" in out  # tag preserved on inner value
         assert "z: 9" in out
+
+
+class TestDumpIterableAndMappingTypes:
+    """Verify that dump/dumps accept abstract iterables, mappings, bytes, etc."""
+
+    def test_set(self):
+        result = yarutsk.dumps({42})
+        assert "42" in result
+
+    def test_frozenset(self):
+        result = yarutsk.dumps(frozenset([10]))
+        assert "10" in result
+
+    def test_deque(self):
+        from collections import deque
+
+        result = yarutsk.dumps(deque([1, 2, 3]))
+        assert "- 1" in result
+        assert "- 3" in result
+
+    def test_generator(self):
+        result = yarutsk.dumps(x * 2 for x in range(3))
+        assert "- 0" in result
+        assert "- 4" in result
+
+    def test_range(self):
+        result = yarutsk.dumps(range(3))
+        assert "- 0" in result
+        assert "- 2" in result
+
+    def test_bytes(self):
+        result = yarutsk.dumps(b"hello")
+        assert "!!binary" in result
+
+    def test_bytearray(self):
+        result = yarutsk.dumps(bytearray(b"test"))
+        assert "!!binary" in result
+
+    def test_chainmap(self):
+        from collections import ChainMap
+
+        result = yarutsk.dumps(ChainMap({"a": 1}, {"b": 2}))
+        assert "a: 1" in result
+        assert "b: 2" in result
+
+    def test_nested_set_in_mapping(self):
+        doc = yarutsk.loads("key: placeholder\n")
+        doc["key"] = {99}
+        result = yarutsk.dumps(doc)
+        assert "99" in result
+
+    def test_nested_deque_in_plain_dict(self):
+        from collections import deque
+
+        result = yarutsk.dumps({"items": deque([1, 2])})
+        assert "- 1" in result
+        assert "- 2" in result
+
+    def test_bytes_in_plain_dict(self):
+        result = yarutsk.dumps({"data": b"abc"})
+        assert "!!binary" in result
+
+    def test_dump_set_to_stream(self):
+        buf = io.StringIO()
+        yarutsk.dump({42}, buf)
+        assert "42" in buf.getvalue()

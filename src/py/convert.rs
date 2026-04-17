@@ -479,8 +479,13 @@ pub(crate) fn py_to_node(
         }
         return Ok(YamlNode::Sequence(seq));
     }
-    // bytes → !!binary scalar (base64-encoded)
-    if let Ok(b) = obj.extract::<Vec<u8>>() {
+    // bytes/bytearray → !!binary scalar (base64-encoded).
+    // Check the Python type explicitly to avoid PyO3's Vec<u8> extraction
+    // matching any iterable of small ints (e.g. deque([1,2,3])).
+    if (obj.is_instance_of::<pyo3::types::PyBytes>()
+        || obj.is_instance_of::<pyo3::types::PyByteArray>())
+        && let Ok(b) = obj.extract::<Vec<u8>>()
+    {
         use base64::{Engine, engine::general_purpose::STANDARD};
         let encoded = STANDARD.encode(&b);
         return Ok(YamlNode::Scalar(YamlScalar {
@@ -527,10 +532,39 @@ pub(crate) fn py_to_node(
         }
         return Ok(YamlNode::Mapping(mapping));
     }
+    // Abstract Mapping (collections.abc.Mapping) — covers OrderedDict-likes,
+    // ChainMap, and any user type implementing the Mapping protocol that
+    // doesn't subclass dict.
+    {
+        let abc = obj.py().import("collections.abc")?;
+        let mapping_type = abc.getattr("Mapping")?;
+        if obj.is_instance(&mapping_type)? {
+            let items = obj.call_method0("items")?;
+            let mut mapping = YamlMapping::new();
+            for pair in items.try_iter()? {
+                let pair = pair?;
+                let key: String = pair.get_item(0)?.extract()?;
+                let val = pair.get_item(1)?;
+                mapping
+                    .entries
+                    .insert(key, plain_entry(py_to_node(&val, schema)?));
+            }
+            return Ok(YamlNode::Mapping(mapping));
+        }
+    }
+    // Abstract Iterable — covers set, frozenset, deque, generators, and any
+    // user type implementing __iter__.  Checked after str/bytes/dict (which
+    // are iterable but handled above).
+    if obj.try_iter().is_ok() {
+        let mut seq = YamlSequence::new();
+        for item in obj.try_iter()? {
+            let item = item?;
+            seq.items.push(plain_item(py_to_node(&item, schema)?));
+        }
+        return Ok(YamlNode::Sequence(seq));
+    }
     Err(PyRuntimeError::new_err(format!(
-        "Cannot convert {obj} to a YAML node; \
-         expected None, bool, int, float, str, dict, list, tuple, \
-         YamlMapping, YamlSequence, or YamlScalar"
+        "Cannot convert {obj} to a YAML node"
     )))
 }
 
@@ -718,15 +752,9 @@ pub(crate) fn extract_yaml_node(
         }
         return Ok(YamlNode::Sequence(seq));
     }
-    // Last resort: try schema dumpers before giving up.
-    if schema.is_some() {
-        return py_to_node(obj, schema);
-    }
-    Err(PyRuntimeError::new_err(format!(
-        "Cannot convert {obj} to a YAML node; \
-         expected None, bool, int, float, str, dict, list, tuple, \
-         YamlMapping, YamlSequence, or YamlScalar"
-    )))
+    // Fall through to py_to_node for bytes, datetime, schema dumpers, and
+    // abstract Mapping/Iterable types.
+    py_to_node(obj, schema)
 }
 
 // ─── Python object creation helpers ──────────────────────────────────────────

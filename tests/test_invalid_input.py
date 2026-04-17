@@ -74,10 +74,6 @@ class TestMalformedYaml:
 
 
 class TestInvalidDumpTypes:
-    def test_set_raises(self):
-        with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dumps({1, 2, 3})
-
     def test_object_raises(self):
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dumps(object())
@@ -85,12 +81,6 @@ class TestInvalidDumpTypes:
     def test_lambda_raises(self):
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dumps(lambda: None)
-
-    def test_nested_set_raises(self):
-        doc = yarutsk.loads("key: placeholder\n")
-        doc["key"] = {1, 2, 3}
-        with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dumps(doc)
 
     def test_nested_object_in_sequence_raises(self):
         doc = yarutsk.loads(
@@ -130,12 +120,12 @@ class TestInvalidDumpTypes:
     def test_dump_invalid_type_to_stream_raises(self):
         buf = io.StringIO()
         with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dump({1, 2, 3}, buf)
+            yarutsk.dump(object(), buf)
 
     def test_dumps_all_with_invalid_item(self):
         doc = yarutsk.loads("a: 1\n")
         with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dumps_all([doc, {1, 2, 3}])
+            yarutsk.dumps_all([doc, object()])
 
 
 class _Opaque:
@@ -169,8 +159,8 @@ class TestSchemaDumperErrors:
 
     def test_dumper_returns_non_serializable_data(self):
         schema = yarutsk.Schema()
-        # Returns a valid tag but the data (a set) cannot be serialized.
-        schema.add_dumper(_Opaque, lambda x: ("!opaque", {1, 2, 3}))
+        # Returns a valid tag but the data (an object) cannot be serialized.
+        schema.add_dumper(_Opaque, lambda x: ("!opaque", object()))
         doc = yarutsk.loads("x: 1\n")
         doc["x"] = _Opaque()
         with pytest.raises((RuntimeError, TypeError)):
@@ -286,7 +276,7 @@ class TestDumpsAllInvalidDocs:
     def test_docs_with_invalid_item(self):
         doc = yarutsk.loads("a: 1\n")
         with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dumps_all([doc, {1, 2, 3}])  # type: ignore[list-item]
+            yarutsk.dumps_all([doc, object()])  # type: ignore[list-item]
 
     def test_dump_all_docs_none(self):
         buf = io.StringIO()
@@ -297,7 +287,7 @@ class TestDumpsAllInvalidDocs:
         doc = yarutsk.loads("a: 1\n")
         buf = io.StringIO()
         with pytest.raises((RuntimeError, TypeError)):
-            yarutsk.dump_all([doc, {1, 2}], buf)  # type: ignore[list-item]
+            yarutsk.dump_all([doc, object()], buf)  # type: ignore[list-item]
 
 
 class TestBadCommentAndStyleArgs:

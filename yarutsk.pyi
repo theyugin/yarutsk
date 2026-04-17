@@ -7,7 +7,7 @@ subclass), or None for empty input. Accessing nested nodes returns the same
 types. Scalar leaves and null values are returned as native Python primitives.
 """
 
-from collections.abc import Sequence as _Sequence
+from collections.abc import Mapping as _Mapping, Sequence as _Sequence
 from typing import (
     Any,
     Callable,
@@ -28,9 +28,9 @@ _Scalar = int | float | bool | str | None
 # Any top-level document node.
 _Doc = "YamlMapping | YamlSequence | YamlScalar"
 
-# Any value accepted by dump/dumps — the Yaml types plus plain Python
-# containers and primitives that are auto-converted.
-_Dumpable: TypeAlias = "YamlMapping | YamlSequence | YamlScalar | dict[str, Any] | list[Any] | tuple[Any, ...] | int | float | bool | str | None"
+# Any value accepted by dump/dumps — the Yaml types, abstract containers,
+# bytes, and scalar primitives.
+_Dumpable: TypeAlias = "YamlMapping | YamlSequence | YamlScalar | _Mapping[str, Any] | Iterable[Any] | bytes | bytearray | int | float | bool | str | None"
 
 # ── Public type aliases ───────────────────────────────────────────────────────
 
