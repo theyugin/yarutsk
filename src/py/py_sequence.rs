@@ -6,7 +6,8 @@ use pyo3::types::{PyList, PySlice, PyTuple};
 
 use super::convert::{
     DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
-    py_compare, py_to_node, resolve_seq_idx, sequence_repr, sequence_to_dict, sequence_to_py_obj,
+    py_compare, py_to_node, py_to_node_with_fallback, resolve_seq_idx, sequence_repr,
+    sequence_to_dict, sequence_to_py_obj,
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
@@ -21,12 +22,16 @@ use crate::core::types::*;
 pub struct PyYamlSequence {
     pub(crate) inner: YamlSequence,
     /// True when the document this sequence belongs to had an explicit `---` marker.
+    #[pyo3(get, set)]
     pub explicit_start: bool,
     /// True when the document this sequence belongs to had an explicit `...` marker.
+    #[pyo3(get, set)]
     pub explicit_end: bool,
     /// `%YAML major.minor` directive for this document, if any.
+    /// Exposed to Python as a `"major.minor"` string via manual getter/setter.
     pub yaml_version: Option<(u8, u8)>,
     /// `%TAG handle prefix` pairs for this document.
+    #[pyo3(get, set)]
     pub tag_directives: Vec<(String, String)>,
 }
 
@@ -106,16 +111,13 @@ impl PyYamlSequence {
         let py = slf.py();
         if let Ok(idx) = key.extract::<isize>() {
             let real_idx = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
-            let (node, py_val) = match py_to_node(value, None) {
-                Ok(n) => {
-                    let pv = node_to_py(py, &n, None)?;
-                    (n, pv)
-                }
-                Err(_) => (
-                    YamlNode::Mapping(YamlMapping::new()),
-                    value.clone().unbind(),
-                ),
-            };
+            let (node, py_val) =
+                py_to_node_with_fallback(
+                    py,
+                    value,
+                    None,
+                    || YamlNode::Mapping(YamlMapping::new()),
+                )?;
             {
                 let mut borrow = slf.borrow_mut();
                 borrow.inner.items[real_idx as usize].value = node;
@@ -137,16 +139,9 @@ impl PyYamlSequence {
             let mut new_pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
             for py_item in value.try_iter()? {
                 let py_item = py_item?;
-                let (node, py_val) = match py_to_node(&py_item, None) {
-                    Ok(n) => {
-                        let pv = node_to_py(py, &n, None)?;
-                        (n, pv)
-                    }
-                    Err(_) => (
-                        YamlNode::Mapping(YamlMapping::new()),
-                        py_item.clone().unbind(),
-                    ),
-                };
+                let (node, py_val) = py_to_node_with_fallback(py, &py_item, None, || {
+                    YamlNode::Mapping(YamlMapping::new())
+                })?;
                 new_pairs.push((plain_item(node), py_val));
             }
             {
@@ -207,16 +202,8 @@ impl PyYamlSequence {
 
     fn append(slf: &Bound<'_, Self>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
-        let (node, py_val) = match py_to_node(value, None) {
-            Ok(n) => {
-                let pv = node_to_py(py, &n, None)?;
-                (n, pv)
-            }
-            Err(_) => (
-                YamlNode::Mapping(YamlMapping::new()),
-                value.clone().unbind(),
-            ),
-        };
+        let (node, py_val) =
+            py_to_node_with_fallback(py, value, None, || YamlNode::Mapping(YamlMapping::new()))?;
         {
             let mut borrow = slf.borrow_mut();
             borrow.inner.items.push(plain_item(node));
@@ -227,16 +214,8 @@ impl PyYamlSequence {
 
     fn insert(slf: &Bound<'_, Self>, idx: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
-        let (node, py_val_insert) = match py_to_node(value, None) {
-            Ok(n) => {
-                let pv = node_to_py(py, &n, None)?;
-                (n, pv)
-            }
-            Err(_) => (
-                YamlNode::Mapping(YamlMapping::new()),
-                value.clone().unbind(),
-            ),
-        };
+        let (node, py_val_insert) =
+            py_to_node_with_fallback(py, value, None, || YamlNode::Mapping(YamlMapping::new()))?;
         let real_idx = {
             let borrow = slf.borrow();
             let len = borrow.inner.items.len() as isize;
@@ -320,16 +299,9 @@ impl PyYamlSequence {
         } else {
             for py_item in iterable.try_iter()? {
                 let py_item = py_item?;
-                let (node, py_val) = match py_to_node(&py_item, None) {
-                    Ok(n) => {
-                        let pv = node_to_py(py, &n, None)?;
-                        (n, pv)
-                    }
-                    Err(_) => (
-                        YamlNode::Mapping(YamlMapping::new()),
-                        py_item.clone().unbind(),
-                    ),
-                };
+                let (node, py_val) = py_to_node_with_fallback(py, &py_item, None, || {
+                    YamlNode::Mapping(YamlMapping::new())
+                })?;
                 pairs.push((plain_item(node), py_val));
             }
         }
@@ -626,28 +598,6 @@ impl PyYamlSequence {
         self.inner.trailing_blank_lines = n;
     }
 
-    /// Whether this document had an explicit `---` marker in the source.
-    #[getter]
-    fn get_explicit_start(&self) -> bool {
-        self.explicit_start
-    }
-
-    #[setter]
-    fn set_explicit_start(&mut self, value: bool) {
-        self.explicit_start = value;
-    }
-
-    /// Whether this document had an explicit `...` marker in the source.
-    #[getter]
-    fn get_explicit_end(&self) -> bool {
-        self.explicit_end
-    }
-
-    #[setter]
-    fn set_explicit_end(&mut self, value: bool) {
-        self.explicit_end = value;
-    }
-
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
     #[getter]
     fn get_yaml_version(&self) -> Option<String> {
@@ -658,17 +608,6 @@ impl PyYamlSequence {
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
-    }
-
-    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
-    #[getter]
-    fn get_tag_directives(&self) -> Vec<(String, String)> {
-        self.tag_directives.clone()
-    }
-
-    #[setter]
-    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
-        self.tag_directives = directives;
     }
 
     /// Return the underlying YAML node for the item at *idx* as a YamlScalar,

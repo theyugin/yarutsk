@@ -15,12 +15,16 @@ use crate::core::types::*;
 pub struct PyYamlScalar {
     pub(crate) inner: YamlNode, // YamlNode::Scalar or YamlNode::Null
     /// True when the document this node belongs to had an explicit `---` marker.
+    #[pyo3(get, set)]
     pub explicit_start: bool,
     /// True when the document this node belongs to had an explicit `...` marker.
+    #[pyo3(get, set)]
     pub explicit_end: bool,
     /// `%YAML major.minor` directive for this document, if any.
+    /// Exposed to Python as a `"major.minor"` string via manual getter/setter.
     pub yaml_version: Option<(u8, u8)>,
     /// `%TAG handle prefix` pairs for this document.
+    #[pyo3(get, set)]
     pub tag_directives: Vec<(String, String)>,
 }
 
@@ -194,28 +198,6 @@ impl PyYamlScalar {
         }
     }
 
-    /// Whether this document had an explicit `---` marker in the source.
-    #[getter]
-    fn get_explicit_start(&self) -> bool {
-        self.explicit_start
-    }
-
-    #[setter]
-    fn set_explicit_start(&mut self, value: bool) {
-        self.explicit_start = value;
-    }
-
-    /// Whether this document had an explicit `...` marker in the source.
-    #[getter]
-    fn get_explicit_end(&self) -> bool {
-        self.explicit_end
-    }
-
-    #[setter]
-    fn set_explicit_end(&mut self, value: bool) {
-        self.explicit_end = value;
-    }
-
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
     #[getter]
     fn get_yaml_version(&self) -> Option<String> {
@@ -226,16 +208,5 @@ impl PyYamlScalar {
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
-    }
-
-    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
-    #[getter]
-    fn get_tag_directives(&self) -> Vec<(String, String)> {
-        self.tag_directives.clone()
-    }
-
-    #[setter]
-    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
-        self.tag_directives = directives;
     }
 }

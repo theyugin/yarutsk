@@ -94,7 +94,6 @@ class TestInvalidDumpTypes:
             yarutsk.dumps(doc)
 
     def test_tuple_accepted_as_sequence(self):
-        """tuple should serialize as a YAML sequence (was previously rejected)."""
         result = yarutsk.dumps((1, 2, 3))
         assert "1" in result
         assert "2" in result
@@ -322,8 +321,6 @@ class TestBadCommentAndStyleArgs:
             doc.scalar_style("missing", "plain")
 
     def test_comment_inline_read_out_of_range_raises(self):
-        # Reading a comment at an out-of-bounds index raises IndexError,
-        # consistent with __getitem__ semantics.
         doc = yarutsk.loads(
             dedent("""\
             - a

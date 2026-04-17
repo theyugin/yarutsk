@@ -85,7 +85,6 @@ class TestRoundTripScalarStyles:
         assert doc2["nothing"] is None
 
     def test_scalar_style_attribute(self):
-        """YamlScalar.style attribute reflects the source quoting style."""
         doc = yarutsk.loads(
             dedent("""\
             a: plain
@@ -98,7 +97,6 @@ class TestRoundTripScalarStyles:
         assert doc.node("c").style == "double"
 
     def test_scalar_style_can_be_changed(self):
-        """Changing scalar style via set_scalar_style affects how the value is emitted."""
         doc = yarutsk.loads("key: hello")
         doc.scalar_style("key", "double")
         out = yarutsk.dumps(doc)
@@ -185,7 +183,6 @@ class TestRoundTripContainerStyles:
         assert out == "key: []\n"
 
     def test_nested_flow_in_block_roundtrips(self):
-        """A block mapping with a flow sequence value round-trips correctly."""
         src = dedent("""\
             name: demo
             tags: [x, y]
@@ -299,7 +296,6 @@ class TestRoundTripTagAccess:
         assert node.tag is None
 
     def test_tags_emitted_in_dump(self):
-        """Tags are preserved in emitted YAML for round-trip fidelity."""
         doc = yarutsk.loads("value: !!str 42")
         assert doc["value"] == "42"
         assert isinstance(doc["value"], str)
@@ -378,14 +374,12 @@ class TestExplicitDocumentMarker:
         assert yarutsk.dumps(doc) == src
 
     def test_explicit_start_can_be_set(self):
-        """Setting explicit_start=True adds --- on next dump."""
         doc = yarutsk.loads("key: value")
         assert not doc.explicit_start
         doc.explicit_start = True
         assert yarutsk.dumps(doc) == "---\nkey: value\n"
 
     def test_explicit_start_can_be_cleared(self):
-        """Setting explicit_start=False removes --- from dump."""
         doc = yarutsk.loads("---\nkey: value")
         doc.explicit_start = False
         assert yarutsk.dumps(doc) == "key: value\n"
@@ -585,17 +579,14 @@ class TestNonCanonicalScalarForms:
         assert yarutsk.dumps(doc) == src
 
     def test_canonical_null_unchanged(self):
-        """Plain 'null' is canonical and should round-trip as 'null'."""
         src = "x: null\n"
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
     def test_canonical_bool_unchanged(self):
-        """Plain 'true'/'false' are canonical and should round-trip unchanged."""
         assert yarutsk.dumps(yarutsk.loads("x: true\n")) == "x: true\n"
         assert yarutsk.dumps(yarutsk.loads("x: false\n")) == "x: false\n"
 
     def test_non_canonical_in_sequence(self):
-        """Non-canonical scalars inside a sequence are preserved."""
         src = dedent("""\
             - yes
             - no
@@ -819,14 +810,12 @@ class TestKeyMetadataRoundTrip:
     """Key anchors and tags are preserved through load → dump → load."""
 
     def test_key_anchor_preserved(self):
-        """Key anchor round-trips — the value is accessible after re-parse."""
         src = "&ka key: value\n"
         out = yarutsk.dumps(yarutsk.loads(src))
         doc2 = yarutsk.loads(out)
         assert doc2["key"] == "value"
 
     def test_key_tag_preserved(self):
-        """Key tag (!!str) is emitted and the key is still accessible."""
         src = "!!str key: value\n"
         out = yarutsk.dumps(yarutsk.loads(src))
         assert "!!str" in out
@@ -1022,7 +1011,6 @@ class TestContainerStyleSetter:
         doc = yarutsk.loads("k: [1, 2]\n")
         clone = doc.node("k")
         clone.style = "block"
-        # dump must still use the stored (flow) style
         assert "[" in yarutsk.dumps(doc)
 
     def test_mapping_container_style_key_error(self):
@@ -1088,8 +1076,8 @@ class TestContainerStyleSetter:
         )
         doc.container_style(-1, "block")
         out = yarutsk.dumps(doc)
-        assert "[a, b]" in out  # first unchanged
-        assert "- c\n" in out  # last converted
+        assert "[a, b]" in out
+        assert "- c\n" in out
 
     def test_sequence_container_style_invalid_raises(self):
         doc = yarutsk.loads("- [a, b]\n")

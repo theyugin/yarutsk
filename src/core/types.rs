@@ -74,31 +74,19 @@ impl ScalarValue {
 
     /// Parse a raw YAML scalar string into a typed value.
     pub fn from_str(s: &str) -> ScalarValue {
-        if s.is_empty() || s == "null" || s == "Null" || s == "NULL" || s == "~" {
+        if matches!(s, "" | "null" | "Null" | "NULL" | "~") {
             return ScalarValue::Null;
         }
-        if s == "true"
-            || s == "True"
-            || s == "TRUE"
-            || s == "yes"
-            || s == "Yes"
-            || s == "YES"
-            || s == "on"
-            || s == "On"
-            || s == "ON"
-        {
+        if matches!(
+            s,
+            "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON"
+        ) {
             return ScalarValue::Bool(true);
         }
-        if s == "false"
-            || s == "False"
-            || s == "FALSE"
-            || s == "no"
-            || s == "No"
-            || s == "NO"
-            || s == "off"
-            || s == "Off"
-            || s == "OFF"
-        {
+        if matches!(
+            s,
+            "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF"
+        ) {
             return ScalarValue::Bool(false);
         }
         // Integer: decimal, octal (0o), hex (0x)
@@ -116,13 +104,13 @@ impl ScalarValue {
             return ScalarValue::Int(n);
         }
         // Float
-        if s == ".inf" || s == ".Inf" || s == ".INF" {
+        if matches!(s, ".inf" | ".Inf" | ".INF") {
             return ScalarValue::Float(f64::INFINITY);
         }
-        if s == "-.inf" || s == "-.Inf" || s == "-.INF" {
+        if matches!(s, "-.inf" | "-.Inf" | "-.INF") {
             return ScalarValue::Float(f64::NEG_INFINITY);
         }
-        if s == ".nan" || s == ".NaN" || s == ".NAN" {
+        if matches!(s, ".nan" | ".NaN" | ".NAN") {
             return ScalarValue::Float(f64::NAN);
         }
         if let Ok(f) = s.parse::<f64>()
@@ -131,6 +119,208 @@ impl ScalarValue {
             return ScalarValue::Float(f);
         }
         ScalarValue::Str(s.to_owned())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct YamlMapping {
+    pub entries: IndexMap<String, YamlEntry>,
+    /// Block (`key: value`) or flow (`{key: value}`) style.
+    pub style: ContainerStyle,
+    /// Optional YAML tag.
+    pub tag: Option<String>,
+    /// Blank lines at the end of this mapping before the closing context (capped at 255).
+    pub trailing_blank_lines: u8,
+    /// Anchor name declared on this mapping (`&name`), if any.
+    pub anchor: Option<String>,
+}
+
+impl YamlMapping {
+    pub fn new() -> Self {
+        YamlMapping {
+            entries: IndexMap::new(),
+            style: ContainerStyle::Block,
+            tag: None,
+            trailing_blank_lines: 0,
+            anchor: None,
+        }
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        YamlMapping {
+            entries: IndexMap::with_capacity(n),
+            style: ContainerStyle::Block,
+            tag: None,
+            trailing_blank_lines: 0,
+            anchor: None,
+        }
+    }
+}
+
+impl Default for YamlMapping {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct YamlEntry {
+    pub value: YamlNode,
+    pub comment_before: Option<String>,
+    pub comment_inline: Option<String>,
+    /// Blank lines in the source before this entry (capped at 255).
+    pub blank_lines_before: u8,
+    /// The quoting style the key was written with in the source.
+    pub key_style: ScalarStyle,
+    /// Anchor declared on the key scalar (`&name`), if any.
+    pub key_anchor: Option<String>,
+    /// If the key was written as an alias (`*name:`), the alias name.
+    pub key_alias: Option<String>,
+    /// Tag on the key scalar (e.g. `!!str`), if any.
+    pub key_tag: Option<String>,
+    /// For complex (non-scalar) keys: the original key node.
+    /// When set, the string key in the IndexMap is a synthetic placeholder.
+    pub key_node: Option<Box<YamlNode>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct YamlSequence {
+    pub items: Vec<YamlItem>,
+    /// Block (`- item`) or flow (`[item]`) style.
+    pub style: ContainerStyle,
+    /// Optional YAML tag.
+    pub tag: Option<String>,
+    /// Blank lines at the end of this sequence before the closing context (capped at 255).
+    pub trailing_blank_lines: u8,
+    /// Anchor name declared on this sequence (`&name`), if any.
+    pub anchor: Option<String>,
+}
+
+impl YamlSequence {
+    pub fn new() -> Self {
+        YamlSequence {
+            items: Vec::new(),
+            style: ContainerStyle::Block,
+            tag: None,
+            trailing_blank_lines: 0,
+            anchor: None,
+        }
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        YamlSequence {
+            items: Vec::with_capacity(n),
+            style: ContainerStyle::Block,
+            tag: None,
+            trailing_blank_lines: 0,
+            anchor: None,
+        }
+    }
+}
+
+impl Default for YamlSequence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct YamlItem {
+    pub value: YamlNode,
+    pub comment_before: Option<String>,
+    pub comment_inline: Option<String>,
+    /// Blank lines in the source before this item (capped at 255).
+    pub blank_lines_before: u8,
+}
+
+// ─── Format options ───────────────────────────────────────────────────────────
+
+/// Controls which cosmetic fields are reset by `format_with()`.
+#[derive(Clone, Copy)]
+pub struct FormatOptions {
+    /// Reset scalar quoting → plain (literal for multi-line), container style → block,
+    /// and clear `original` so non-canonical forms (hex, exponent) emit canonically.
+    pub styles: bool,
+    /// Clear `comment_before` and `comment_inline` on every entry/item.
+    pub comments: bool,
+    /// Zero `blank_lines_before` on every entry/item and `trailing_blank_lines` on containers.
+    pub blank_lines: bool,
+}
+
+impl YamlScalar {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            // Strings with embedded newlines get literal block style so the emitter
+            // doesn't fall back to double-quoted with \n escape sequences.
+            let is_multiline = matches!(&self.value, ScalarValue::Str(s) if s.contains('\n'));
+            self.style = if is_multiline {
+                ScalarStyle::Literal
+            } else {
+                ScalarStyle::Plain
+            };
+            self.original = None;
+        }
+        // tag and anchor are semantic — always preserved.
+    }
+}
+
+impl YamlMapping {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            self.style = ContainerStyle::Block;
+        }
+        if opts.blank_lines {
+            self.trailing_blank_lines = 0;
+        }
+        for entry in self.entries.values_mut() {
+            if opts.comments {
+                entry.comment_before = None;
+                entry.comment_inline = None;
+            }
+            if opts.blank_lines {
+                entry.blank_lines_before = 0;
+            }
+            if opts.styles {
+                entry.key_style = ScalarStyle::Plain;
+            }
+            // key_tag, key_anchor, key_alias are semantic — preserved.
+            if let Some(kn) = &mut entry.key_node {
+                kn.format_with(opts);
+            }
+            entry.value.format_with(opts);
+        }
+    }
+}
+
+impl YamlSequence {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        if opts.styles {
+            self.style = ContainerStyle::Block;
+        }
+        if opts.blank_lines {
+            self.trailing_blank_lines = 0;
+        }
+        for item in &mut self.items {
+            if opts.comments {
+                item.comment_before = None;
+                item.comment_inline = None;
+            }
+            if opts.blank_lines {
+                item.blank_lines_before = 0;
+            }
+            item.value.format_with(opts);
+        }
+    }
+}
+
+impl YamlNode {
+    pub fn format_with(&mut self, opts: FormatOptions) {
+        match self {
+            YamlNode::Mapping(m) => m.format_with(opts),
+            YamlNode::Sequence(s) => s.format_with(opts),
+            YamlNode::Scalar(s) => s.format_with(opts),
+            YamlNode::Alias { .. } | YamlNode::Null => {}
+        }
     }
 }
 
@@ -390,207 +580,5 @@ mod tests {
         ));
         assert!(matches!(ScalarValue::from_str("Nul"), ScalarValue::Str(_)));
         assert!(matches!(ScalarValue::from_str("~~"), ScalarValue::Str(_)));
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct YamlMapping {
-    pub entries: IndexMap<String, YamlEntry>,
-    /// Block (`key: value`) or flow (`{key: value}`) style.
-    pub style: ContainerStyle,
-    /// Optional YAML tag.
-    pub tag: Option<String>,
-    /// Blank lines at the end of this mapping before the closing context (capped at 255).
-    pub trailing_blank_lines: u8,
-    /// Anchor name declared on this mapping (`&name`), if any.
-    pub anchor: Option<String>,
-}
-
-impl YamlMapping {
-    pub fn new() -> Self {
-        YamlMapping {
-            entries: IndexMap::new(),
-            style: ContainerStyle::Block,
-            tag: None,
-            trailing_blank_lines: 0,
-            anchor: None,
-        }
-    }
-
-    pub fn with_capacity(n: usize) -> Self {
-        YamlMapping {
-            entries: IndexMap::with_capacity(n),
-            style: ContainerStyle::Block,
-            tag: None,
-            trailing_blank_lines: 0,
-            anchor: None,
-        }
-    }
-}
-
-impl Default for YamlMapping {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct YamlEntry {
-    pub value: YamlNode,
-    pub comment_before: Option<String>,
-    pub comment_inline: Option<String>,
-    /// Blank lines in the source before this entry (capped at 255).
-    pub blank_lines_before: u8,
-    /// The quoting style the key was written with in the source.
-    pub key_style: ScalarStyle,
-    /// Anchor declared on the key scalar (`&name`), if any.
-    pub key_anchor: Option<String>,
-    /// If the key was written as an alias (`*name:`), the alias name.
-    pub key_alias: Option<String>,
-    /// Tag on the key scalar (e.g. `!!str`), if any.
-    pub key_tag: Option<String>,
-    /// For complex (non-scalar) keys: the original key node.
-    /// When set, the string key in the IndexMap is a synthetic placeholder.
-    pub key_node: Option<Box<YamlNode>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct YamlSequence {
-    pub items: Vec<YamlItem>,
-    /// Block (`- item`) or flow (`[item]`) style.
-    pub style: ContainerStyle,
-    /// Optional YAML tag.
-    pub tag: Option<String>,
-    /// Blank lines at the end of this sequence before the closing context (capped at 255).
-    pub trailing_blank_lines: u8,
-    /// Anchor name declared on this sequence (`&name`), if any.
-    pub anchor: Option<String>,
-}
-
-impl YamlSequence {
-    pub fn new() -> Self {
-        YamlSequence {
-            items: Vec::new(),
-            style: ContainerStyle::Block,
-            tag: None,
-            trailing_blank_lines: 0,
-            anchor: None,
-        }
-    }
-
-    pub fn with_capacity(n: usize) -> Self {
-        YamlSequence {
-            items: Vec::with_capacity(n),
-            style: ContainerStyle::Block,
-            tag: None,
-            trailing_blank_lines: 0,
-            anchor: None,
-        }
-    }
-}
-
-impl Default for YamlSequence {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct YamlItem {
-    pub value: YamlNode,
-    pub comment_before: Option<String>,
-    pub comment_inline: Option<String>,
-    /// Blank lines in the source before this item (capped at 255).
-    pub blank_lines_before: u8,
-}
-
-// ─── Format options ───────────────────────────────────────────────────────────
-
-/// Controls which cosmetic fields are reset by `format_with()`.
-#[derive(Clone, Copy)]
-pub struct FormatOptions {
-    /// Reset scalar quoting → plain (literal for multi-line), container style → block,
-    /// and clear `original` so non-canonical forms (hex, exponent) emit canonically.
-    pub styles: bool,
-    /// Clear `comment_before` and `comment_inline` on every entry/item.
-    pub comments: bool,
-    /// Zero `blank_lines_before` on every entry/item and `trailing_blank_lines` on containers.
-    pub blank_lines: bool,
-}
-
-impl YamlScalar {
-    pub fn format_with(&mut self, opts: FormatOptions) {
-        if opts.styles {
-            // Strings with embedded newlines get literal block style so the emitter
-            // doesn't fall back to double-quoted with \n escape sequences.
-            let is_multiline = matches!(&self.value, ScalarValue::Str(s) if s.contains('\n'));
-            self.style = if is_multiline {
-                ScalarStyle::Literal
-            } else {
-                ScalarStyle::Plain
-            };
-            self.original = None;
-        }
-        // tag and anchor are semantic — always preserved.
-    }
-}
-
-impl YamlMapping {
-    pub fn format_with(&mut self, opts: FormatOptions) {
-        if opts.styles {
-            self.style = ContainerStyle::Block;
-        }
-        if opts.blank_lines {
-            self.trailing_blank_lines = 0;
-        }
-        for entry in self.entries.values_mut() {
-            if opts.comments {
-                entry.comment_before = None;
-                entry.comment_inline = None;
-            }
-            if opts.blank_lines {
-                entry.blank_lines_before = 0;
-            }
-            if opts.styles {
-                entry.key_style = ScalarStyle::Plain;
-            }
-            // key_tag, key_anchor, key_alias are semantic — preserved.
-            if let Some(kn) = &mut entry.key_node {
-                kn.format_with(opts);
-            }
-            entry.value.format_with(opts);
-        }
-    }
-}
-
-impl YamlSequence {
-    pub fn format_with(&mut self, opts: FormatOptions) {
-        if opts.styles {
-            self.style = ContainerStyle::Block;
-        }
-        if opts.blank_lines {
-            self.trailing_blank_lines = 0;
-        }
-        for item in &mut self.items {
-            if opts.comments {
-                item.comment_before = None;
-                item.comment_inline = None;
-            }
-            if opts.blank_lines {
-                item.blank_lines_before = 0;
-            }
-            item.value.format_with(opts);
-        }
-    }
-}
-
-impl YamlNode {
-    pub fn format_with(&mut self, opts: FormatOptions) {
-        match self {
-            YamlNode::Mapping(m) => m.format_with(opts),
-            YamlNode::Sequence(s) => s.format_with(opts),
-            YamlNode::Scalar(s) => s.format_with(opts),
-            YamlNode::Alias { .. } | YamlNode::Null => {}
-        }
     }
 }

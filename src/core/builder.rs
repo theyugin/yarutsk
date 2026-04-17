@@ -525,86 +525,54 @@ impl Builder {
                     (0, None)
                 };
 
-                // Collect a clone for anchor registration AFTER the borrow-checking match below.
-                let mut anchor_node: Option<YamlNode> = None;
+                // Build the scalar node once; all four placement arms below consume or
+                // clone it. `scalar_tag` is cloned here because the mapping-key arm also
+                // moves it into `pending.key_tag`.
+                let node = make_scalar(
+                    typed,
+                    scalar_style,
+                    scalar_tag.clone(),
+                    scalar_original,
+                    anchor_name.clone(),
+                );
+                let anchor_node = anchor_name.as_ref().map(|_| node.clone());
 
                 match self.stack.last_mut() {
                     None => {
-                        let node = make_scalar(
-                            typed,
-                            scalar_style,
-                            scalar_tag,
-                            scalar_original,
-                            anchor_name.clone(),
-                        );
-                        if anchor_name.is_some() {
-                            anchor_node = Some(node.clone());
-                        }
                         self.doc_explicit.push(self.next_explicit);
                         self.doc_yaml_version.push(self.next_yaml_version.take());
                         self.doc_tag_directives
                             .push(std::mem::take(&mut self.next_tag_directives));
                         self.docs.push(node);
-                        self.last_content_line = Some(effective_scalar_end_line);
                     }
                     Some(Frame::Mapping(mf)) => {
                         if !mf.pending.has_key() {
                             // Mapping key — store key string and positioning metadata.
-                            // Register anchor for key scalars so they can be aliased as values.
-                            if anchor_name.is_some() {
-                                anchor_node = Some(make_scalar(
-                                    typed,
-                                    scalar_style,
-                                    scalar_tag.clone(),
-                                    scalar_original.clone(),
-                                    anchor_name.clone(),
-                                ));
-                            }
+                            // `node` is discarded unless `anchor_node` captured it above for
+                            // alias registration.
                             mf.pending.key = Some(value);
                             mf.pending.comment_before = comment_before;
                             mf.pending.comment_inline = None;
                             mf.pending.blank_lines = blank_lines;
                             mf.pending.key_style = scalar_style;
                             mf.pending.key_anchor = anchor_name.clone();
-                            mf.pending.key_tag = scalar_tag.clone();
+                            mf.pending.key_tag = scalar_tag;
                             mf.pending.key_alias = None;
-                            self.last_content_line = Some(effective_scalar_end_line);
                         } else {
                             // Mapping value — insert entry under the pending key.
-                            let node = make_scalar(
-                                typed,
-                                scalar_style,
-                                scalar_tag,
-                                scalar_original,
-                                anchor_name.clone(),
-                            );
-                            if anchor_name.is_some() {
-                                anchor_node = Some(node.clone());
-                            }
                             let _ = mf.pending.insert_entry(&mut mf.mapping, node);
-                            self.last_content_line = Some(effective_scalar_end_line);
                         }
                     }
                     Some(Frame::Sequence(sf)) => {
-                        let node = make_scalar(
-                            typed,
-                            scalar_style,
-                            scalar_tag,
-                            scalar_original,
-                            anchor_name.clone(),
-                        );
-                        if anchor_name.is_some() {
-                            anchor_node = Some(node.clone());
-                        }
                         sf.seq.items.push(YamlItem {
                             value: node,
                             comment_before,
                             comment_inline: None,
                             blank_lines_before: blank_lines,
                         });
-                        self.last_content_line = Some(effective_scalar_end_line);
                     }
                 }
+                self.last_content_line = Some(effective_scalar_end_line);
 
                 // Register anchor after releasing the mutable borrow on self.stack.
                 if let Some(node) = anchor_node {
@@ -666,6 +634,56 @@ fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
             _ => {}
         }
     }
+}
+
+/// Parsed output from a YAML input string.
+pub struct ParseOutput {
+    pub docs: Vec<YamlNode>,
+    pub doc_explicit: Vec<bool>,
+    pub doc_explicit_end: Vec<bool>,
+    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
+    pub doc_tag_directives: Vec<Vec<(String, String)>>,
+}
+
+pub fn parse_iter<T: Iterator<Item = char>>(
+    src: T,
+    policy: Option<&TagPolicy>,
+) -> Result<ParseOutput, String> {
+    let mut parser = Parser::new(src);
+    let mut builder = Builder::new();
+
+    loop {
+        // Fetch the next event first; comments are accumulated *during* scanning.
+        let (ev, mark) = parser
+            .next_token()
+            .map_err(|e| format!("YAML parse error: {e}"))?;
+
+        // Drain comments that were collected while scanning for this event,
+        // then absorb them before processing the event so that before-key
+        // comments (accumulated while scanning the key token) are in
+        // pending_before in time for the key scalar handler to pick them up.
+        let comments = parser.drain_comments();
+        builder.absorb_comments(comments);
+
+        let done = matches!(ev, Event::StreamEnd);
+        builder.process_event(ev, mark, policy);
+
+        if done {
+            break;
+        }
+    }
+
+    Ok(ParseOutput {
+        docs: builder.docs,
+        doc_explicit: builder.doc_explicit,
+        doc_explicit_end: builder.doc_explicit_end,
+        doc_yaml_version: builder.doc_yaml_version,
+        doc_tag_directives: builder.doc_tag_directives,
+    })
+}
+
+pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
+    parse_iter(input.chars(), policy)
 }
 
 #[cfg(test)]
@@ -1350,54 +1368,4 @@ mod tests {
         // Just check it doesn't panic; error type doesn't matter
         let _ = result;
     }
-}
-
-/// Parsed output from a YAML input string.
-pub struct ParseOutput {
-    pub docs: Vec<YamlNode>,
-    pub doc_explicit: Vec<bool>,
-    pub doc_explicit_end: Vec<bool>,
-    pub doc_yaml_version: Vec<Option<(u8, u8)>>,
-    pub doc_tag_directives: Vec<Vec<(String, String)>>,
-}
-
-pub fn parse_iter<T: Iterator<Item = char>>(
-    src: T,
-    policy: Option<&TagPolicy>,
-) -> Result<ParseOutput, String> {
-    let mut parser = Parser::new(src);
-    let mut builder = Builder::new();
-
-    loop {
-        // Fetch the next event first; comments are accumulated *during* scanning.
-        let (ev, mark) = parser
-            .next_token()
-            .map_err(|e| format!("YAML parse error: {e}"))?;
-
-        // Drain comments that were collected while scanning for this event,
-        // then absorb them before processing the event so that before-key
-        // comments (accumulated while scanning the key token) are in
-        // pending_before in time for the key scalar handler to pick them up.
-        let comments = parser.drain_comments();
-        builder.absorb_comments(comments);
-
-        let done = matches!(ev, Event::StreamEnd);
-        builder.process_event(ev, mark, policy);
-
-        if done {
-            break;
-        }
-    }
-
-    Ok(ParseOutput {
-        docs: builder.docs,
-        doc_explicit: builder.doc_explicit,
-        doc_explicit_end: builder.doc_explicit_end,
-        doc_yaml_version: builder.doc_yaml_version,
-        doc_tag_directives: builder.doc_tag_directives,
-    })
-}
-
-pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
-    parse_iter(input.chars(), policy)
 }

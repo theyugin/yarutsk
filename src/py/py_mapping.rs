@@ -6,7 +6,8 @@ use pyo3::types::{PyDict, PyTuple};
 
 use super::convert::{
     DocMeta, mapping_repr, mapping_to_dict, mapping_to_py_obj, node_to_doc, node_to_py,
-    parse_container_style, parse_yaml_version, plain_entry, py_to_node, sort_mapping,
+    parse_container_style, parse_yaml_version, plain_entry, py_to_node, py_to_node_with_fallback,
+    sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
@@ -21,12 +22,16 @@ use crate::core::types::*;
 pub struct PyYamlMapping {
     pub(crate) inner: YamlMapping,
     /// True when the document this mapping belongs to had an explicit `---` marker.
+    #[pyo3(get, set)]
     pub explicit_start: bool,
     /// True when the document this mapping belongs to had an explicit `...` marker.
+    #[pyo3(get, set)]
     pub explicit_end: bool,
     /// `%YAML major.minor` directive for this document, if any.
+    /// Exposed to Python as a `"major.minor"` string via manual getter/setter.
     pub yaml_version: Option<(u8, u8)>,
     /// `%TAG handle prefix` pairs for this document.
+    #[pyo3(get, set)]
     pub tag_directives: Vec<(String, String)>,
 }
 
@@ -104,19 +109,8 @@ impl PyYamlMapping {
 
     fn __setitem__(slf: &Bound<'_, Self>, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
-        // For unknown types (custom Python objects), store an opaque empty-mapping
-        // placeholder in inner so that extract_yaml_node reads the real value from
-        // the parent dict at dump time (where the schema's dumpers can handle it).
-        let (node, py_val) = match py_to_node(value, None) {
-            Ok(n) => {
-                let pv = node_to_py(py, &n, None)?;
-                (n, pv)
-            }
-            Err(_) => (
-                YamlNode::Mapping(YamlMapping::new()),
-                value.clone().unbind(),
-            ),
-        };
+        let (node, py_val) =
+            py_to_node_with_fallback(py, value, None, || YamlNode::Mapping(YamlMapping::new()))?;
         {
             let mut borrow = slf.borrow_mut();
             if let Some(entry) = borrow.inner.entries.get_mut(key) {
@@ -225,13 +219,9 @@ impl PyYamlMapping {
                 let key = key?;
                 let val = other.get_item(&key)?;
                 let k: String = key.extract()?;
-                let (node, py_val) = match py_to_node(&val, None) {
-                    Ok(n) => {
-                        let pv = node_to_py(py, &n, None)?;
-                        (n, pv)
-                    }
-                    Err(_) => (YamlNode::Mapping(YamlMapping::new()), val.clone().unbind()),
-                };
+                let (node, py_val) = py_to_node_with_fallback(py, &val, None, || {
+                    YamlNode::Mapping(YamlMapping::new())
+                })?;
                 slf.borrow_mut()
                     .inner
                     .entries
@@ -243,13 +233,8 @@ impl PyYamlMapping {
         for item in other.try_iter()? {
             let item = item?;
             let (k, val): (String, Bound<'_, PyAny>) = item.extract()?;
-            let (node, py_val) = match py_to_node(&val, None) {
-                Ok(n) => {
-                    let pv = node_to_py(py, &n, None)?;
-                    (n, pv)
-                }
-                Err(_) => (YamlNode::Mapping(YamlMapping::new()), val.clone().unbind()),
-            };
+            let (node, py_val) =
+                py_to_node_with_fallback(py, &val, None, || YamlNode::Mapping(YamlMapping::new()))?;
             slf.borrow_mut()
                 .inner
                 .entries
@@ -270,16 +255,8 @@ impl PyYamlMapping {
         if !contains {
             let default_val = default.unwrap_or_else(|| py.None());
             let dv = default_val.bind(py);
-            let (node, py_val) = match py_to_node(dv, None) {
-                Ok(n) => {
-                    let pv = node_to_py(py, &n, None)?;
-                    (n, pv)
-                }
-                Err(_) => (
-                    YamlNode::Mapping(YamlMapping::new()),
-                    default_val.clone_ref(py),
-                ),
-            };
+            let (node, py_val) =
+                py_to_node_with_fallback(py, dv, None, || YamlNode::Mapping(YamlMapping::new()))?;
             slf.borrow_mut()
                 .inner
                 .entries
@@ -547,28 +524,6 @@ impl PyYamlMapping {
         self.inner.trailing_blank_lines = n;
     }
 
-    /// Whether this document had an explicit `---` marker in the source.
-    #[getter]
-    fn get_explicit_start(&self) -> bool {
-        self.explicit_start
-    }
-
-    #[setter]
-    fn set_explicit_start(&mut self, value: bool) {
-        self.explicit_start = value;
-    }
-
-    /// Whether this document had an explicit `...` marker in the source.
-    #[getter]
-    fn get_explicit_end(&self) -> bool {
-        self.explicit_end
-    }
-
-    #[setter]
-    fn set_explicit_end(&mut self, value: bool) {
-        self.explicit_end = value;
-    }
-
     /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
     #[getter]
     fn get_yaml_version(&self) -> Option<String> {
@@ -579,17 +534,6 @@ impl PyYamlMapping {
     fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
         self.yaml_version = parse_yaml_version(version)?;
         Ok(())
-    }
-
-    /// The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs.
-    #[getter]
-    fn get_tag_directives(&self) -> Vec<(String, String)> {
-        self.tag_directives.clone()
-    }
-
-    #[setter]
-    fn set_tag_directives(&mut self, directives: Vec<(String, String)>) {
-        self.tag_directives = directives;
     }
 
     /// Return the underlying YAML node for a key as a YamlScalar, YamlMapping,

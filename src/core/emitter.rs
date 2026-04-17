@@ -49,6 +49,45 @@ fn format_tag(tag: &str) -> Cow<'_, str> {
     }
 }
 
+/// Emit the `&anchor TAG ` inline prefix with a trailing space after each component.
+/// Used when a prefix precedes other content on the same line (flow containers,
+/// key prefixes, `emit_scalar`).
+fn write_anchor_tag_inline<W: FmtWrite>(
+    anchor: Option<&str>,
+    tag: Option<&str>,
+    out: &mut W,
+) -> fmt::Result {
+    if let Some(anchor) = anchor {
+        out.write_char('&')?;
+        out.write_str(anchor)?;
+        out.write_char(' ')?;
+    }
+    if let Some(tag) = tag {
+        out.write_str(&format_tag(tag))?;
+        out.write_char(' ')?;
+    }
+    Ok(())
+}
+
+/// Emit the ` &anchor TAG` block-suffix prefix with a leading space before each
+/// component and no trailing space. Used to extend a key/value line (after `:`
+/// or `-`) with an anchor and/or tag before the newline that introduces the body.
+fn write_anchor_tag_block_suffix<W: FmtWrite>(
+    anchor: Option<&str>,
+    tag: Option<&str>,
+    out: &mut W,
+) -> fmt::Result {
+    if let Some(anchor) = anchor {
+        out.write_str(" &")?;
+        out.write_str(anchor)?;
+    }
+    if let Some(tag) = tag {
+        out.write_char(' ')?;
+        out.write_str(&format_tag(tag))?;
+    }
+    Ok(())
+}
+
 /// Emit a YAML node to any `fmt::Write` sink, with the given indentation level.
 /// `step` is the per-level indentation increment (e.g. 2 or 4).
 pub fn emit_node<W: FmtWrite>(
@@ -253,15 +292,7 @@ fn emit_mapping_key<W: FmtWrite>(
         out.write_char(':')?;
     } else {
         // Plain / quoted scalar key: optional anchor + tag, then key text.
-        if let Some(anchor) = &entry.key_anchor {
-            out.write_char('&')?;
-            out.write_str(anchor)?;
-            out.write_char(' ')?;
-        }
-        if let Some(tag) = &entry.key_tag {
-            out.write_str(&format_tag(tag))?;
-            out.write_char(' ')?;
-        }
+        write_anchor_tag_inline(entry.key_anchor.as_deref(), entry.key_tag.as_deref(), out)?;
         out.write_str(&emit_key(key, entry.key_style))?;
         out.write_char(':')?;
     }
@@ -287,14 +318,7 @@ fn emit_mapping_value<W: FmtWrite>(
         }
         YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
             // Block mapping value: anchor + tag (if any) + inline comment, then content below.
-            if let Some(anchor) = &nested.anchor {
-                out.write_str(" &")?;
-                out.write_str(anchor)?;
-            }
-            if let Some(tag) = &nested.tag {
-                out.write_char(' ')?;
-                out.write_str(&format_tag(tag))?;
-            }
+            write_anchor_tag_block_suffix(nested.anchor.as_deref(), nested.tag.as_deref(), out)?;
             push_inline_comment(entry.comment_inline.as_deref(), out)?;
             out.write_char('\n')?;
             emit_mapping(nested, indent + step, step, out)?;
@@ -310,14 +334,7 @@ fn emit_mapping_value<W: FmtWrite>(
         }
         YamlNode::Sequence(nested) if !nested.items.is_empty() => {
             // Block sequence value: anchor + tag (if any) + inline comment, then content below.
-            if let Some(anchor) = &nested.anchor {
-                out.write_str(" &")?;
-                out.write_str(anchor)?;
-            }
-            if let Some(tag) = &nested.tag {
-                out.write_char(' ')?;
-                out.write_str(&format_tag(tag))?;
-            }
+            write_anchor_tag_block_suffix(nested.anchor.as_deref(), nested.tag.as_deref(), out)?;
             push_inline_comment(entry.comment_inline.as_deref(), out)?;
             out.write_char('\n')?;
             emit_sequence(nested, indent + step, step, out)?;
@@ -386,15 +403,7 @@ fn emit_mapping<W: FmtWrite>(
 }
 
 fn emit_mapping_flow<W: FmtWrite>(m: &YamlMapping, out: &mut W) -> fmt::Result {
-    if let Some(anchor) = &m.anchor {
-        out.write_char('&')?;
-        out.write_str(anchor)?;
-        out.write_char(' ')?;
-    }
-    if let Some(tag) = &m.tag {
-        out.write_str(&format_tag(tag))?;
-        out.write_char(' ')?;
-    }
+    write_anchor_tag_inline(m.anchor.as_deref(), m.tag.as_deref(), out)?;
     out.write_char('{')?;
     let mut first = true;
     for (key, entry) in &m.entries {
@@ -413,15 +422,7 @@ fn emit_mapping_flow<W: FmtWrite>(m: &YamlMapping, out: &mut W) -> fmt::Result {
             // so `*alias:` is parsed as alias `alias:` rather than alias `alias` + `:`.
             out.write_char(' ')?;
         } else {
-            if let Some(anchor) = &entry.key_anchor {
-                out.write_char('&')?;
-                out.write_str(anchor)?;
-                out.write_char(' ')?;
-            }
-            if let Some(tag) = &entry.key_tag {
-                out.write_str(&format_tag(tag))?;
-                out.write_char(' ')?;
-            }
+            write_anchor_tag_inline(entry.key_anchor.as_deref(), entry.key_tag.as_deref(), out)?;
             out.write_str(&emit_key(key, entry.key_style))?;
         }
         out.write_str(": ")?;
@@ -548,15 +549,7 @@ fn emit_sequence<W: FmtWrite>(
 }
 
 fn emit_sequence_flow<W: FmtWrite>(s: &YamlSequence, out: &mut W) -> fmt::Result {
-    if let Some(anchor) = &s.anchor {
-        out.write_char('&')?;
-        out.write_str(anchor)?;
-        out.write_char(' ')?;
-    }
-    if let Some(tag) = &s.tag {
-        out.write_str(&format_tag(tag))?;
-        out.write_char(' ')?;
-    }
+    write_anchor_tag_inline(s.anchor.as_deref(), s.tag.as_deref(), out)?;
     out.write_char('[')?;
     let mut first = true;
     for item in &s.items {
@@ -836,15 +829,7 @@ fn emit_block_scalar<W: FmtWrite>(
 
 /// Emit a scalar value in the appropriate style.
 pub fn emit_scalar<W: FmtWrite>(s: &YamlScalar, out: &mut W) -> fmt::Result {
-    if let Some(anchor) = &s.anchor {
-        out.write_char('&')?;
-        out.write_str(anchor)?;
-        out.write_char(' ')?;
-    }
-    if let Some(tag) = &s.tag {
-        out.write_str(&format_tag(tag))?;
-        out.write_char(' ')?;
-    }
+    write_anchor_tag_inline(s.anchor.as_deref(), s.tag.as_deref(), out)?;
     // Use preserved source text when available (e.g. float exponent form `1.5e10`,
     // non-canonical null/bool/int forms, tagged plain scalars).
     if let Some(orig) = &s.original {
@@ -1020,6 +1005,74 @@ fn double_quote(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Return true if the string needs to be quoted in YAML plain style.
+fn needs_quoting(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    // Check if it would be parsed as a non-string type.
+    // Mirrors ScalarValue::from_str but avoids allocating a String.
+    match s {
+        "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
+        | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
+        | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
+        | ".NAN" => return true,
+        _ => {}
+    }
+    // Numeric: hex/octal prefix → int; decimal int; float with . or e
+    // s is non-empty (checked above); safe to index b[0].
+    let b = s.as_bytes();
+    let start = if b[0] == b'-' || b[0] == b'+' { 1 } else { 0 };
+    let rest = &s[start..];
+    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        if i64::from_str_radix(hex, 16).is_ok() {
+            return true;
+        }
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+        if i64::from_str_radix(oct, 8).is_ok() {
+            return true;
+        }
+    } else if s.parse::<i64>().is_ok()
+        || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
+    {
+        return true;
+    }
+    // Check for characters that require quoting
+    let first = b[0] as char;
+    if matches!(
+        first,
+        '#' | '&'
+            | '*'
+            | '?'
+            | '|'
+            | '-'
+            | '<'
+            | '>'
+            | '='
+            | '!'
+            | '%'
+            | '@'
+            | '`'
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | ','
+    ) {
+        return true;
+    }
+    if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
+        return true;
+    }
+    if s.contains(" #") {
+        return true;
+    }
+    if s.contains('\n') || s.contains('\r') {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1919,72 +1972,4 @@ mod tests {
             "expected quotes: {out}"
         );
     }
-}
-
-/// Return true if the string needs to be quoted in YAML plain style.
-fn needs_quoting(s: &str) -> bool {
-    if s.is_empty() {
-        return true;
-    }
-    // Check if it would be parsed as a non-string type.
-    // Mirrors ScalarValue::from_str but avoids allocating a String.
-    match s {
-        "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
-        | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
-        | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
-        | ".NAN" => return true,
-        _ => {}
-    }
-    // Numeric: hex/octal prefix → int; decimal int; float with . or e
-    // s is non-empty (checked above); safe to index b[0].
-    let b = s.as_bytes();
-    let start = if b[0] == b'-' || b[0] == b'+' { 1 } else { 0 };
-    let rest = &s[start..];
-    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-        if i64::from_str_radix(hex, 16).is_ok() {
-            return true;
-        }
-    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-        if i64::from_str_radix(oct, 8).is_ok() {
-            return true;
-        }
-    } else if s.parse::<i64>().is_ok()
-        || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
-    {
-        return true;
-    }
-    // Check for characters that require quoting
-    let first = b[0] as char;
-    if matches!(
-        first,
-        '#' | '&'
-            | '*'
-            | '?'
-            | '|'
-            | '-'
-            | '<'
-            | '>'
-            | '='
-            | '!'
-            | '%'
-            | '@'
-            | '`'
-            | '{'
-            | '}'
-            | '['
-            | ']'
-            | ','
-    ) {
-        return true;
-    }
-    if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
-        return true;
-    }
-    if s.contains(" #") {
-        return true;
-    }
-    if s.contains('\n') || s.contains('\r') {
-        return true;
-    }
-    false
 }

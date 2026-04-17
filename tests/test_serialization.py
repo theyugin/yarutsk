@@ -572,7 +572,6 @@ class TestAutoAnchor:
         d: dict = {}
         d["self"] = d
         out = yarutsk.dumps(d)
-        # The output must be parseable YAML
         doc = yarutsk.loads(out)
         assert doc is not None
 
@@ -624,8 +623,7 @@ class TestAutoAnchor:
     def test_recursive_dict_detected_at_dump(self):
         d: dict = {}
         d["self"] = d
-        m = yarutsk.YamlMapping(d)  # construction succeeds
-        # Cycle is detected and emitted as anchor/alias
+        m = yarutsk.YamlMapping(d)
         out = yarutsk.dumps(m)
         assert "&id001" in out
         assert "*id001" in out
@@ -633,8 +631,7 @@ class TestAutoAnchor:
     def test_recursive_list_detected_at_dump(self):
         lst: list = [1]
         lst.append(lst)
-        s = yarutsk.YamlSequence(lst)  # construction succeeds
-        # Cycle is detected and emitted as anchor/alias
+        s = yarutsk.YamlSequence(lst)
         out = yarutsk.dumps(s)
         assert "&id001" in out
         assert "*id001" in out

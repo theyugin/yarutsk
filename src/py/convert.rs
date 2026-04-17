@@ -594,6 +594,32 @@ pub(crate) fn py_to_node(
     )))
 }
 
+/// Convert a Python value to a paired (`YamlNode`, `Py<PyAny>`) for dual-mutation sync.
+///
+/// `PyYamlMapping` / `PyYamlSequence` must keep their Rust `inner` and the Python
+/// parent dict/list in sync on every mutation. On the hot path (`Ok`), this returns
+/// `(n, node_to_py(py, &n, schema)?)`. For unknown Python types — custom objects
+/// a schema dumper can handle but which have no native `YamlNode` representation —
+/// `py_to_node` returns `Err`; we then store an opaque placeholder (`fallback_node()`)
+/// in `inner` while the real Python object goes into the parent container, where
+/// `extract_yaml_node` reads it back at dump time so the schema dumper can run.
+///
+/// `fallback_node` is a closure so the placeholder is not allocated on the `Ok` path.
+pub(crate) fn py_to_node_with_fallback(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+    fallback_node: impl FnOnce() -> YamlNode,
+) -> PyResult<(YamlNode, Py<PyAny>)> {
+    match py_to_node(value, schema) {
+        Ok(n) => {
+            let pv = node_to_py(py, &n, schema)?;
+            Ok((n, pv))
+        }
+        Err(_) => Ok((fallback_node(), value.clone().unbind())),
+    }
+}
+
 // ─── Document metadata ────────────────────────────────────────────────────────
 
 /// Document-level metadata attached to every top-level YAML node.

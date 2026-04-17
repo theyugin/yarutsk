@@ -34,60 +34,43 @@ impl PyIoCharsIter {
     }
 
     fn fill_buf(&mut self) {
-        Python::attach(|py| {
-            let chunk = self.stream.call_method1(py, "read", (8192_usize,));
-            match chunk {
-                Err(e) => {
-                    if let Ok(mut guard) = self.error.lock() {
-                        *guard = Some(e);
-                    }
-                    self.done = true;
-                }
-                Ok(c) => {
-                    if c.is_none(py) {
-                        // None is not a valid stream result
-                        if let Ok(mut guard) = self.error.lock() {
-                            *guard = Some(PyRuntimeError::new_err(
-                                "stream.read() must return str or bytes",
-                            ));
-                        }
-                        self.done = true;
-                        return;
-                    }
-                    if let Ok(s) = c.extract::<String>(py) {
-                        if s.is_empty() {
-                            self.done = true;
-                        } else {
-                            self.buf.extend(s.chars());
-                        }
-                    } else if let Ok(b) = c.extract::<Vec<u8>>(py) {
-                        if b.is_empty() {
-                            self.done = true;
-                        } else {
-                            match String::from_utf8(b) {
-                                Ok(s) => self.buf.extend(s.chars()),
-                                Err(e) => {
-                                    if let Ok(mut guard) = self.error.lock() {
-                                        *guard = Some(PyRuntimeError::new_err(format!(
-                                            "UTF-8 decode error: {e}"
-                                        )));
-                                    }
-                                    self.done = true;
-                                }
-                            }
-                        }
-                    } else {
-                        // e.g. read() returned an int or some other type
-                        if let Ok(mut guard) = self.error.lock() {
-                            *guard = Some(PyRuntimeError::new_err(
-                                "stream.read() must return str or bytes",
-                            ));
-                        }
-                        self.done = true;
-                    }
-                }
-            }
+        Python::attach(|py| match self.read_chunk(py) {
+            Ok(Some(s)) => self.buf.extend(s.chars()),
+            Ok(None) => self.done = true,
+            Err(e) => self.set_error(e),
         });
+    }
+
+    /// Read one chunk from the Python stream.
+    /// `Ok(Some(s))` = non-empty chunk, `Ok(None)` = EOF, `Err(_)` = fatal error.
+    fn read_chunk(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        let chunk = self.stream.call_method1(py, "read", (8192_usize,))?;
+        if chunk.is_none(py) {
+            return Err(PyRuntimeError::new_err(
+                "stream.read() must return str or bytes",
+            ));
+        }
+        if let Ok(s) = chunk.extract::<String>(py) {
+            return Ok((!s.is_empty()).then_some(s));
+        }
+        if let Ok(b) = chunk.extract::<Vec<u8>>(py) {
+            if b.is_empty() {
+                return Ok(None);
+            }
+            return String::from_utf8(b)
+                .map(Some)
+                .map_err(|e| PyRuntimeError::new_err(format!("UTF-8 decode error: {e}")));
+        }
+        Err(PyRuntimeError::new_err(
+            "stream.read() must return str or bytes",
+        ))
+    }
+
+    fn set_error(&mut self, err: PyErr) {
+        if let Ok(mut guard) = self.error.lock() {
+            *guard = Some(err);
+        }
+        self.done = true;
     }
 }
 
@@ -177,6 +160,27 @@ impl PyStreamWriter {
     pub(crate) fn take_error(&mut self) -> Option<PyErr> {
         self.error.take()
     }
+
+    /// Write one chunk, tracking/latching text-vs-bytes mode on the first call.
+    /// On the first call both forms are attempted; later calls reuse the latched mode.
+    fn try_write(&mut self, py: Python<'_>, s: &str) -> PyResult<()> {
+        match self.text_mode {
+            Some(true) => self.stream.call_method1(py, "write", (s,))?,
+            Some(false) => self.stream.call_method1(py, "write", (s.as_bytes(),))?,
+            None => match self.stream.call_method1(py, "write", (s,)) {
+                Ok(_) => {
+                    self.text_mode = Some(true);
+                    return Ok(());
+                }
+                Err(_) => {
+                    self.stream.call_method1(py, "write", (s.as_bytes(),))?;
+                    self.text_mode = Some(false);
+                    return Ok(());
+                }
+            },
+        };
+        Ok(())
+    }
 }
 
 impl std::fmt::Write for PyStreamWriter {
@@ -185,44 +189,12 @@ impl std::fmt::Write for PyStreamWriter {
             // Stop writing once an error has occurred.
             return Err(std::fmt::Error);
         }
-        Python::attach(|py| {
-            let ok = if self.text_mode == Some(false) {
-                // Known binary stream.
-                match self.stream.call_method1(py, "write", (s.as_bytes(),)) {
-                    Ok(_) => true,
-                    Err(e) => {
-                        self.error = Some(e);
-                        false
-                    }
-                }
-            } else {
-                // Try text first.
-                match self.stream.call_method1(py, "write", (s,)) {
-                    Ok(_) => {
-                        self.text_mode = Some(true);
-                        true
-                    }
-                    Err(e) => {
-                        if self.text_mode.is_none() {
-                            // Fall back to bytes.
-                            match self.stream.call_method1(py, "write", (s.as_bytes(),)) {
-                                Ok(_) => {
-                                    self.text_mode = Some(false);
-                                    true
-                                }
-                                Err(e2) => {
-                                    self.error = Some(e2);
-                                    false
-                                }
-                            }
-                        } else {
-                            self.error = Some(e);
-                            false
-                        }
-                    }
-                }
-            };
-            if ok { Ok(()) } else { Err(std::fmt::Error) }
+        Python::attach(|py| match self.try_write(py, s) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.error = Some(e);
+                Err(std::fmt::Error)
+            }
         })
     }
 }

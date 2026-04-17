@@ -111,19 +111,16 @@ class TestTypePreservation:
         assert doc["value"] == "quoted string"
 
     def test_empty_double_quoted_string(self):
-        """Empty double-quoted string "" must be an empty str, not None."""
         doc = yarutsk.loads('key: ""')
         assert doc["key"] == ""
         assert isinstance(doc["key"], str)
 
     def test_empty_single_quoted_string(self):
-        """Empty single-quoted string '' must be an empty str, not None."""
         doc = yarutsk.loads("key: ''")
         assert doc["key"] == ""
         assert isinstance(doc["key"], str)
 
     def test_empty_quoted_strings_in_sequence(self):
-        """Empty quoted strings inside a sequence are preserved as empty strings."""
         doc = yarutsk.loads(
             dedent("""\
             - ""
@@ -149,7 +146,6 @@ class TestTypePreservation:
         assert doc["quoted"] == ""
 
     def test_empty_quoted_round_trips(self):
-        """Empty quoted string survives a dump/load cycle as an empty string."""
         doc = yarutsk.loads(
             dedent("""\
             a: ""
@@ -164,7 +160,6 @@ class TestTypePreservation:
 
 class TestInsertionOrderPreservation:
     def test_order_preserved_on_load(self):
-        """Keys appear in same order as input YAML."""
         content = io.StringIO(
             dedent("""\
             z: 1
@@ -176,7 +171,6 @@ class TestInsertionOrderPreservation:
         assert list(doc.keys()) == ["z", "a", "m"]
 
     def test_order_preserved_on_insert(self):
-        """New keys appended at end."""
         content = io.StringIO(
             dedent("""\
             a: 1
@@ -188,7 +182,6 @@ class TestInsertionOrderPreservation:
         assert list(doc.keys()) == ["a", "b", "z"]
 
     def test_nested_order_preserved(self):
-        """Nested mappings also preserve order."""
         content = io.StringIO("""
 outer:
   z: 1
@@ -199,7 +192,6 @@ outer:
         assert list(doc["outer"].keys()) == ["z", "a", "m"]
 
     def test_round_trip_order(self):
-        """Order preserved through parse-modify-serialize cycle."""
         content = io.StringIO(
             dedent("""\
             z: 1

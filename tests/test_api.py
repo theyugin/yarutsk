@@ -1057,8 +1057,6 @@ class TestFormat:
 
 
 class TestIndentParameter:
-    """Test the indent= parameter on dump functions."""
-
     def test_dumps_indent_4(self):
         doc = yarutsk.loads("outer:\n  inner: 1\n")
         out = yarutsk.dumps(doc, indent=4)
@@ -1078,8 +1076,6 @@ class TestIndentParameter:
 
 
 class TestYamlVersionAndTagDirectives:
-    """Test yaml_version and tag_directives properties."""
-
     def test_yaml_version_roundtrip(self):
         src = "%YAML 1.1\n---\nkey: value\n"
         doc = yarutsk.loads(src)
@@ -1139,8 +1135,6 @@ class TestYamlVersionAndTagDirectives:
 
 
 class TestScalarStyleTypeError:
-    """Test that scalar_style() raises TypeError on non-scalar values."""
-
     def test_mapping_scalar_style_on_nested_mapping_raises(self):
         doc = yarutsk.loads("outer:\n  inner: 1\n")
         with pytest.raises(TypeError, match="not a scalar"):
@@ -1173,8 +1167,6 @@ class TestScalarStyleTypeError:
 
 
 class TestAnchorProperty:
-    """Test the anchor read/write property on all three node types."""
-
     def test_mapping_anchor_roundtrip(self):
         src = "base: &anchor\n  x: 1\nalias: *anchor\n"
         doc = yarutsk.loads(src)
@@ -1554,9 +1546,7 @@ class TestDeepCopy:
         assert isinstance(doc2, yarutsk.YamlSequence)
 
 
-class TestMappingDesyncFixes:
-    """Verify that previously-unoverridden dict methods now sync inner."""
-
+class TestMappingInnerSync:
     def test_clear_empties_inner(self):
         doc = yarutsk.loads("a: 1\nb: 2\n")
         doc.clear()
@@ -1614,9 +1604,7 @@ class TestMappingDesyncFixes:
         assert doc["a"] == 1
 
 
-class TestSequenceDesyncFixes:
-    """Verify that previously-unoverridden list methods now sync inner."""
-
+class TestSequenceInnerSync:
     def test_iadd_syncs_inner(self):
         seq = yarutsk.loads("- 1\n")
         seq += [2, 3]
@@ -1645,7 +1633,6 @@ class TestSequenceDesyncFixes:
         assert "- 2\n" not in out
 
     def test_slice_setitem_empty_replacement(self):
-        # Replacing with empty list — same as slice deletion
         seq = yarutsk.loads("- a\n- b\n- c\n")
         seq[1:2] = []
         assert list(seq) == ["a", "c"]
@@ -1653,7 +1640,6 @@ class TestSequenceDesyncFixes:
         assert "- b\n" not in out
 
     def test_slice_setitem_insertion(self):
-        # start == stop → insert without removing anything
         seq = yarutsk.loads("- a\n- c\n")
         seq[1:1] = ["b"]
         assert list(seq) == ["a", "b", "c"]
@@ -1666,7 +1652,7 @@ class TestSequenceDesyncFixes:
 
     def test_slice_delitem_empty_slice(self):
         seq = yarutsk.loads("- 1\n- 2\n")
-        del seq[1:1]  # no-op
+        del seq[1:1]
         assert list(seq) == [1, 2]
 
     def test_slice_delitem_full(self):
@@ -1687,7 +1673,7 @@ class TestSequenceDesyncFixes:
 
 
 class TestNonStringKeys:
-    """YAML keys that are not strings are coerced to strings on load."""
+    """YAML keys that are not strings are preserved as their raw source text."""
 
     def test_integer_key_loaded_as_string(self):
         doc = yarutsk.loads("1: foo\n2: bar\n")
@@ -1708,14 +1694,11 @@ class TestNonStringKeys:
         assert "false" in doc
 
     def test_null_key_preserved_as_raw_text(self):
-        # YAML keys are stored as their raw source text (not coerced).
-        # `null` the YAML null scalar becomes the Python string "null", not "".
         doc = yarutsk.loads("null: value\n")
         assert "null" in doc
         assert doc["null"] == "value"
 
     def test_null_key_tilde_form(self):
-        # The ~ spelling of null is also preserved as raw text.
         doc = yarutsk.loads("~: value\n")
         assert "~" in doc
         assert doc["~"] == "value"
@@ -1730,7 +1713,6 @@ class TestNonStringKeys:
         doc = yarutsk.loads("42: answer\n")
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
-        # Key is stored as "42"; YAML emits it unquoted (valid YAML plain key)
         assert doc2["42"] == "answer"
 
 
