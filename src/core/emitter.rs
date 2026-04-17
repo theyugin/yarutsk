@@ -103,7 +103,16 @@ pub fn emit_node<W: FmtWrite>(
         // Block scalars (`|` / `>`) are routed to `emit_block_scalar` so that
         // the indicator and indented content are always emitted correctly,
         // whether the scalar is a top-level document or a nested value.
-        YamlNode::Scalar(s) if is_block_scalar(s) => emit_block_scalar(s, indent, step, None, out)?,
+        //
+        // At document root (indent = 0), content emitted at column 0 would be
+        // mis-parsed: `#` lines become comments, `---` / `...` lines become
+        // document markers, and the next doc's start indicator gets folded
+        // into the scalar's content. Bump to one step so content sits at
+        // column `step`, safely inside the block scalar.
+        YamlNode::Scalar(s) if is_block_scalar(s) => {
+            let effective = if indent == 0 { step } else { indent };
+            emit_block_scalar(s, effective, step, None, out)?
+        }
         YamlNode::Scalar(s) => emit_scalar(s, out)?,
         YamlNode::Null => {
             out.write_str("null")?;
@@ -876,6 +885,10 @@ fn needs_quoting_for_key(s: &str) -> bool {
     if s.is_empty() {
         return true;
     }
+    // Document-start/end markers would collide with YAML directives on re-parse.
+    if s == "---" || s == "..." {
+        return true;
+    }
     // Check for characters that are structurally significant in YAML
     let b = s.as_bytes();
     let first = b[0] as char;
@@ -1003,6 +1016,9 @@ fn needs_quoting(s: &str) -> bool {
         | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
         | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
         | ".NAN" => return true,
+        // Document-start/end markers: emitting plain would collide with
+        // directive-end / document-end markers on re-parse.
+        "---" | "..." => return true,
         _ => {}
     }
     // Numeric: hex/octal prefix → int; decimal int; float with . or e
@@ -1678,6 +1694,33 @@ mod tests {
     }
 
     #[test]
+    fn emit_root_block_scalar_indents_content() {
+        // A block scalar at document root must emit content at column >= step.
+        // Content at column 0 is mis-parsed: `#` becomes a comment and the next
+        // document's `---` marker gets folded into the scalar's content.
+        for style in [ScalarStyle::Folded, ScalarStyle::Literal] {
+            let doc = YamlNode::Scalar(YamlScalar {
+                value: ScalarValue::Str("#\n".to_owned()),
+                style,
+                tag: None,
+                original: None,
+                anchor: None,
+            });
+            let out = emit_docs(
+                &[doc, YamlNode::Null],
+                &[DocMetadata::default(), DocMetadata::default()],
+                2,
+            );
+            let re = crate::core::builder::parse_str(&out, None).expect("re-parse failed");
+            assert_eq!(
+                re.docs.len(),
+                2,
+                "doc count drift for {style:?}: emitted:\n{out}"
+            );
+        }
+    }
+
+    #[test]
     fn emit_folded_block_multiline() {
         // Multi-paragraph folded content must survive a full emit → re-parse cycle.
         let cases: &[(&str, &str)] = &[
@@ -1822,6 +1865,16 @@ mod tests {
     #[test]
     fn needs_quoting_colon_space() {
         assert!(needs_quoting("key: val"));
+    }
+
+    #[test]
+    fn needs_quoting_document_markers() {
+        // A root-level scalar of "---" or "..." must be quoted so it does not
+        // collide with YAML directive-end / document-end markers on re-parse.
+        assert!(needs_quoting("---"));
+        assert!(needs_quoting("..."));
+        assert!(needs_quoting_for_key("---"));
+        assert!(needs_quoting_for_key("..."));
     }
 
     // ── needs_quoting_for_key ────────────────────────────────────────────────

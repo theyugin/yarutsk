@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-18
+
+### Fixed
+- Quote plain scalars with value `---` / `...` so they don't re-parse as document markers.
+- Indent root-level block scalar content so it doesn't collide with comment / document-marker syntax.
+
 ## [0.5.0] - 2026-04-18
 
 ### Added
@@ -79,7 +85,8 @@ All notable changes to this project are documented here. The format is based on 
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/theyugin/yarutsk/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/theyugin/yarutsk/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/theyugin/yarutsk/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/theyugin/yarutsk/compare/v0.4.0...v0.4.1
