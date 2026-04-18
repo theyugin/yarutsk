@@ -76,3 +76,126 @@ def test_dump_idempotent(tree: Any) -> None:
     first = yarutsk.dumps(tree)
     second = yarutsk.dumps(yarutsk.loads(first))
     assert first == second
+
+
+# ─── format()-then-roundtrip ─────────────────────────────────────────────────
+#
+# format() blindly resets every scalar to ``Plain``; the emitter is the safety
+# net. This test ensures the round-trip remains lossless after that reset for
+# any tree shape the strategies produce.
+
+
+@given(tree=_trees())
+@settings(
+    max_examples=100,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_format_then_roundtrip(tree: Any) -> None:
+    doc = yarutsk.loads(yarutsk.dumps(tree))
+    if hasattr(doc, "format"):
+        doc.format()
+    out = yarutsk.dumps(doc)
+    again = yarutsk.loads(out)
+    assert _to_python(again) == tree
+
+
+# ─── Flow-context strategy ───────────────────────────────────────────────────
+#
+# The default strategy emits everything as block-style containers because plain
+# Python dicts/lists default to block on dump. To exercise flow-context quoting
+# decisions we build trees out of yarutsk.YamlMapping / YamlSequence with
+# style="flow" and seed strings with characters that are flow indicators.
+
+
+_FLOW_VALUE_CHARS = st.characters(
+    whitelist_categories=("Ll", "Lu", "Nd"),
+    whitelist_characters="_-. \t,[]{}",
+)
+_FLOW_STRINGS = st.text(alphabet=_FLOW_VALUE_CHARS, min_size=1, max_size=12)
+_FLOW_LEAVES = (
+    st.integers(min_value=-(2**31), max_value=2**31 - 1) | st.booleans() | st.none() | _FLOW_STRINGS
+)
+
+
+def _flow_seq(values: list[Any]) -> yarutsk.YamlSequence:
+    seq = yarutsk.YamlSequence(style="flow")
+    for v in values:
+        seq.append(v)
+    return seq
+
+
+def _flow_map(items: dict[str, Any]) -> yarutsk.YamlMapping:
+    m = yarutsk.YamlMapping(style="flow")
+    for k, v in items.items():
+        m[k] = v
+    return m
+
+
+@given(values=st.lists(_FLOW_LEAVES, min_size=1, max_size=5))
+@settings(
+    max_examples=100,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_flow_sequence_roundtrip(values: list[Any]) -> None:
+    seq = _flow_seq(values)
+    out = yarutsk.dumps({"k": seq})
+    parsed = yarutsk.loads(out)
+    assert _to_python(parsed) == {"k": values}
+
+
+@given(items=st.dictionaries(_KEYS, _FLOW_LEAVES, min_size=1, max_size=5))
+@settings(
+    max_examples=100,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_flow_mapping_roundtrip(items: dict[str, Any]) -> None:
+    m = _flow_map(items)
+    out = yarutsk.dumps({"k": m})
+    parsed = yarutsk.loads(out)
+    assert _to_python(parsed) == {"k": items}
+
+
+# ─── Edge-case key strategy ──────────────────────────────────────────────────
+#
+# Generate keys that include YAML keywords (null/true/yes/...), leading-dash,
+# and boundary-whitespace forms — areas where ``needs_quoting_for_key`` has
+# historically had fewer checks than ``needs_quoting``.
+
+
+_EDGE_KEYS = st.one_of(
+    _KEYS,
+    st.sampled_from(
+        [
+            "null",
+            "Null",
+            "NULL",
+            "~",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+            "-dash",
+            "-1",
+            " leading",
+            "trailing ",
+        ]
+    ),
+)
+
+
+@given(keys=st.lists(_EDGE_KEYS, min_size=1, max_size=5, unique=True))
+@settings(
+    max_examples=100,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+def test_edge_keys_preserved(keys: list[str]) -> None:
+    tree = {k: i for i, k in enumerate(keys)}
+    out = yarutsk.dumps(tree)
+    parsed = yarutsk.loads(out)
+    assert _to_python(parsed) == tree
