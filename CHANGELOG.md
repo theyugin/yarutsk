@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-04-18
+
 ### Changed
 - Cache `datetime.datetime` / `datetime.date` imports for faster `!!timestamp` round-trip.
 - Streaming parser buffer switched to `String` + byte cursor (less memory for ASCII).
@@ -139,7 +141,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/theyugin/yarutsk/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/theyugin/yarutsk/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/theyugin/yarutsk/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/theyugin/yarutsk/compare/v0.5.0...v0.5.1
