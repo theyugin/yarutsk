@@ -46,6 +46,12 @@ pub struct Builder {
     last_content_line: Option<usize>,
     /// Comments not yet associated with any node (before-key candidates).
     pending_before: Vec<(usize, String)>,
+    /// Inline comment seen before the node it belongs to exists in the current
+    /// frame.  Happens for quoted and block scalars: the scanner reads past the
+    /// scalar and any trailing `# ...` before emitting the Scalar event, so the
+    /// comment is drained into `absorb_comments` before the seq item / mapping
+    /// entry has been inserted.  Consumed when the next scalar is added.
+    pending_inline: Option<String>,
     /// Anchor table: maps anchor name → completed node, for alias resolution.
     anchor_table: HashMap<String, YamlNode>,
 }
@@ -199,6 +205,7 @@ impl Builder {
             doc_end_count: 0,
             last_content_line: None,
             pending_before: Vec::new(),
+            pending_inline: None,
             anchor_table: HashMap::new(),
         }
     }
@@ -226,16 +233,22 @@ impl Builder {
                 if mf.pending.has_key() {
                     // Key was last; value not yet seen → store inline on frame
                     mf.pending.comment_inline = Some(text);
-                } else {
+                } else if let Some((_, entry)) = mf.mapping.entries.last_mut() {
                     // Value was just finalized → update last inserted entry
-                    if let Some((_, entry)) = mf.mapping.entries.last_mut() {
-                        entry.comment_inline = Some(text);
-                    }
+                    entry.comment_inline = Some(text);
+                } else {
+                    // No entry yet — the comment was drained between the scanner
+                    // emitting a quoted/block key scalar and the builder
+                    // processing it.  Stash for the upcoming Scalar handler.
+                    self.pending_inline = Some(text);
                 }
             }
             Some(Frame::Sequence(sf)) => {
                 if let Some(item) = sf.seq.items.last_mut() {
                     item.comment_inline = Some(text);
+                } else {
+                    // Same rationale as the empty-mapping branch above.
+                    self.pending_inline = Some(text);
                 }
             }
             None => {
@@ -561,11 +574,36 @@ impl Builder {
                     Some(Frame::Sequence(_)) => true,
                     None => false,
                 };
+                // yaml-rust2 reports empty plain scalars (implicit nulls) at
+                // the position of the next token, not where the node
+                // logically begins. Using that shifted mark for blank-line
+                // accounting produces phantom blanks for null sequence items
+                // and empty mapping keys, breaking round-trip idempotency.
+                let is_empty_plain = is_plain && value.is_empty();
+                let in_seq = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 let (blank_lines, comment_before) = if needs_context {
-                    (
-                        self.count_blank_lines(node_line),
-                        self.take_before(node_line),
-                    )
+                    let blanks = if is_empty_plain {
+                        0
+                    } else {
+                        self.count_blank_lines(node_line)
+                    };
+                    // For null sequence items, the shifted scalar mark also
+                    // misclassifies comments on the dash line as before-comments
+                    // instead of inline. Promote any pending before-comment on
+                    // `node_line - 1` (the likely dash line) to inline via
+                    // `pending_inline`, which the insertion code below consumes.
+                    if is_empty_plain && in_seq && node_line > 0 {
+                        let dash_line = node_line - 1;
+                        if let Some(pos) = self
+                            .pending_before
+                            .iter()
+                            .position(|(l, _)| *l == dash_line)
+                        {
+                            let (_, text) = self.pending_before.remove(pos);
+                            self.pending_inline = Some(text);
+                        }
+                    }
+                    (blanks, self.take_before(node_line))
                 } else {
                     (0, None)
                 };
@@ -582,6 +620,11 @@ impl Builder {
                 );
                 let anchor_node = anchor_name.as_ref().map(|_| node.clone());
 
+                // Consume any inline comment that was drained before this
+                // scalar's event arrived (quoted / block scalars: the scanner
+                // reads past the scalar and trailing `# …` before emitting
+                // the Scalar token).
+                let deferred_inline = self.pending_inline.take();
                 match self.stack.last_mut() {
                     None => {
                         self.commit_next_meta();
@@ -591,13 +634,18 @@ impl Builder {
                         if mf.pending.has_key() {
                             // Mapping value — insert entry under the pending key.
                             let _ = mf.pending.insert_entry(&mut mf.mapping, node);
+                            if let Some(text) = deferred_inline
+                                && let Some((_, entry)) = mf.mapping.entries.last_mut()
+                            {
+                                entry.comment_inline = Some(text);
+                            }
                         } else {
                             // Mapping key — store key string and positioning metadata.
                             // `node` is discarded unless `anchor_node` captured it above for
                             // alias registration.
                             mf.pending.key = Some(value);
                             mf.pending.comment_before = comment_before;
-                            mf.pending.comment_inline = None;
+                            mf.pending.comment_inline = deferred_inline;
                             mf.pending.blank_lines = blank_lines;
                             mf.pending.key_style = scalar_style;
                             mf.pending.key_anchor.clone_from(&anchor_name);
@@ -609,7 +657,7 @@ impl Builder {
                         sf.seq.items.push(YamlItem {
                             value: node,
                             comment_before,
-                            comment_inline: None,
+                            comment_inline: deferred_inline,
                             blank_lines_before: blank_lines,
                         });
                     }

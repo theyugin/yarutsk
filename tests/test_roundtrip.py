@@ -486,6 +486,26 @@ class TestBlankLinePreservation:
         doc = yarutsk.loads(src)
         assert yarutsk.dumps(doc) == src
 
+    def test_null_sequence_item_does_not_accumulate_blanks(self):
+        # Regression: yaml-rust2 reports empty plain scalars (implicit nulls)
+        # at the position of the next token, not where the `-` actually is.
+        # Without correction, re-parsing the emitter's output saw phantom blank
+        # lines before null items and re-emit drifted (found by idempotent_emit
+        # fuzz target on input ": -").
+        src = ": -\n"
+        out1 = yarutsk.dumps(yarutsk.loads(src))
+        out2 = yarutsk.dumps(yarutsk.loads(out1))
+        assert out1 == out2
+
+    def test_empty_mapping_key_does_not_accumulate_blanks(self):
+        # Regression: same root cause as the null-sequence-item case, but for
+        # an empty plain scalar used as a mapping key (found by idempotent_emit
+        # fuzz target on input " ?\n #*").
+        src = " ?\n #*"
+        out1 = yarutsk.dumps(yarutsk.loads(src))
+        out2 = yarutsk.dumps(yarutsk.loads(out1))
+        assert out1 == out2
+
 
 class TestNonCanonicalScalarForms:
     """Non-canonical plain scalars round-trip as their original source text."""
@@ -666,6 +686,26 @@ class TestTagRoundTrip:
         seq = doc["x"]
         assert seq.tag is not None
         assert yarutsk.dumps(doc) == src
+
+    def test_inline_comment_after_quoted_seq_scalar(self):
+        # Regression: the scanner reads past quoted scalars (and any trailing
+        # `# …`) before emitting the Scalar event, so the comment was drained
+        # into the builder before the sequence item existed and was silently
+        # dropped. Found by idempotent_emit fuzz target.
+        src = "- 'foo'  # bar\n"
+        doc = yarutsk.loads(src)
+        assert doc.comment_inline(0) == "bar"
+        assert yarutsk.dumps(doc) == src
+
+    def test_tag_with_pct_escape_is_reencoded(self):
+        # Regression: the scanner decodes `%XX` escapes on input, so a tag like
+        # `!0~%099` enters the emitter as `!0~\t9`. Emitting verbatim breaks
+        # round-trip because the tab terminates the tag on reparse. Found by
+        # idempotent_emit fuzz target.
+        src = "!0~%099"
+        out1 = yarutsk.dumps(yarutsk.loads(src))
+        out2 = yarutsk.dumps(yarutsk.loads(out1))
+        assert out1 == out2
 
 
 class TestAnchorAliasRoundTrip:

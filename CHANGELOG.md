@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `idempotent_emit` fuzz target and `hypothesis` property tests for `Schema`.
+
+### Fixed
+- Phantom blank lines before empty plain scalars (null sequence items, empty
+  mapping keys) on re-parse.
+- Percent-decoded tag characters now re-encoded on emit so whitespace, control
+  chars, and non-ASCII in tags round-trip correctly.
+- Inline comments after quoted scalars in sequences were silently dropped.
+- Inline comments on null sequence items under a mapping value were
+  misclassified as before-comments on re-parse.
+
 ## [0.5.2] - 2026-04-18
 
 ### Changed
@@ -116,7 +128,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/theyugin/yarutsk/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/theyugin/yarutsk/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/theyugin/yarutsk/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/theyugin/yarutsk/compare/v0.4.1...v0.4.2
