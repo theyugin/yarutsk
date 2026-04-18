@@ -11,7 +11,9 @@ use super::convert::{
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
-use crate::core::types::*;
+use crate::core::types::{
+    ContainerStyle, FormatOptions, ScalarStyle, YamlItem, YamlMapping, YamlNode, YamlSequence,
+};
 
 // ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
 
@@ -62,6 +64,7 @@ impl PyYamlSequence {
     // which would otherwise try to iterate them. Populate from `iterable` here
     // because the parent list is accessible via slf.as_super() at this point.
     #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     fn __init__(
         slf: &Bound<'_, Self>,
         iterable: Option<&Bound<'_, PyAny>>,
@@ -79,7 +82,7 @@ impl PyYamlSequence {
                     let list_part = slf.as_super();
                     let mut borrow = slf.borrow_mut();
                     let style = borrow.inner.style;
-                    let tag = borrow.inner.tag.clone();
+                    let tag = std::mem::take(&mut borrow.inner.tag);
                     borrow.inner = parsed;
                     borrow.inner.style = style;
                     borrow.inner.tag = tag;
@@ -103,6 +106,10 @@ impl PyYamlSequence {
 
     // ── Mutations (must sync parent list) ────────────────────────────────────
 
+    // Python slice indices are `isize` (`Py_ssize_t`); conversions to/from
+    // `usize` here are bounded by `PySlice::indices`, which clamps to
+    // `[0, len]`, or by explicit range checks above the cast.
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
     fn __setitem__(
         slf: &Bound<'_, Self>,
         key: &Bound<'_, PyAny>,
@@ -136,22 +143,24 @@ impl PyYamlSequence {
             }
             let start = indices.start as usize;
             let stop = indices.stop as usize;
-            let mut new_pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
+            let mut new_items: Vec<YamlItem> = Vec::new();
+            let mut new_py: Vec<Py<PyAny>> = Vec::new();
             for py_item in value.try_iter()? {
                 let py_item = py_item?;
                 let (node, py_val) = py_to_node_with_fallback(py, &py_item, None, || {
                     YamlNode::Mapping(YamlMapping::new())
                 })?;
-                new_pairs.push((plain_item(node), py_val));
+                new_items.push(plain_item(node));
+                new_py.push(py_val);
             }
             {
                 let mut borrow = slf.borrow_mut();
                 borrow.inner.items.drain(start..stop);
-                for (i, (item, _)) in new_pairs.iter().enumerate() {
-                    borrow.inner.items.insert(start + i, item.clone());
+                for (i, item) in new_items.into_iter().enumerate() {
+                    borrow.inner.items.insert(start + i, item);
                 }
             }
-            let new_py_list = PyList::new(py, new_pairs.iter().map(|(_, v)| v.bind(py)))?;
+            let new_py_list = PyList::new(py, new_py.iter().map(|v| v.bind(py)))?;
             slf.as_super()
                 .set_slice(start, stop, new_py_list.as_any())?;
             return Ok(());
@@ -161,6 +170,7 @@ impl PyYamlSequence {
         ))
     }
 
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // see __setitem__
     fn __delitem__(slf: &Bound<'_, Self>, key: &Bound<'_, PyAny>) -> PyResult<()> {
         if let Ok(idx) = key.extract::<isize>() {
             let real_idx = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
@@ -212,6 +222,7 @@ impl PyYamlSequence {
         Ok(())
     }
 
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // see __setitem__
     fn insert(slf: &Bound<'_, Self>, idx: isize, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
         let (node, py_val_insert) =
@@ -234,6 +245,7 @@ impl PyYamlSequence {
     }
 
     #[pyo3(signature = (idx=-1))]
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // see __setitem__
     fn pop(slf: &Bound<'_, Self>, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
         let (real_idx, node) = {
             let mut borrow = slf.borrow_mut();
@@ -330,7 +342,7 @@ impl PyYamlSequence {
         // No node_to_py calls needed — values are unchanged, only order changes.
         let reversed: Vec<Py<PyAny>> = (0..n)
             .rev()
-            .map(|i| list_part.get_item(i).map(|v| v.unbind()))
+            .map(|i| list_part.get_item(i).map(pyo3::Bound::unbind))
             .collect::<PyResult<_>>()?;
         slf.borrow_mut().inner.items.reverse();
         list_part.call_method0("clear")?;
@@ -341,6 +353,7 @@ impl PyYamlSequence {
     }
 
     #[pyo3(signature = (key=None, reverse=false, recursive=false))]
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     fn sort(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -371,7 +384,7 @@ impl PyYamlSequence {
                     key_fn
                         .bind(py)
                         .call1((py_obj.bind(py),))
-                        .map(|r| r.unbind())
+                        .map(pyo3::Bound::unbind)
                 } else {
                     Ok(py_obj.clone_ref(py))
                 }
@@ -395,12 +408,18 @@ impl PyYamlSequence {
         if reverse {
             zipped.reverse();
         }
+        let mut new_items = Vec::with_capacity(zipped.len());
+        let mut new_py = Vec::with_capacity(zipped.len());
+        for (_, item, py_obj) in zipped {
+            new_items.push(item);
+            new_py.push(py_obj);
+        }
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items = zipped.iter().map(|(_, item, _)| item.clone()).collect();
+            borrow.inner.items = new_items;
         }
         list_part.call_method0("clear")?;
-        for (_, _, py_obj) in &zipped {
+        for py_obj in &new_py {
             list_part.append(py_obj.bind(py))?;
         }
         if recursive {
@@ -448,7 +467,7 @@ impl PyYamlSequence {
                 let i = resolve_seq_idx(idx, self.inner.items.len())?;
                 Ok(self.inner.items[i]
                     .comment_inline
-                    .clone()
+                    .as_deref()
                     .into_pyobject(py)?
                     .into_any()
                     .unbind())
@@ -480,7 +499,7 @@ impl PyYamlSequence {
                 let i = resolve_seq_idx(idx, self.inner.items.len())?;
                 Ok(self.inner.items[i]
                     .comment_before
-                    .clone()
+                    .as_deref()
                     .into_pyobject(py)?
                     .into_any()
                     .unbind())
@@ -610,8 +629,8 @@ impl PyYamlSequence {
         Ok(())
     }
 
-    /// Return the underlying YAML node for the item at *idx* as a YamlScalar,
-    /// YamlMapping, or YamlSequence object, preserving style/tag metadata.
+    /// Return the underlying YAML node for the item at *idx* as a `YamlScalar`,
+    /// `YamlMapping`, or `YamlSequence` object, preserving style/tag metadata.
     /// Raises ``IndexError`` for out-of-range indices.
     fn node(&self, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
@@ -697,7 +716,7 @@ impl PyYamlSequence {
         match args.len() {
             0 => {
                 let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                Ok((self.inner.items[i].blank_lines_before as u32)
+                Ok(u32::from(self.inner.items[i].blank_lines_before)
                     .into_pyobject(py)?
                     .into_any()
                     .unbind())

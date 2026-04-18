@@ -4,9 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Marker, TScalarStyle};
-use super::types::*;
+use super::types::{
+    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlItem, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
+};
 
-/// Tags that should bypass built-in ScalarValue coercion in the builder.
+/// Tags that should bypass built-in `ScalarValue` coercion in the builder.
 /// When a tag is in this set the scalar value is kept as `ScalarValue::Str`
 /// with the raw source text, so that Python-layer constructors receive the
 /// original YAML string rather than a pre-converted value.
@@ -32,10 +35,10 @@ pub struct Builder {
     pub docs: Vec<YamlNode>,
     /// Per-document metadata, indexed by document position in `docs`.
     pub docs_meta: Vec<DocMetadata>,
-    /// Staging slot for the current DocumentStart's metadata.  Consumed and
+    /// Staging slot for the current `DocumentStart`'s metadata.  Consumed and
     /// pushed onto `docs_meta` when the document's root node is pushed.
     next_meta: DocMetadata,
-    /// Monotonically increasing count of DocumentEnd events processed.  Used
+    /// Monotonically increasing count of `DocumentEnd` events processed.  Used
     /// by the streaming iterator to detect when a full document is ready.
     pub doc_end_count: usize,
     /// Line of the last SCALAR content token (key or value), for inline comment detection.
@@ -132,7 +135,7 @@ impl PendingKey {
 struct MappingFrame {
     mapping: YamlMapping,
     pending: PendingKey,
-    /// Anchor name declared on the MappingStart event, if any.
+    /// Anchor name declared on the `MappingStart` event, if any.
     anchor_name: Option<String>,
 }
 
@@ -142,7 +145,7 @@ struct SequenceFrame {
     current_comment_before: Option<String>,
     /// Blank lines before the current complex item.
     current_blank_lines: u8,
-    /// Anchor name declared on the SequenceStart event, if any.
+    /// Anchor name declared on the `SequenceStart` event, if any.
     anchor_name: Option<String>,
 }
 
@@ -186,6 +189,7 @@ impl Default for Builder {
 }
 
 impl Builder {
+    #[must_use]
     pub fn new() -> Self {
         Builder {
             stack: Vec::new(),
@@ -244,9 +248,8 @@ impl Builder {
     /// Count blank lines between the last scalar content and `node_line`.
     /// Must be called BEFORE `take_before` drains `pending_before`.
     fn count_blank_lines(&self, node_line: usize) -> u8 {
-        let last_line = match self.last_content_line {
-            None => return 0,
-            Some(l) => l,
+        let Some(last_line) = self.last_content_line else {
+            return 0;
         };
         if node_line <= last_line + 1 {
             return 0;
@@ -257,10 +260,14 @@ impl Builder {
             .filter(|(l, _)| *l < node_line)
             .count();
         let total_between = node_line - last_line - 1;
-        total_between.saturating_sub(comment_count).min(255) as u8
+        // min(255) makes the u8 truncation lossless.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            total_between.saturating_sub(comment_count).min(255) as u8
+        }
     }
 
-    /// Take all pending before-comments with line < node_line, join with newline.
+    /// Take all pending before-comments with line < `node_line`, join with newline.
     fn take_before(&mut self, node_line: usize) -> Option<String> {
         let mut result: Option<String> = None;
         for (_, text) in self
@@ -280,7 +287,7 @@ impl Builder {
     }
 
     /// Push a completed node into the current parent context.
-    /// Does NOT update last_content_line (only scalars do that).
+    /// Does NOT update `last_content_line` (only scalars do that).
     fn push_node(&mut self, node: YamlNode) {
         match self.stack.last_mut() {
             None => {
@@ -307,7 +314,7 @@ impl Builder {
         }
     }
 
-    /// Register a node in the anchor table by name (if anchor_name is Some).
+    /// Register a node in the anchor table by name (if `anchor_name` is Some).
     fn register_anchor(&mut self, anchor_name: Option<&str>, node: &YamlNode) {
         if let Some(name) = anchor_name {
             self.anchor_table.insert(name.to_owned(), node.clone());
@@ -315,6 +322,7 @@ impl Builder {
     }
 
     /// Process a single parser event.
+    #[allow(clippy::too_many_lines)] // single event-dispatch state machine
     pub fn process_event(&mut self, ev: Event, mark: Marker, policy: Option<&TagPolicy>) {
         match ev {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
@@ -380,7 +388,7 @@ impl Builder {
                     ContainerStyle::Block
                 };
                 mapping.tag = tag_to_string(tag);
-                mapping.anchor = anchor_name.clone();
+                mapping.anchor.clone_from(&anchor_name);
                 self.stack.push(Frame::Mapping(Box::new(MappingFrame {
                     mapping,
                     pending: PendingKey::default(),
@@ -426,7 +434,7 @@ impl Builder {
                     ContainerStyle::Block
                 };
                 seq.tag = tag_to_string(tag);
-                seq.anchor = anchor_name.clone();
+                seq.anchor.clone_from(&anchor_name);
                 self.stack.push(Frame::Sequence(SequenceFrame {
                     seq,
                     current_comment_before: None,
@@ -450,51 +458,61 @@ impl Builder {
             Event::Scalar(value, style, anchor_name, tag) => {
                 let scalar_style = map_scalar_style(style);
                 let scalar_tag = tag_to_string(tag);
-                // Compute the type-inferred value, then apply tag overrides.
-                let typed = match style {
-                    TScalarStyle::Plain => ScalarValue::from_str(&value),
-                    // Quoted scalars are always strings — even an empty "" or '' is ""
-                    // not null (quoting is explicit intent to represent a string value).
-                    _ => ScalarValue::Str(value.clone()),
-                };
-                // If the tag is in the TagPolicy's raw set, skip all coercion and keep
-                // the scalar as its raw string so Python-layer loaders get the original text.
-                let typed = if policy.is_some_and(|p| {
+                let is_plain = style == TScalarStyle::Plain;
+
+                // Does this scalar short-circuit straight to a String? True for tags in
+                // the TagPolicy's raw set or any of the standard `!!str` spellings.
+                // (Quoted scalars also default to Str, but go through the tag-override
+                // match below so `!!null`/`!!bool`/`!!int`/`!!float` can still apply.)
+                let force_str = policy.is_some_and(|p| {
                     scalar_tag
                         .as_deref()
                         .is_some_and(|t| p.raw_tags.contains(t))
-                }) {
+                }) || matches!(
+                    scalar_tag.as_deref(),
+                    Some("!!str" | "tag:yaml.org,2002:str" | "!")
+                );
+
+                // Resolve the typed scalar in a single pass — collapses the prior
+                // two-step "infer, then tag-override" that cloned `value` twice when
+                // both steps produced `ScalarValue::Str`. `value` is kept alive (borrowed)
+                // because it may still be needed below as a mapping-key string.
+                let typed: ScalarValue = if force_str {
                     ScalarValue::Str(value.clone())
                 } else {
-                    // Apply tag overrides: standard schema tags coerce the inferred type.
+                    // Plain scalars get type inference; quoted scalars default to Str.
+                    let inferred = if is_plain {
+                        ScalarValue::from_str(&value)
+                    } else {
+                        ScalarValue::Str(value.clone())
+                    };
                     match scalar_tag.as_deref() {
-                        Some("!!str") | Some("tag:yaml.org,2002:str") | Some("!") => {
-                            ScalarValue::Str(value.clone())
-                        }
-                        Some("!!null") | Some("tag:yaml.org,2002:null") => ScalarValue::Null,
-                        Some("!!bool") | Some("tag:yaml.org,2002:bool") => {
+                        Some("!!null" | "tag:yaml.org,2002:null") => ScalarValue::Null,
+                        Some("!!bool" | "tag:yaml.org,2002:bool") => {
                             match ScalarValue::from_str(&value) {
                                 ScalarValue::Bool(b) => ScalarValue::Bool(b),
-                                _ => typed,
+                                _ => inferred,
                             }
                         }
-                        Some("!!int") | Some("tag:yaml.org,2002:int") => {
+                        Some("!!int" | "tag:yaml.org,2002:int") => {
                             match ScalarValue::from_str(&value) {
                                 ScalarValue::Int(n) => ScalarValue::Int(n),
-                                _ => typed,
+                                _ => inferred,
                             }
                         }
-                        Some("!!float") | Some("tag:yaml.org,2002:float") => {
+                        Some("!!float" | "tag:yaml.org,2002:float") => {
                             match ScalarValue::from_str(&value) {
                                 ScalarValue::Float(f) => ScalarValue::Float(f),
-                                // !!float on an integer literal → promote to Float
+                                // !!float on an integer literal → promote to Float.
+                                // Precision loss for |n| > 2^53 matches YAML/JSON spec behaviour.
+                                #[allow(clippy::cast_precision_loss)]
                                 ScalarValue::Int(n) => ScalarValue::Float(n as f64),
-                                _ => typed,
+                                _ => inferred,
                             }
                         }
-                        _ => typed,
+                        _ => inferred,
                     }
-                }; // close the else { match ... } from the TagPolicy check above
+                };
 
                 let node_line = mark.line();
                 // For block scalars the content spans multiple source lines; advance
@@ -512,7 +530,7 @@ impl Builder {
                 //   - non-canonical null/bool forms (`~`, `Null`, `yes`, `True`, …)
                 //   - hex/octal/underscore-separated integers (`0xFF`, `0o77`, `1_000_000`)
                 //   - tagged plain scalars (tag disambiguates type; keep unquoted source)
-                let scalar_original: Option<String> = if style == TScalarStyle::Plain {
+                let scalar_original: Option<String> = if is_plain {
                     let would_differ = match &typed {
                         ScalarValue::Float(_) => value.contains('e') || value.contains('E'),
                         ScalarValue::Null => value != "null",
@@ -570,7 +588,10 @@ impl Builder {
                         self.docs.push(node);
                     }
                     Some(Frame::Mapping(mf)) => {
-                        if !mf.pending.has_key() {
+                        if mf.pending.has_key() {
+                            // Mapping value — insert entry under the pending key.
+                            let _ = mf.pending.insert_entry(&mut mf.mapping, node);
+                        } else {
                             // Mapping key — store key string and positioning metadata.
                             // `node` is discarded unless `anchor_node` captured it above for
                             // alias registration.
@@ -579,12 +600,9 @@ impl Builder {
                             mf.pending.comment_inline = None;
                             mf.pending.blank_lines = blank_lines;
                             mf.pending.key_style = scalar_style;
-                            mf.pending.key_anchor = anchor_name.clone();
+                            mf.pending.key_anchor.clone_from(&anchor_name);
                             mf.pending.key_tag = scalar_tag;
                             mf.pending.key_alias = None;
-                        } else {
-                            // Mapping value — insert entry under the pending key.
-                            let _ = mf.pending.insert_entry(&mut mf.mapping, node);
                         }
                     }
                     Some(Frame::Sequence(sf)) => {
@@ -637,7 +655,7 @@ impl Builder {
     }
 }
 
-/// Retroactively set comment_inline on the last leaf entry of a node.
+/// Retroactively set `comment_inline` on the last leaf entry of a node.
 fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
     if let Some(node) = node {
         match node {
@@ -973,7 +991,7 @@ mod tests {
     fn simple_mapping_order_preserved() {
         let node = parse_one("z: 1\na: 2\nm: 3\n");
         if let YamlNode::Mapping(m) = node {
-            let keys: Vec<&str> = m.entries.keys().map(|k| k.as_str()).collect();
+            let keys: Vec<&str> = m.entries.keys().map(std::string::String::as_str).collect();
             assert_eq!(keys, ["z", "a", "m"]);
         } else {
             panic!("expected Mapping");

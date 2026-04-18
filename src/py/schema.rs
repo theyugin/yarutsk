@@ -9,7 +9,7 @@ use crate::core::builder::TagPolicy;
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 /// Tags for which the builder skips coercion when a loader is registered.
-/// These are the tags whose ScalarValue is determined by the builder, so a
+/// These are the tags whose `ScalarValue` is determined by the builder, so a
 /// loader for them needs the raw string rather than a pre-converted value.
 pub(crate) const COERCION_TAGS: &[&str] = &[
     "!!null",
@@ -47,7 +47,7 @@ pub struct Schema {
     pub(crate) loaders: HashMap<String, Py<PyAny>>,
     /// ordered list of (type, callable(obj) → (tag, data))  (dump side)
     pub(crate) dumpers: Vec<(Py<PyAny>, Py<PyAny>)>,
-    /// Tags for which the builder must skip ScalarValue coercion.
+    /// Tags for which the builder must skip `ScalarValue` coercion.
     pub(crate) raw_tags: HashSet<String>,
 }
 
@@ -68,8 +68,8 @@ impl Schema {
     /// - For sequence nodes: the ``YamlSequence`` (list subclass).
     ///
     /// The return value of *func* is used as the loaded Python object.
-    fn add_loader(&mut self, tag: String, func: Py<PyAny>) {
-        let normalized = normalize_tag(&tag);
+    fn add_loader(&mut self, tag: &str, func: Py<PyAny>) {
+        let normalized = normalize_tag(tag);
         if COERCION_TAGS.contains(&normalized.as_str()) {
             self.raw_tags.insert(normalized.clone());
         }

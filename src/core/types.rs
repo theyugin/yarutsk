@@ -62,6 +62,7 @@ pub enum ScalarValue {
 
 impl ScalarValue {
     /// Convert to the string used as a Python dict key for this scalar.
+    #[must_use]
     pub fn to_key_string(&self) -> String {
         match self {
             ScalarValue::Null => String::new(),
@@ -74,6 +75,7 @@ impl ScalarValue {
 
     /// Parse a raw YAML scalar string into a typed value.
     #[allow(clippy::should_implement_trait)]
+    #[must_use]
     pub fn from_str(s: &str) -> ScalarValue {
         if matches!(s, "" | "null" | "Null" | "NULL" | "~") {
             return ScalarValue::Null;
@@ -137,6 +139,7 @@ pub struct YamlMapping {
 }
 
 impl YamlMapping {
+    #[must_use]
     pub fn new() -> Self {
         YamlMapping {
             entries: IndexMap::new(),
@@ -147,6 +150,7 @@ impl YamlMapping {
         }
     }
 
+    #[must_use]
     pub fn with_capacity(n: usize) -> Self {
         YamlMapping {
             entries: IndexMap::with_capacity(n),
@@ -180,7 +184,7 @@ pub struct YamlEntry {
     /// Tag on the key scalar (e.g. `!!str`), if any.
     pub key_tag: Option<String>,
     /// For complex (non-scalar) keys: the original key node.
-    /// When set, the string key in the IndexMap is a synthetic placeholder.
+    /// When set, the string key in the `IndexMap` is a synthetic placeholder.
     pub key_node: Option<Box<YamlNode>>,
 }
 
@@ -198,6 +202,7 @@ pub struct YamlSequence {
 }
 
 impl YamlSequence {
+    #[must_use]
     pub fn new() -> Self {
         YamlSequence {
             items: Vec::new(),
@@ -208,6 +213,7 @@ impl YamlSequence {
         }
     }
 
+    #[must_use]
     pub fn with_capacity(n: usize) -> Self {
         YamlSequence {
             items: Vec::with_capacity(n),
