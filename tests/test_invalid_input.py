@@ -298,7 +298,7 @@ class TestBadCommentAndStyleArgs:
         """)
         )
         with pytest.raises(IndexError):
-            doc.comment_inline(99, "note")
+            doc.set_comment_inline(99, "note")
 
     def test_comment_before_out_of_range_index_raises(self):
         doc = yarutsk.loads(
@@ -308,17 +308,17 @@ class TestBadCommentAndStyleArgs:
         """)
         )
         with pytest.raises(IndexError):
-            doc.comment_before(99, "note")
+            doc.set_comment_before(99, "note")
 
     def test_scalar_style_invalid_name_raises(self):
         doc = yarutsk.loads("key: value\n")
         with pytest.raises(ValueError):
-            doc.scalar_style("key", "invalid_style")
+            doc.set_scalar_style("key", "invalid_style")
 
     def test_scalar_style_missing_key_raises(self):
         doc = yarutsk.loads("key: value\n")
         with pytest.raises(KeyError):
-            doc.scalar_style("missing", "plain")
+            doc.set_scalar_style("missing", "plain")
 
     def test_comment_inline_read_out_of_range_raises(self):
         doc = yarutsk.loads(
@@ -328,7 +328,7 @@ class TestBadCommentAndStyleArgs:
         """)
         )
         with pytest.raises(IndexError):
-            doc.comment_inline(99)
+            doc.get_comment_inline(99)
 
 
 class TestPlainCollectionAssignment:

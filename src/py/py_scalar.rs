@@ -118,18 +118,13 @@ impl PyYamlScalar {
         Ok(format!("YamlScalar({})", v.bind(py).repr()?))
     }
 
-    /// Strip cosmetic formatting, resetting to clean YAML defaults.
-    /// Pass keyword flags (all ``True`` by default) to control which fields are reset:
+    /// Strip cosmetic scalar formatting, resetting to clean YAML defaults.
     ///
-    /// - ``styles``: scalar quoting → plain (literal for multi-line strings),
-    ///   ``original`` cleared so non-canonical forms emit canonically.
-    /// - ``comments``: no-op on scalars (kept for API consistency).
-    /// - ``blank_lines``: no-op on scalars (kept for API consistency).
-    ///
-    /// Tags and anchors are always preserved.
-    #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
-    fn format(&mut self, styles: bool, comments: bool, blank_lines: bool) {
-        let _ = (comments, blank_lines); // no-op on scalars, accepted for API consistency
+    /// When *styles* is ``True`` (the default), scalar quoting is reset to
+    /// plain (literal for multi-line strings) and ``original`` is cleared so
+    /// non-canonical forms emit canonically. Tags and anchors are preserved.
+    #[pyo3(signature = (*, styles=true))]
+    fn format(&mut self, styles: bool) {
         if styles && let YamlNode::Scalar(s) = &mut self.inner {
             s.format_with(FormatOptions {
                 styles: true,

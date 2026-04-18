@@ -90,7 +90,7 @@ class TestDumpDumpAll:
         result = out.getvalue()
         docs2 = yarutsk.load_all(io.StringIO(result))
         assert docs2[0]["a"] == 1
-        assert docs2[0].comment_inline("a") == "inline"
+        assert docs2[0].get_comment_inline("a") == "inline"
         assert docs2[1]["b"] == 2
 
 
@@ -188,8 +188,8 @@ class TestMultiDocument:
             other: data  # doc2 comment
         """)
         docs = yarutsk.load_all(io.StringIO(yaml))
-        assert docs[0].comment_inline("key") == "doc1 comment"
-        assert docs[1].comment_inline("other") == "doc2 comment"
+        assert docs[0].get_comment_inline("key") == "doc1 comment"
+        assert docs[1].get_comment_inline("other") == "doc2 comment"
 
     def test_dump_all_to_bytesio(self):
         docs = yarutsk.load_all(io.StringIO(self.MULTI_DOC))
@@ -302,7 +302,7 @@ class TestPlainDictListDumping:
         out = yarutsk.dumps({"outer": loaded})
         doc = yarutsk.loads(out)
         assert doc["outer"]["foo"] == "bar"
-        assert doc["outer"].comment_inline("foo") == "inline"
+        assert doc["outer"].get_comment_inline("foo") == "inline"
 
     def test_plain_dict_all_scalar_types(self):
         src = {"i": 42, "f": 3.14, "b": False, "s": "text", "n": None}

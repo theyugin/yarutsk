@@ -1,12 +1,12 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PySlice, PyTuple};
+use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    DocMeta, OverloadArg, node_to_doc, node_to_py, overload_arg, parse_container_style,
+    DocMeta, container_style_str, node_to_doc, node_to_py, parse_container_style,
     parse_scalar_style, parse_yaml_version, plain_item, py_compare, py_to_node,
-    py_to_node_with_fallback, resolve_seq_idx, sequence_repr, sequence_to_py_obj,
+    py_to_node_with_fallback, resolve_seq_idx, scalar_style_str, sequence_repr, sequence_to_py_obj,
     sequence_to_python,
 };
 use super::py_mapping::PyYamlMapping;
@@ -452,56 +452,6 @@ impl PyYamlSequence {
         sequence_to_python(py, &self.inner)
     }
 
-    /// Read or write the inline comment for the item at *idx*.
-    /// `comment_inline(idx)` returns the current comment (``str | None``).
-    /// `comment_inline(idx, comment)` sets it; pass ``None`` to clear.
-    #[pyo3(signature = (idx, *args))]
-    fn comment_inline(
-        &mut self,
-        py: Python<'_>,
-        idx: isize,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match overload_arg(args, "comment_inline")? {
-            OverloadArg::Get => Ok(self.inner.items[i]
-                .comment_inline
-                .as_deref()
-                .into_pyobject(py)?
-                .into_any()
-                .unbind()),
-            OverloadArg::Set(v) => {
-                self.inner.items[i].comment_inline = v.extract()?;
-                Ok(py.None())
-            }
-        }
-    }
-
-    /// Read or write the block comment above the item at *idx*.
-    /// `comment_before(idx)` returns the current comment (``str | None``).
-    /// `comment_before(idx, comment)` sets it; pass ``None`` to clear.
-    #[pyo3(signature = (idx, *args))]
-    fn comment_before(
-        &mut self,
-        py: Python<'_>,
-        idx: isize,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match overload_arg(args, "comment_before")? {
-            OverloadArg::Get => Ok(self.inner.items[i]
-                .comment_before
-                .as_deref()
-                .into_pyobject(py)?
-                .into_any()
-                .unbind()),
-            OverloadArg::Set(v) => {
-                self.inner.items[i].comment_before = v.extract()?;
-                Ok(py.None())
-            }
-        }
-    }
-
     /// Return the inline comment for the item at *idx*, or ``None`` if unset.
     /// Raises ``IndexError`` for out-of-range indices.
     fn get_comment_inline(&self, idx: isize) -> PyResult<Option<String>> {
@@ -534,7 +484,7 @@ impl PyYamlSequence {
 
     /// Return the YAML alias name if the item at *idx* is an alias (``*name``), else ``None``.
     /// Raises ``IndexError`` for out-of-range indices.
-    fn alias_name(&self, idx: isize) -> PyResult<Option<&str>> {
+    fn get_alias(&self, idx: isize) -> PyResult<Option<&str>> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
         Ok(match &self.inner.items[i].value {
             YamlNode::Alias { name, .. } => Some(name.as_str()),
@@ -623,11 +573,67 @@ impl PyYamlSequence {
         node_to_doc(py, self.inner.items[i].value.clone(), DocMeta::none(), None)
     }
 
+    /// Return a list of underlying YAML nodes for every item in this sequence.
+    ///
+    /// Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
+    /// preserving style/tag metadata. Unlike iterating the sequence, which
+    /// yields Python primitives, ``nodes()`` returns the full typed node objects.
+    fn nodes(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        self.inner
+            .items
+            .iter()
+            .map(|item| node_to_doc(py, item.value.clone(), DocMeta::none(), None))
+            .collect()
+    }
+
+    /// Return the scalar quoting style for the item at *idx*.
+    /// Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the item is not a scalar.
+    fn get_scalar_style(&self, idx: isize) -> PyResult<&'static str> {
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match &self.inner.items[i].value {
+            YamlNode::Scalar(s) => Ok(scalar_style_str(s.style)),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "item at index {idx} is not a scalar; use get_container_style() for mappings and sequences"
+            ))),
+        }
+    }
+
+    /// Set the scalar style for the item at *idx*.
+    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
+    /// ``TypeError`` if the item is not a scalar (use ``set_container_style()`` instead).
+    fn set_scalar_style(&mut self, idx: isize, style: &str) -> PyResult<()> {
+        let new_style = parse_scalar_style(style)?;
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match &mut self.inner.items[i].value {
+            YamlNode::Scalar(s) => {
+                s.style = new_style;
+                Ok(())
+            }
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "item at index {idx} is not a scalar; use set_container_style() for mappings and sequences"
+            ))),
+        }
+    }
+
+    /// Return the container style (``"block"`` or ``"flow"``) for the item at *idx*.
+    /// Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the item is not a mapping or sequence.
+    fn get_container_style(&self, idx: isize) -> PyResult<&'static str> {
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match &self.inner.items[i].value {
+            YamlNode::Mapping(m) => Ok(container_style_str(m.style)),
+            YamlNode::Sequence(s) => Ok(container_style_str(s.style)),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "item at index {idx} is not a container; use get_scalar_style() for scalars"
+            ))),
+        }
+    }
+
     /// Set the block/flow style for the container value at *idx*.
     /// *style* must be ``"block"`` or ``"flow"``.
-    /// No-op when the item is a scalar or null.
-    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
-    fn container_style(slf: &Bound<'_, Self>, idx: isize, style: &str) -> PyResult<()> {
+    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
+    /// ``TypeError`` if the item is not a mapping or sequence (use ``set_scalar_style()`` instead).
+    fn set_container_style(slf: &Bound<'_, Self>, idx: isize, style: &str) -> PyResult<()> {
         let new_style = parse_container_style(style)?;
         let i = {
             let borrow = slf.borrow();
@@ -638,7 +644,11 @@ impl PyYamlSequence {
             match &mut borrow.inner.items[i].value {
                 YamlNode::Mapping(m) => m.style = new_style,
                 YamlNode::Sequence(s) => s.style = new_style,
-                _ => {} // scalar / null / alias — silently ignored
+                _ => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "item at index {idx} is not a container; use set_scalar_style() for scalars"
+                    )));
+                }
             }
         }
         // Also sync the Python-side object stored in the parent list so that
@@ -652,46 +662,19 @@ impl PyYamlSequence {
         Ok(())
     }
 
-    /// Set the scalar style for the item at *idx*.
-    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the item is not a scalar (use ``container_style()`` instead).
-    fn scalar_style(&mut self, idx: isize, style: &str) -> PyResult<()> {
-        let new_style = parse_scalar_style(style)?;
+    /// Return the number of blank lines emitted before the item at *idx*.
+    /// Raises ``IndexError`` for out-of-range indices.
+    fn get_blank_lines_before(&self, idx: isize) -> PyResult<u32> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match &mut self.inner.items[i].value {
-            YamlNode::Scalar(s) => {
-                s.style = new_style;
-                Ok(())
-            }
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "item at index {idx} is not a scalar; use container_style() for mappings and sequences"
-            ))),
-        }
+        Ok(u32::from(self.inner.items[i].blank_lines_before))
     }
 
-    /// Read or write the number of blank lines emitted before the item at *idx*.
-    /// `blank_lines_before(idx)` returns the current count (``int``).
-    /// `blank_lines_before(idx, n)` sets it; values are clamped to 0–255.
-    #[pyo3(signature = (idx, *args))]
-    fn blank_lines_before(
-        &mut self,
-        py: Python<'_>,
-        idx: isize,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
+    /// Set the number of blank lines emitted before the item at *idx*; values are clamped to 0–255.
+    /// Raises ``IndexError`` for out-of-range indices.
+    fn set_blank_lines_before(&mut self, idx: isize, n: u32) -> PyResult<()> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match overload_arg(args, "blank_lines_before")? {
-            OverloadArg::Get => Ok(u32::from(self.inner.items[i].blank_lines_before)
-                .into_pyobject(py)?
-                .into_any()
-                .unbind()),
-            OverloadArg::Set(v) => {
-                let n: u32 = v.extract()?;
-                self.inner.items[i].blank_lines_before = n.min(255) as u8;
-                Ok(py.None())
-            }
-        }
+        self.inner.items[i].blank_lines_before = n.min(255) as u8;
+        Ok(())
     }
 
     /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.

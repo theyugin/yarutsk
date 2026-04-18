@@ -213,10 +213,10 @@ def check_mapping_dict_compat(m: YamlMapping) -> None:
 
 
 def check_mapping_comments(m: YamlMapping) -> None:
-    inline: str | None = m.comment_inline("key")
-    before: str | None = m.comment_before("key")
-    m.comment_inline("key", "note")
-    m.comment_before("key", "header")
+    inline: str | None = m.get_comment_inline("key")
+    before: str | None = m.get_comment_before("key")
+    m.set_comment_inline("key", "note")
+    m.set_comment_before("key", "header")
     _ = inline, before
 
 
@@ -261,9 +261,9 @@ def check_mapping_node(m: YamlMapping) -> None:
 
 
 def check_mapping_scalar_style(m: YamlMapping) -> None:
-    m.scalar_style("key", "single")
-    m.scalar_style("key", "double")
-    m.scalar_style("key", "plain")
+    m.set_scalar_style("key", "single")
+    m.set_scalar_style("key", "double")
+    m.set_scalar_style("key", "plain")
 
 
 # ── YamlSequence interface ────────────────────────────────────────────────────
@@ -302,10 +302,10 @@ def check_sequence_list_compat(s: YamlSequence) -> None:
 
 
 def check_sequence_comments(s: YamlSequence) -> None:
-    inline: str | None = s.comment_inline(0)
-    before: str | None = s.comment_before(-1)
-    s.comment_inline(0, "note")
-    s.comment_before(0, "header")
+    inline: str | None = s.get_comment_inline(0)
+    before: str | None = s.get_comment_before(-1)
+    s.set_comment_inline(0, "note")
+    s.set_comment_before(0, "header")
     _ = inline, before
 
 

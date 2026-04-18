@@ -100,7 +100,7 @@ class TestRoundTripScalarStyles:
 
     def test_scalar_style_can_be_changed(self):
         doc = yarutsk.loads("key: hello")
-        doc.scalar_style("key", "double")
+        doc.set_scalar_style("key", "double")
         out = yarutsk.dumps(doc)
         assert out == 'key: "hello"\n'
 
@@ -694,7 +694,7 @@ class TestTagRoundTrip:
         # dropped. Found by idempotent_emit fuzz target.
         src = "- 'foo'  # bar\n"
         doc = yarutsk.loads(src)
-        assert doc.comment_inline(0) == "bar"
+        assert doc.get_comment_inline(0) == "bar"
         assert yarutsk.dumps(doc) == src
 
     def test_tag_with_pct_escape_is_reencoded(self):
@@ -1039,13 +1039,13 @@ class TestContainerStyleSetter:
     def test_mapping_set_seq_value_to_flow(self):
         doc = yarutsk.loads("k: placeholder\n")
         doc["k"] = ["a", "b", "c"]
-        doc.container_style("k", "flow")
+        doc.set_container_style("k", "flow")
         assert "[" in yarutsk.dumps(doc)
 
     def test_mapping_set_seq_value_back_to_block(self):
         doc = yarutsk.loads("k: [a, b, c]\n")
         assert doc.node("k").style == "flow"
-        doc.container_style("k", "block")
+        doc.set_container_style("k", "block")
         out = yarutsk.dumps(doc)
         assert "- a\n" in out
 
@@ -1059,18 +1059,18 @@ class TestContainerStyleSetter:
     def test_mapping_container_style_key_error(self):
         doc = yarutsk.loads("a: 1\n")
         with pytest.raises(KeyError):
-            doc.container_style("missing", "flow")
+            doc.set_container_style("missing", "flow")
 
     def test_mapping_container_style_invalid_raises(self):
         doc = yarutsk.loads("k: [a, b]\n")
         with pytest.raises(ValueError):
-            doc.container_style("k", "bad")
+            doc.set_container_style("k", "bad")
 
-    def test_mapping_container_style_on_scalar_is_noop(self):
-        """container_style on a scalar value silently does nothing."""
+    def test_mapping_container_style_on_scalar_raises(self):
+        """set_container_style on a scalar value raises TypeError."""
         doc = yarutsk.loads("k: hello\n")
-        doc.container_style("k", "flow")
-        assert yarutsk.dumps(doc) == "k: hello\n"
+        with pytest.raises(TypeError):
+            doc.set_container_style("k", "flow")
 
     def test_mapping_nested_mapping_set_to_flow(self):
         doc = yarutsk.loads(
@@ -1081,13 +1081,13 @@ class TestContainerStyleSetter:
         """)
         )
         assert doc.node("k").style == "block"
-        doc.container_style("k", "flow")
+        doc.set_container_style("k", "flow")
         out = yarutsk.dumps(doc)
         assert "{" in out
 
     def test_mapping_nested_mapping_set_to_block(self):
         doc = yarutsk.loads("k: {a: 1, b: 2}\n")
-        doc.container_style("k", "block")
+        doc.set_container_style("k", "block")
         out = yarutsk.dumps(doc)
         assert "a: 1\n" in out
 
@@ -1099,14 +1099,14 @@ class TestContainerStyleSetter:
         """)
         )
         assert doc.node(0).style == "block"
-        doc.container_style(0, "flow")
+        doc.set_container_style(0, "flow")
         out = yarutsk.dumps(doc)
         assert "[" in out
 
     def test_sequence_item_set_to_block(self):
         doc = yarutsk.loads("- [a, b]\n")
         assert doc.node(0).style == "flow"
-        doc.container_style(0, "block")
+        doc.set_container_style(0, "block")
         out = yarutsk.dumps(doc)
         assert "- a\n" in out
 
@@ -1117,7 +1117,7 @@ class TestContainerStyleSetter:
             - [c, d]
         """)
         )
-        doc.container_style(-1, "block")
+        doc.set_container_style(-1, "block")
         out = yarutsk.dumps(doc)
         assert "[a, b]" in out
         assert "- c\n" in out
@@ -1125,12 +1125,12 @@ class TestContainerStyleSetter:
     def test_sequence_container_style_invalid_raises(self):
         doc = yarutsk.loads("- [a, b]\n")
         with pytest.raises(ValueError):
-            doc.container_style(0, "bad")
+            doc.set_container_style(0, "bad")
 
-    def test_sequence_container_style_on_scalar_is_noop(self):
+    def test_sequence_container_style_on_scalar_raises(self):
         doc = yarutsk.loads("- hello\n")
-        doc.container_style(0, "flow")
-        assert yarutsk.dumps(doc) == "- hello\n"
+        with pytest.raises(TypeError):
+            doc.set_container_style(0, "flow")
 
 
 class TestStreamRoundTrip:
