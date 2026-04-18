@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-04-18
+
 ### Changed
 - Cache `datetime.datetime` / `datetime.date` imports for faster `!!timestamp` round-trip.
 - Streaming parser buffer switched to `String` + byte cursor (less memory for ASCII).
