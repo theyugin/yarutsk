@@ -81,27 +81,26 @@ Each PyO3 container type holds a Rust `inner` field with the full data model; th
 - Aliases are stored as `YamlNode::Alias { name, resolved }` — the `resolved` box holds the expanded value for Python access while `name` is preserved for round-trip emission as `*name`.
 - `ScalarValue::from_str` in `src/core/types.rs` implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`) which is preserved as-written via `original: Option<String>` on `YamlScalar`.
 - **Dual mutation sync**: setting style on a nested container requires updating both the Rust `inner` and the Python-side parent dict — both must stay in sync on every mutation.
-- **Overloaded methods via `*args`**: methods like `blank_lines_before(key)` / `blank_lines_before(key, n)` use a single PyO3 `*args` signature — 0 extra args = get, 1 extra arg = set. This is the workaround for PyO3's lack of true overloads.
+- **Uniform `get_/set_` pair convention**: every per-key/per-index metadata accessor follows the `get_foo(key)` / `set_foo(key, value)` shape. No overloaded `*args`, no setter-only naked methods. Kind-specific accessors raise `TypeError` when applied to the wrong node kind.
 
 ### Style mutation API
 
 `YamlMapping` and `YamlSequence` expose read/write properties and methods for controlling YAML formatting:
 
 - **Properties** (read/write): `tag`, `anchor`, `style`, `trailing_blank_lines`, `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`
-- **`node(key)`** — returns the underlying node preserving all style metadata (mapping only; sequence indexing goes through `__getitem__`)
-- **`nodes()`** (mapping only) — returns `[(key, node)]` pairs with style metadata preserved
-- **`scalar_style(key, style)`** — sets scalar quoting style: `"plain"`, `"single"`, `"double"`, `"literal"`, `"folded"`
-- **`container_style(key, style)`** — sets `"block"` or `"flow"` on a nested mapping/sequence value; syncs both Rust `inner` and the Python parent container
-- **`blank_lines_before(key)`** / **`blank_lines_before(key, n)`** — gets or sets blank lines before a key/index (0–255, clamped)
-- **`comment_inline(key)`** / **`comment_inline(key, comment)`** — overloaded getter/setter for the trailing inline comment on a key/index
-- **`comment_before(key)`** / **`comment_before(key, comment)`** — overloaded getter/setter for the comment block on the lines preceding a key/index
-- **`get_comment_inline`** / **`set_comment_inline`** / **`get_comment_before`** / **`set_comment_before`** — non-overloaded explicit variants, useful when the overloaded form is ambiguous
-- **`alias_name(key)`** — returns the anchor name if the child is an alias, else `None`
+- **`node(key)`** — returns the underlying node preserving all style metadata
+- **`nodes()`** — mapping returns `[(key, node)]` pairs; sequence returns `[node, ...]` — with style metadata preserved
+- **`get_scalar_style(key)`** / **`set_scalar_style(key, style)`** — `"plain" | "single" | "double" | "literal" | "folded"`; raises `TypeError` on containers
+- **`get_container_style(key)`** / **`set_container_style(key, style)`** — `"block" | "flow"`; syncs both Rust `inner` and the Python parent container; raises `TypeError` on scalars
+- **`get_blank_lines_before(key)`** / **`set_blank_lines_before(key, n)`** — blank lines before a key/index (0–255, clamped)
+- **`get_comment_inline(key)`** / **`set_comment_inline(key, comment)`** — trailing inline comment on a key/index
+- **`get_comment_before(key)`** / **`set_comment_before(key, comment)`** — comment block on the lines preceding a key/index
+- **`get_alias(key)`** — returns the anchor name if the child is an alias, else `None`
 - **`set_alias(key, anchor_name)`** — replaces the child value with an alias reference to the given anchor
 - **`sort_keys(...)`** (mapping) / **`sort(...)`** / **`index(...)`** (sequence) — in-place operations that preserve per-entry metadata
 - **`copy()`** / **`__copy__`** / **`__deepcopy__`** — metadata-preserving copies
 - **`to_python()`** — collapse to a plain Python `dict`/`list`/primitive tree (loses all style metadata)
-- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` (styles-only; `comments` and `blank_lines` are no-ops there).
+- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` with only `styles=True` (scalars have no comments or blank lines to reset).
 
 Sequence variants use integer indices instead of string keys.
 

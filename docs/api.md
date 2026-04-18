@@ -197,8 +197,11 @@ Also:
 
 ### Style
 
-- `doc.style` / `doc.style = "block" | "flow"` — container style
-- `doc.scalar_style(key, "plain" | "single" | "double" | "literal" | "folded")` — scalar-only; `TypeError` on containers
+Per-child style setters/getters form `get_/set_` pairs and raise `TypeError` when applied to the wrong node kind:
+
+- `doc.style` / `doc.style = "block" | "flow"` — container style of this mapping
+- `doc.get_scalar_style(key)` / `doc.set_scalar_style(key, "plain" | "single" | "double" | "literal" | "folded")` — scalar-only; `TypeError` on containers
+- `doc.get_container_style(key)` / `doc.set_container_style(key, "block" | "flow")` — container-only; `TypeError` on scalars
 - `doc.tag` / `doc.tag = "!!map"` — YAML tag
 - `doc.anchor` / `doc.anchor = "myanchor"` — emits `&myanchor` before the mapping
 - For top-level nodes: `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`
@@ -206,29 +209,27 @@ Also:
 ```python
 doc["nested"] = yarutsk.YamlMapping(style="flow")
 doc["nested"]["x"] = 1
-doc.scalar_style("x", "double")
+doc["nested"].set_scalar_style("x", "double")
 ```
 
 ### Comments
 
-Overloaded (1-arg get, 2-arg set; pass `None` to clear) and explicit variants:
+`get_/set_` pairs; pass `None` to `set_*` to clear:
 
 ```python
-doc.comment_inline("key")              # overloaded getter
-doc.comment_inline("key", "hi")        # overloaded setter
-doc.comment_before("key", "block\ncomment")
+doc.get_comment_inline("key")
+doc.set_comment_inline("key", "hi")
+doc.set_comment_inline("key", None)       # clear
 
-doc.get_comment_inline("key")          # explicit variants
-doc.set_comment_inline("key", None)    # clear
 doc.get_comment_before("key")
-doc.set_comment_before("key", text)
+doc.set_comment_before("key", "block\ncomment")
 ```
 
 ### Blank lines
 
 ```python
-doc.blank_lines_before("key")          # int
-doc.blank_lines_before("key", 2)       # set to 2 (clamped 0–255)
+doc.get_blank_lines_before("key")      # int
+doc.set_blank_lines_before("key", 2)   # set to 2 (clamped 0–255)
 doc.trailing_blank_lines = 1           # blank lines after all entries
 ```
 
@@ -236,8 +237,8 @@ doc.trailing_blank_lines = 1           # blank lines after all entries
 
 ```python
 doc = yarutsk.loads("base: &val 1\nref: *val\n")
-doc.alias_name("ref")                  # 'val'
-doc.alias_name("base")                 # None (has anchor, not alias)
+doc.get_alias("ref")                   # 'val'
+doc.get_alias("base")                  # None (has anchor, not alias)
 doc["ref"]                             # 1  (resolved value always accessible)
 
 doc.set_alias("other", "anchor")       # mark value as emitting *anchor
@@ -275,22 +276,32 @@ yarutsk.dumps(s)                       # '[1, 2, 3]\n'
 
 All standard `list` operations work: indexing (negative supported), slicing, `append`, `insert`, `pop`, `remove`, `extend`, `index`, `count`, `reverse`, `in`, `len`, iteration, equality, `json.dumps`.
 
-Index-keyed variants of the same methods:
+Index-keyed variants of the same methods. `IndexError` on out-of-range indices; `TypeError` when a per-kind accessor is applied to the wrong node kind.
 
 ```python
-# Style / tags / anchors — same as YamlMapping
-doc.scalar_style(0, "double")          # raises TypeError on non-scalars
+# Underlying node access
+doc.node(0)                              # YamlScalar / YamlMapping / YamlSequence
+doc.nodes()                              # [node, node, ...] preserving metadata
+
+# Style / tags / anchors
+doc.get_scalar_style(0)
+doc.set_scalar_style(0, "double")        # scalar-only; TypeError on containers
+doc.get_container_style(0)
+doc.set_container_style(0, "flow")       # container-only; TypeError on scalars
 doc[0] = yarutsk.YamlScalar("item", style="single")
 
 # Comments — index-keyed
-doc.comment_inline(0, "first item")
-doc.comment_before(2, "group B")
+doc.get_comment_inline(0)
+doc.set_comment_inline(0, "first item")
+doc.get_comment_before(2)
+doc.set_comment_before(2, "group B")
 
 # Blank lines
-doc.blank_lines_before(0, 1)
+doc.get_blank_lines_before(0)
+doc.set_blank_lines_before(0, 1)
 
 # Aliases
-doc.alias_name(idx)                    # IndexError if out of range
+doc.get_alias(idx)                       # anchor name if alias, else None
 doc.set_alias(idx, "anchor")
 
 # Sorting (preserves comment metadata)

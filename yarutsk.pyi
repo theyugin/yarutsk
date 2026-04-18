@@ -17,7 +17,6 @@ from typing import (
     Literal,
     SupportsIndex,
     TypeVar,
-    overload,
 )
 
 _T = TypeVar("_T")
@@ -168,19 +167,12 @@ class YamlScalar:
 
     @tag_directives.setter
     def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
-    def format(
-        self,
-        *,
-        styles: bool = True,
-        comments: bool = True,
-        blank_lines: bool = True,
-    ) -> None:
-        """Strip cosmetic formatting, resetting to clean YAML defaults.
+    def format(self, *, styles: bool = True) -> None:
+        """Strip cosmetic scalar formatting, resetting to clean YAML defaults.
 
-        ``styles``: scalar quoting → plain (literal for multi-line strings),
-        ``original`` cleared so non-canonical forms emit canonically.
-        ``comments`` and ``blank_lines`` are accepted for API consistency but are
-        no-ops on scalars. Tags and anchors are always preserved.
+        When *styles* is ``True`` (the default), scalar quoting → plain (literal
+        for multi-line strings) and ``original`` is cleared so non-canonical
+        forms emit canonically. Tags and anchors are always preserved.
         """
         ...
 
@@ -289,31 +281,44 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    def scalar_style(self, key: str, style: ScalarStyle) -> None:
+    def get_scalar_style(self, key: str) -> ScalarStyle:
+        """Return the scalar quoting style for the value at *key*.
+        Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is
+        not a scalar (use ``get_container_style()`` instead).
+        """
+        ...
+
+    def set_scalar_style(self, key: str, style: ScalarStyle) -> None:
         """Set the scalar quoting style for the value at *key*.
         *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
         Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
-        ``TypeError`` if the value is not a scalar (use ``container_style()`` instead).
+        ``TypeError`` if the value is not a scalar (use ``set_container_style()`` instead).
         """
         ...
 
-    def container_style(self, key: str, style: Literal["block", "flow"]) -> None:
+    def get_container_style(self, key: str) -> ContainerStyle:
+        """Return the container style for the nested mapping or sequence at *key*.
+        Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is
+        not a mapping or sequence (use ``get_scalar_style()`` instead).
+        """
+        ...
+
+    def set_container_style(self, key: str, style: ContainerStyle) -> None:
         """Set the container style for the nested mapping or sequence at *key*.
         *style* must be ``"block"`` or ``"flow"``.
-        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
-        Silently ignored if the value at *key* is not a mapping or sequence.
+        Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
+        ``TypeError`` if the value is not a mapping or sequence (use
+        ``set_scalar_style()`` instead).
         """
         ...
 
-    @overload
-    def blank_lines_before(self, key: str) -> int:
+    def get_blank_lines_before(self, key: str) -> int:
         """Return the number of blank lines before *key* (0 if none).
         Raises ``KeyError`` if *key* is absent.
         """
         ...
 
-    @overload
-    def blank_lines_before(self, key: str, n: int) -> None:
+    def set_blank_lines_before(self, key: str, n: int) -> None:
         """Set the number of blank lines before *key*. Values are clamped to 0-255.
         Raises ``KeyError`` if *key* is absent.
         """
@@ -337,36 +342,8 @@ class YamlMapping(dict[str, Any]):
         """Recursively convert to a plain Python ``dict`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    @overload
-    def comment_inline(self, key: str) -> str | None:
-        """Return the inline comment for *key* (text after ``#``, no leading ``#``), or ``None``.
-        Raises ``KeyError`` if *key* is absent.
-        """
-        ...
-
-    @overload
-    def comment_inline(self, key: str, comment: str | None) -> None:
-        """Set or clear the inline comment for *key*. Pass ``None`` to remove it.
-        Raises ``KeyError`` if *key* is absent.
-        """
-        ...
-
-    @overload
-    def comment_before(self, key: str) -> str | None:
-        """Return the block comment above *key*, lines joined with ``\\n``, or ``None``.
-        Raises ``KeyError`` if *key* is absent.
-        """
-        ...
-
-    @overload
-    def comment_before(self, key: str, comment: str | None) -> None:
-        """Set or clear the block comment above *key*. Pass ``None`` to remove it.
-        Raises ``KeyError`` if *key* is absent.
-        """
-        ...
-
     def get_comment_inline(self, key: str) -> str | None:
-        """Return the inline comment for *key*, or ``None`` if unset.
+        """Return the inline comment for *key* (text after ``#``, no leading ``#``), or ``None``.
         Raises ``KeyError`` if *key* is absent.
         """
         ...
@@ -389,7 +366,7 @@ class YamlMapping(dict[str, Any]):
         """
         ...
 
-    def alias_name(self, key: str) -> str | None:
+    def get_alias(self, key: str) -> str | None:
         """Return the anchor name if the value at *key* is a YAML alias node, else ``None``.
 
         A value is an alias node when it was parsed from ``*name`` YAML syntax or when
@@ -527,19 +504,50 @@ class YamlSequence(list[Any]):
 
     @trailing_blank_lines.setter
     def trailing_blank_lines(self, value: int) -> None: ...
-    def scalar_style(self, idx: int, style: ScalarStyle) -> None:
-        """Set the scalar quoting style for the item at *idx*.
-        *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
-        ``TypeError`` if the item is not a scalar (use ``container_style()`` instead).
+    def node(self, idx: int) -> YamlMapping | YamlSequence | YamlScalar:
+        """Return the underlying YAML node for the item at *idx*, preserving style/tag metadata.
+        Raises ``IndexError`` for out-of-range indices.
         """
         ...
 
-    def container_style(self, idx: int, style: Literal["block", "flow"]) -> None:
+    def nodes(self) -> list[YamlMapping | YamlSequence | YamlScalar]:
+        """Return the underlying YAML node for every item, in order.
+
+        Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
+        preserving style/tag metadata. Unlike iterating the sequence (which
+        yields Python primitives for scalars), ``nodes()`` returns full typed
+        node objects.
+        """
+        ...
+
+    def get_scalar_style(self, idx: int) -> ScalarStyle:
+        """Return the scalar quoting style for the item at *idx*.
+        Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the
+        item is not a scalar (use ``get_container_style()`` instead).
+        """
+        ...
+
+    def set_scalar_style(self, idx: int, style: ScalarStyle) -> None:
+        """Set the scalar quoting style for the item at *idx*.
+        *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
+        ``TypeError`` if the item is not a scalar (use ``set_container_style()`` instead).
+        """
+        ...
+
+    def get_container_style(self, idx: int) -> ContainerStyle:
+        """Return the container style for the nested mapping or sequence at *idx*.
+        Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the
+        item is not a mapping or sequence (use ``get_scalar_style()`` instead).
+        """
+        ...
+
+    def set_container_style(self, idx: int, style: ContainerStyle) -> None:
         """Set the container style for the nested mapping or sequence at *idx*.
         *style* must be ``"block"`` or ``"flow"``.
-        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
-        Silently ignored if the item at *idx* is not a mapping or sequence.
+        Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
+        ``TypeError`` if the item is not a mapping or sequence (use
+        ``set_scalar_style()`` instead).
         """
         ...
 
@@ -571,28 +579,8 @@ class YamlSequence(list[Any]):
         """Recursively convert to a plain Python ``list`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    @overload
-    def comment_inline(self, idx: int) -> str | None:
-        """Return the inline comment for the item at *idx* (text after ``#``, no leading ``#``), or ``None``."""
-        ...
-
-    @overload
-    def comment_inline(self, idx: int, comment: str | None) -> None:
-        """Set or clear the inline comment for the item at *idx*. Pass ``None`` to remove it."""
-        ...
-
-    @overload
-    def comment_before(self, idx: int) -> str | None:
-        """Return the block comment above the item at *idx*, lines joined with ``\\n``, or ``None``."""
-        ...
-
-    @overload
-    def comment_before(self, idx: int, comment: str | None) -> None:
-        """Set or clear the block comment above the item at *idx*. Pass ``None`` to remove it."""
-        ...
-
     def get_comment_inline(self, idx: int) -> str | None:
-        """Return the inline comment for the item at *idx*, or ``None`` if unset.
+        """Return the inline comment for the item at *idx* (text after ``#``, no leading ``#``), or ``None``.
         Raises ``IndexError`` for out-of-range indices.
         """
         ...
@@ -615,7 +603,7 @@ class YamlSequence(list[Any]):
         """
         ...
 
-    def alias_name(self, idx: int) -> str | None:
+    def get_alias(self, idx: int) -> str | None:
         """Return the anchor name if the item at *idx* is a YAML alias node, else ``None``.
 
         A value is an alias node when it was parsed from ``*name`` YAML syntax or when
@@ -632,14 +620,16 @@ class YamlSequence(list[Any]):
         """
         ...
 
-    @overload
-    def blank_lines_before(self, idx: int) -> int:
-        """Return the number of blank lines before the item at *idx* (0 if none)."""
+    def get_blank_lines_before(self, idx: int) -> int:
+        """Return the number of blank lines before the item at *idx* (0 if none).
+        Raises ``IndexError`` for out-of-range indices.
+        """
         ...
 
-    @overload
-    def blank_lines_before(self, idx: int, n: int) -> None:
-        """Set the number of blank lines before the item at *idx*. Values are clamped to 0-255."""
+    def set_blank_lines_before(self, idx: int, n: int) -> None:
+        """Set the number of blank lines before the item at *idx*. Values are clamped to 0-255.
+        Raises ``IndexError`` for out-of-range indices.
+        """
         ...
 
     def format(

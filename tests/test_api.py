@@ -98,7 +98,7 @@ class TestStringAPI:
         doc2 = yarutsk.loads(result)
         assert doc2["name"] == "Alice"
         assert doc2["age"] == 30
-        assert doc2.comment_inline("age") == "years"
+        assert doc2.get_comment_inline("age") == "years"
 
     def test_loads_all_dumps_all_round_trip(self):
         original = dedent("""\
@@ -506,8 +506,8 @@ class TestNegativeSequenceIndices:
             - c  # last
         """)
         )
-        assert doc.comment_inline(-1) == "last"
-        assert doc.comment_inline(-3) == "first"
+        assert doc.get_comment_inline(-1) == "last"
+        assert doc.get_comment_inline(-3) == "first"
 
     def test_set_comment_negative_index(self):
         doc = yarutsk.loads(
@@ -517,11 +517,11 @@ class TestNegativeSequenceIndices:
             - c
         """)
         )
-        doc.comment_inline(-1, "tail note")
+        doc.set_comment_inline(-1, "tail note")
         out = yarutsk.dumps(doc)
         assert "# tail note" in out
         doc2 = yarutsk.loads(out)
-        assert doc2.comment_inline(2) == "tail note"
+        assert doc2.get_comment_inline(2) == "tail note"
 
 
 class TestSetDefault:
@@ -602,20 +602,22 @@ class TestErrorCases:
     def test_comment_inline_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
         with pytest.raises(KeyError):
-            doc.comment_inline("missing", "note")
+            doc.set_comment_inline("missing", "note")
 
     def test_comment_before_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
         with pytest.raises(KeyError):
-            doc.comment_before("missing", "note")
+            doc.set_comment_before("missing", "note")
 
-    def test_comment_inline_missing_key_returns_none(self):
+    def test_get_comment_inline_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
-        assert doc.comment_inline("missing") is None
+        with pytest.raises(KeyError):
+            doc.get_comment_inline("missing")
 
-    def test_comment_before_missing_key_returns_none(self):
+    def test_get_comment_before_missing_key_raises(self):
         doc = yarutsk.loads("a: 1")
-        assert doc.comment_before("missing") is None
+        with pytest.raises(KeyError):
+            doc.get_comment_before("missing")
 
 
 class TestGetMethod:
@@ -691,14 +693,14 @@ class TestSequenceScalarStyle:
             - world
         """)
         )
-        doc.scalar_style(0, "single")
+        doc.set_scalar_style(0, "single")
         out = yarutsk.dumps(doc)
         assert "'hello'" in out
         assert "world" in out
 
     def test_set_double_quoted(self):
         doc = yarutsk.loads("- hello\n")
-        doc.scalar_style(0, "double")
+        doc.set_scalar_style(0, "double")
         assert yarutsk.dumps(doc) == '- "hello"\n'
 
     def test_negative_index(self):
@@ -709,7 +711,7 @@ class TestSequenceScalarStyle:
             - c
         """)
         )
-        doc.scalar_style(-1, "single")
+        doc.set_scalar_style(-1, "single")
         assert yarutsk.dumps(doc) == dedent("""\
             - a
             - b
@@ -723,7 +725,7 @@ class TestSequenceScalarStyle:
             - b
         """)
         )
-        doc.scalar_style(1, "double")
+        doc.set_scalar_style(1, "double")
         out = yarutsk.dumps(doc)
         assert "'a'" in out
         assert '"b"' in out
@@ -731,12 +733,12 @@ class TestSequenceScalarStyle:
     def test_invalid_style_raises(self):
         doc = yarutsk.loads("- hello\n")
         with pytest.raises(ValueError):
-            doc.scalar_style(0, "bad")
+            doc.set_scalar_style(0, "bad")
 
     def test_out_of_range_raises(self):
         doc = yarutsk.loads("- hello\n")
         with pytest.raises(IndexError):
-            doc.scalar_style(99, "plain")
+            doc.set_scalar_style(99, "plain")
 
 
 class TestStyledConstructors:
@@ -936,8 +938,8 @@ class TestFormat:
         """)
         doc = yarutsk.loads(src)
         doc.format()
-        assert doc.comment_before("key") is None
-        assert doc.comment_inline("key") is None
+        assert doc.get_comment_before("key") is None
+        assert doc.get_comment_inline("key") is None
 
     def test_blank_lines_cleared(self):
         src = dedent("""\
@@ -947,7 +949,7 @@ class TestFormat:
         """)
         doc = yarutsk.loads(src)
         doc.format()
-        assert doc.blank_lines_before("b") == 0
+        assert doc.get_blank_lines_before("b") == 0
 
     def test_tags_preserved(self):
         doc = yarutsk.loads("value: !!str 42")
@@ -983,7 +985,7 @@ class TestFormat:
     def test_comments_false_preserves_comments(self):
         doc = yarutsk.loads("key: val  # inline")
         doc.format(comments=False)
-        assert doc.comment_inline("key") == "inline"
+        assert doc.get_comment_inline("key") == "inline"
 
     def test_blank_lines_false_preserves_blank_lines(self):
         src = dedent("""\
@@ -993,7 +995,7 @@ class TestFormat:
         """)
         doc = yarutsk.loads(src)
         doc.format(blank_lines=False)
-        assert doc.blank_lines_before("b") > 0
+        assert doc.get_blank_lines_before("b") > 0
 
     def test_multiline_string_uses_literal_style(self):
         # A multiline string should become literal block style, not double-quoted with \n
@@ -1004,7 +1006,7 @@ class TestFormat:
         """)
         doc = yarutsk.loads(src)
         # Force it to double-quoted so format() has something to reset
-        doc.scalar_style("message", "double")
+        doc.set_scalar_style("message", "double")
         doc.format()
         result = yarutsk.dumps(doc)
         assert "\\n" not in result
@@ -1047,7 +1049,7 @@ class TestFormat:
         doc = yarutsk.loads(src)
         seq = doc["items"]
         doc.format()
-        assert seq.blank_lines_before(1) == 0
+        assert seq.get_blank_lines_before(1) == 0
 
     def test_trailing_blank_lines_cleared(self):
         doc = yarutsk.loads("a: 1\nb: 2\n")
@@ -1138,32 +1140,109 @@ class TestScalarStyleTypeError:
     def test_mapping_scalar_style_on_nested_mapping_raises(self):
         doc = yarutsk.loads("outer:\n  inner: 1\n")
         with pytest.raises(TypeError, match="not a scalar"):
-            doc.scalar_style("outer", "plain")
+            doc.set_scalar_style("outer", "plain")
 
     def test_mapping_scalar_style_on_nested_sequence_raises(self):
         doc = yarutsk.loads("items:\n  - 1\n  - 2\n")
         with pytest.raises(TypeError, match="not a scalar"):
-            doc.scalar_style("items", "plain")
+            doc.set_scalar_style("items", "plain")
 
     def test_sequence_scalar_style_on_nested_mapping_raises(self):
         doc = yarutsk.loads("- key: value\n")
         with pytest.raises(TypeError, match="not a scalar"):
-            doc.scalar_style(0, "plain")
+            doc.set_scalar_style(0, "plain")
 
     def test_sequence_scalar_style_on_nested_sequence_raises(self):
         doc = yarutsk.loads("- - 1\n  - 2\n")
         with pytest.raises(TypeError, match="not a scalar"):
-            doc.scalar_style(0, "plain")
+            doc.set_scalar_style(0, "plain")
 
     def test_mapping_scalar_style_on_scalar_still_works(self):
         doc = yarutsk.loads("key: value\n")
-        doc.scalar_style("key", "double")
+        doc.set_scalar_style("key", "double")
         assert '"value"' in yarutsk.dumps(doc)
 
     def test_sequence_scalar_style_on_scalar_still_works(self):
         doc = yarutsk.loads("- hello\n")
-        doc.scalar_style(0, "single")
+        doc.set_scalar_style(0, "single")
         assert "'hello'" in yarutsk.dumps(doc)
+
+
+class TestContainerStyleTypeError:
+    """set_container_style / get_container_style reject scalars with TypeError."""
+
+    def test_mapping_set_on_scalar_raises(self):
+        doc = yarutsk.loads("k: hello\n")
+        with pytest.raises(TypeError, match="not a container"):
+            doc.set_container_style("k", "flow")
+
+    def test_mapping_set_on_null_raises(self):
+        doc = yarutsk.loads("k:\n")
+        with pytest.raises(TypeError, match="not a container"):
+            doc.set_container_style("k", "flow")
+
+    def test_sequence_set_on_scalar_raises(self):
+        doc = yarutsk.loads("- hello\n")
+        with pytest.raises(TypeError, match="not a container"):
+            doc.set_container_style(0, "flow")
+
+    def test_mapping_get_on_scalar_raises(self):
+        doc = yarutsk.loads("k: 1\n")
+        with pytest.raises(TypeError, match="not a container"):
+            doc.get_container_style("k")
+
+    def test_sequence_get_on_scalar_raises(self):
+        doc = yarutsk.loads("- hello\n")
+        with pytest.raises(TypeError, match="not a container"):
+            doc.get_container_style(0)
+
+
+class TestStyleGetters:
+    """get_scalar_style / get_container_style / get_blank_lines_before / get_alias."""
+
+    def test_mapping_get_scalar_style(self):
+        doc = yarutsk.loads("a: 'x'\nb: y\n")
+        assert doc.get_scalar_style("a") == "single"
+        assert doc.get_scalar_style("b") == "plain"
+
+    def test_mapping_get_scalar_style_on_container_raises(self):
+        doc = yarutsk.loads("k: [1, 2]\n")
+        with pytest.raises(TypeError, match="not a scalar"):
+            doc.get_scalar_style("k")
+
+    def test_mapping_get_container_style(self):
+        doc = yarutsk.loads("a: {x: 1}\nb:\n  y: 2\n")
+        assert doc.get_container_style("a") == "flow"
+        assert doc.get_container_style("b") == "block"
+
+    def test_mapping_get_blank_lines_before(self):
+        doc = yarutsk.loads("a: 1\n\nb: 2\n")
+        assert doc.get_blank_lines_before("a") == 0
+        assert doc.get_blank_lines_before("b") == 1
+        with pytest.raises(KeyError):
+            doc.get_blank_lines_before("missing")
+
+    def test_mapping_get_alias(self):
+        doc = yarutsk.loads("base: &anchor 1\nref: *anchor\n")
+        assert doc.get_alias("ref") == "anchor"
+        assert doc.get_alias("base") is None
+        with pytest.raises(KeyError):
+            doc.get_alias("missing")
+
+    def test_sequence_get_scalar_style(self):
+        doc = yarutsk.loads("- 'x'\n- y\n")
+        assert doc.get_scalar_style(0) == "single"
+        assert doc.get_scalar_style(1) == "plain"
+
+    def test_sequence_get_container_style(self):
+        doc = yarutsk.loads("- {x: 1}\n- [1, 2]\n")
+        assert doc.get_container_style(0) == "flow"
+        assert doc.get_container_style(1) == "flow"
+
+    def test_sequence_get_blank_lines_before(self):
+        doc = yarutsk.loads("- 1\n\n- 2\n")
+        assert doc.get_blank_lines_before(0) == 0
+        assert doc.get_blank_lines_before(1) == 1
 
 
 class TestAnchorProperty:
@@ -1298,25 +1377,25 @@ class TestAliasAPI:
 
     def test_mapping_alias_name_none_for_plain_value(self):
         doc = yarutsk.loads("key: value\n")
-        assert doc.alias_name("key") is None
+        assert doc.get_alias("key") is None
 
     def test_mapping_alias_name_parsed_alias(self):
         doc = yarutsk.loads("base: &anchor 1\nref: *anchor\n")
-        assert doc.alias_name("ref") == "anchor"
+        assert doc.get_alias("ref") == "anchor"
 
     def test_mapping_alias_name_anchor_node_is_not_alias(self):
         doc = yarutsk.loads("base: &anchor 1\nref: *anchor\n")
-        assert doc.alias_name("base") is None
+        assert doc.get_alias("base") is None
 
     def test_mapping_alias_name_missing_key_raises(self):
         doc = yarutsk.loads("key: value\n")
         with pytest.raises(KeyError):
-            doc.alias_name("missing")
+            doc.get_alias("missing")
 
     def test_mapping_set_alias_marks_value(self):
         doc = yarutsk.loads("base: &anchor hello\nother: hello\n")
         doc.set_alias("other", "anchor")
-        assert doc.alias_name("other") == "anchor"
+        assert doc.get_alias("other") == "anchor"
 
     def test_mapping_set_alias_resolved_value_accessible(self):
         doc = yarutsk.loads("base: &anchor 42\nother: 42\n")
@@ -1337,29 +1416,29 @@ class TestAliasAPI:
     def test_sequence_alias_name_none_for_plain_value(self):
         doc = yarutsk.loads("- 1\n- 2\n")
         assert isinstance(doc, yarutsk.YamlSequence)
-        assert doc.alias_name(0) is None
+        assert doc.get_alias(0) is None
 
     def test_sequence_alias_name_parsed_alias(self):
         doc = yarutsk.loads("- &val 1\n- *val\n")
         assert isinstance(doc, yarutsk.YamlSequence)
-        assert doc.alias_name(1) == "val"
+        assert doc.get_alias(1) == "val"
 
     def test_sequence_alias_name_anchor_node_is_not_alias(self):
         doc = yarutsk.loads("- &val 1\n- *val\n")
         assert isinstance(doc, yarutsk.YamlSequence)
-        assert doc.alias_name(0) is None
+        assert doc.get_alias(0) is None
 
     def test_sequence_alias_name_out_of_range_raises(self):
         doc = yarutsk.loads("- 1\n")
         assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(IndexError):
-            doc.alias_name(99)
+            doc.get_alias(99)
 
     def test_sequence_set_alias_marks_value(self):
         doc = yarutsk.loads("- 1\n- 1\n")
         assert isinstance(doc, yarutsk.YamlSequence)
         doc.set_alias(1, "val")
-        assert doc.alias_name(1) == "val"
+        assert doc.get_alias(1) == "val"
 
     def test_sequence_set_alias_resolved_value_accessible(self):
         doc = yarutsk.loads("- 42\n- 42\n")
@@ -1487,6 +1566,32 @@ class TestMappingNodes:
         assert doc.nodes() == []
 
 
+class TestSequenceNodes:
+    def test_node_returns_typed(self):
+        doc = yarutsk.loads("- 1\n- foo\n- [a, b]\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert isinstance(doc.node(0), yarutsk.YamlScalar)
+        assert isinstance(doc.node(2), yarutsk.YamlSequence)
+
+    def test_nodes_list_preserves_order(self):
+        doc = yarutsk.loads("- 1\n- hello\n- true\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        nodes = doc.nodes()
+        assert [n.value for n in nodes] == [1, "hello", True]
+
+    def test_nodes_preserves_scalar_style(self):
+        doc = yarutsk.loads('- "a"\n- b\n')
+        assert isinstance(doc, yarutsk.YamlSequence)
+        nodes = doc.nodes()
+        assert nodes[0].style == "double"
+        assert nodes[1].style == "plain"
+
+    def test_nodes_empty_sequence(self):
+        doc = yarutsk.loads("[]\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.nodes() == []
+
+
 # ── __copy__ / __deepcopy__ ───────────────────────────────────────────────────
 
 
@@ -1523,7 +1628,7 @@ class TestDeepCopy:
         doc = yarutsk.loads('key: "quoted"\n')
         assert isinstance(doc, yarutsk.YamlMapping)
         doc2 = copy.deepcopy(doc)
-        doc2.scalar_style("key", "plain")
+        doc2.set_scalar_style("key", "plain")
         # Original should still have double-quoted style
         out = yarutsk.dumps(doc)
         assert '"quoted"' in out
@@ -1621,7 +1726,7 @@ class TestSequenceInnerSync:
     def test_iadd_preserves_existing_metadata(self):
         seq = yarutsk.loads("- x  # comment\n")
         seq += ["y"]
-        assert seq.comment_inline(0) == "comment"
+        assert seq.get_comment_inline(0) == "comment"
 
     def test_slice_setitem_syncs_inner(self):
         seq = yarutsk.loads("- 1\n- 2\n- 3\n")

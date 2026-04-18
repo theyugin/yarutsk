@@ -2,12 +2,12 @@
 
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::PyDict;
 
 use super::convert::{
-    DocMeta, OverloadArg, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc,
-    node_to_py, overload_arg, parse_container_style, parse_scalar_style, parse_yaml_version,
-    plain_entry, py_to_node, py_to_node_with_fallback, sort_mapping,
+    DocMeta, container_style_str, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc,
+    node_to_py, parse_container_style, parse_scalar_style, parse_yaml_version, plain_entry,
+    py_to_node, py_to_node_with_fallback, scalar_style_str, sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
@@ -328,70 +328,6 @@ impl PyYamlMapping {
         mapping_to_python(py, &self.inner)
     }
 
-    /// Read or write the inline comment for *key*.
-    /// `comment_inline(key)` returns the current comment (``str | None``).
-    /// `comment_inline(key, comment)` sets it; pass ``None`` to clear.
-    #[pyo3(signature = (key, *args))]
-    fn comment_inline(
-        &mut self,
-        py: Python<'_>,
-        key: &str,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
-        match overload_arg(args, "comment_inline")? {
-            OverloadArg::Get => Ok(self
-                .inner
-                .entries
-                .get(key)
-                .and_then(|e| e.comment_inline.as_deref())
-                .into_pyobject(py)?
-                .into_any()
-                .unbind()),
-            OverloadArg::Set(v) => {
-                let comment: Option<String> = v.extract()?;
-                match self.inner.entries.get_mut(key) {
-                    Some(entry) => {
-                        entry.comment_inline = comment;
-                        Ok(py.None())
-                    }
-                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-                }
-            }
-        }
-    }
-
-    /// Read or write the block comment above *key*.
-    /// `comment_before(key)` returns the current comment (``str | None``).
-    /// `comment_before(key, comment)` sets it; pass ``None`` to clear.
-    #[pyo3(signature = (key, *args))]
-    fn comment_before(
-        &mut self,
-        py: Python<'_>,
-        key: &str,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
-        match overload_arg(args, "comment_before")? {
-            OverloadArg::Get => Ok(self
-                .inner
-                .entries
-                .get(key)
-                .and_then(|e| e.comment_before.as_deref())
-                .into_pyobject(py)?
-                .into_any()
-                .unbind()),
-            OverloadArg::Set(v) => {
-                let comment: Option<String> = v.extract()?;
-                match self.inner.entries.get_mut(key) {
-                    Some(entry) => {
-                        entry.comment_before = comment;
-                        Ok(py.None())
-                    }
-                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-                }
-            }
-        }
-    }
-
     /// Return the inline comment for *key*, or ``None`` if unset.
     /// Raises ``KeyError`` if *key* is absent.
     fn get_comment_inline(&self, key: &str) -> PyResult<Option<String>> {
@@ -438,7 +374,7 @@ impl PyYamlMapping {
 
     /// Return the YAML alias name if the value at *key* is an alias (``*name``), else ``None``.
     /// Raises ``KeyError`` if *key* is absent.
-    fn alias_name(&self, key: &str) -> PyResult<Option<&str>> {
+    fn get_alias(&self, key: &str) -> PyResult<Option<&str>> {
         match self.inner.entries.get(key) {
             Some(entry) => Ok(match &entry.value {
                 YamlNode::Alias { name, .. } => Some(name.as_str()),
@@ -535,11 +471,25 @@ impl PyYamlMapping {
         }
     }
 
-    /// Set the scalar style for the value at `key`.
-    /// `style` must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-    /// Raises ``KeyError`` if the key is absent; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the value is not a scalar (use ``container_style()`` instead).
-    fn scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
+    /// Return the scalar quoting style for the value at *key*.
+    /// Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is not a scalar.
+    fn get_scalar_style(&self, key: &str) -> PyResult<&'static str> {
+        match self.inner.entries.get(key) {
+            Some(entry) => match &entry.value {
+                YamlNode::Scalar(s) => Ok(scalar_style_str(s.style)),
+                _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "value at key {key:?} is not a scalar; use get_container_style() for mappings and sequences"
+                ))),
+            },
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
+    /// Set the scalar style for the value at *key*.
+    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
+    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
+    /// ``TypeError`` if the value is not a scalar (use ``set_container_style()`` instead).
+    fn set_scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
         let new_style = parse_scalar_style(style)?;
         match self.inner.entries.get_mut(key) {
             Some(entry) => match &mut entry.value {
@@ -548,7 +498,22 @@ impl PyYamlMapping {
                     Ok(())
                 }
                 _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "value at key {key:?} is not a scalar; use container_style() for mappings and sequences"
+                    "value at key {key:?} is not a scalar; use set_container_style() for mappings and sequences"
+                ))),
+            },
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
+    /// Return the container style (``"block"`` or ``"flow"``) for the value at *key*.
+    /// Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is not a mapping or sequence.
+    fn get_container_style(&self, key: &str) -> PyResult<&'static str> {
+        match self.inner.entries.get(key) {
+            Some(entry) => match &entry.value {
+                YamlNode::Mapping(m) => Ok(container_style_str(m.style)),
+                YamlNode::Sequence(s) => Ok(container_style_str(s.style)),
+                _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "value at key {key:?} is not a container; use get_scalar_style() for scalars"
                 ))),
             },
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
@@ -557,20 +522,22 @@ impl PyYamlMapping {
 
     /// Set the block/flow style for the container value at *key*.
     /// *style* must be ``"block"`` or ``"flow"``.
-    /// No-op when the value is a scalar or null.
-    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
-    fn container_style(slf: &Bound<'_, Self>, key: &str, style: &str) -> PyResult<()> {
+    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
+    /// ``TypeError`` if the value is not a mapping or sequence (use ``set_scalar_style()`` instead).
+    fn set_container_style(slf: &Bound<'_, Self>, key: &str, style: &str) -> PyResult<()> {
         let new_style = parse_container_style(style)?;
         {
             let mut borrow = slf.borrow_mut();
             match borrow.inner.entries.get_mut(key) {
-                Some(entry) => {
-                    match &mut entry.value {
-                        YamlNode::Mapping(m) => m.style = new_style,
-                        YamlNode::Sequence(s) => s.style = new_style,
-                        _ => {} // scalar / null / alias — silently ignored
+                Some(entry) => match &mut entry.value {
+                    YamlNode::Mapping(m) => m.style = new_style,
+                    YamlNode::Sequence(s) => s.style = new_style,
+                    _ => {
+                        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                            "value at key {key:?} is not a container; use set_scalar_style() for scalars"
+                        )));
                     }
-                }
+                },
                 None => return Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
             }
         }
@@ -586,36 +553,25 @@ impl PyYamlMapping {
         Ok(())
     }
 
-    /// Read or write the number of blank lines emitted before *key*.
-    /// `blank_lines_before(key)` returns the current count (``int``).
-    /// `blank_lines_before(key, n)` sets it; values are clamped to 0–255.
+    /// Return the number of blank lines emitted before *key*.
     /// Raises ``KeyError`` if *key* is absent.
-    #[pyo3(signature = (key, *args))]
-    fn blank_lines_before(
-        &mut self,
-        py: Python<'_>,
-        key: &str,
-        args: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
-        match overload_arg(args, "blank_lines_before")? {
-            OverloadArg::Get => match self.inner.entries.get(key) {
-                Some(entry) => Ok(u32::from(entry.blank_lines_before)
-                    .into_pyobject(py)?
-                    .into_any()
-                    .unbind()),
-                None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-            },
-            OverloadArg::Set(v) => {
-                let n: u32 = v.extract()?;
-                let n = n.min(255) as u8;
-                match self.inner.entries.get_mut(key) {
-                    Some(entry) => {
-                        entry.blank_lines_before = n;
-                        Ok(py.None())
-                    }
-                    None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-                }
+    fn get_blank_lines_before(&self, key: &str) -> PyResult<u32> {
+        match self.inner.entries.get(key) {
+            Some(entry) => Ok(u32::from(entry.blank_lines_before)),
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
+        }
+    }
+
+    /// Set the number of blank lines emitted before *key*; values are clamped to 0–255.
+    /// Raises ``KeyError`` if *key* is absent.
+    fn set_blank_lines_before(&mut self, key: &str, n: u32) -> PyResult<()> {
+        let n = n.min(255) as u8;
+        match self.inner.entries.get_mut(key) {
+            Some(entry) => {
+                entry.blank_lines_before = n;
+                Ok(())
             }
+            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
         }
     }
 

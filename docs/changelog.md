@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-18
+
+Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair.
+
+### Added
+- `YamlSequence.node(index)` and `YamlSequence.nodes()`.
+- `get_scalar_style` / `set_scalar_style`, `get_container_style` / `set_container_style` on `YamlMapping` and `YamlSequence`.
+- `get_blank_lines_before` / `set_blank_lines_before` on `YamlMapping` and `YamlSequence`.
+- `get_alias` on `YamlMapping` and `YamlSequence` (replaces `alias_name`).
+
+### Changed
+- `set_container_style` raises `TypeError` on scalar children (previously silent no-op).
+
+### Removed
+- Setter-only `scalar_style(key, style)` and `container_style(key, style)` — use `set_scalar_style` / `set_container_style`.
+- Overloaded `blank_lines_before`, `comment_inline`, `comment_before` — use the explicit `get_/set_` pairs.
+- `alias_name` — renamed to `get_alias`.
+- No-op `comments=` and `blank_lines=` keyword arguments on `YamlScalar.format` (scalars have no comments or blank lines to reset).
+
 ## [0.5.4] - 2026-04-18
 
 ### Changed
@@ -113,7 +132,9 @@ All notable changes to this project are documented here. The format is based on 
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/theyugin/yarutsk/compare/v0.5.4...v0.6.0
+[0.5.4]: https://github.com/theyugin/yarutsk/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/theyugin/yarutsk/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/theyugin/yarutsk/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/theyugin/yarutsk/compare/v0.5.0...v0.5.1

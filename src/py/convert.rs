@@ -1101,31 +1101,6 @@ pub(crate) fn sort_mapping(
     Ok(())
 }
 
-// ─── Overloaded-method dispatch ───────────────────────────────────────────────
-
-/// Result of inspecting `*args` for a `PyO3` method that acts as both getter and setter.
-pub(crate) enum OverloadArg<'py> {
-    /// No extra args — caller should perform the getter.
-    Get,
-    /// One extra arg — caller should extract the value and perform the setter.
-    Set(Bound<'py, PyAny>),
-}
-
-/// Classify `*args` for a 1-or-2 positional-argument overload (get/set).
-/// *method* is used only in the error message when too many args are passed.
-pub(crate) fn overload_arg<'py>(
-    args: &Bound<'py, PyTuple>,
-    method: &str,
-) -> PyResult<OverloadArg<'py>> {
-    match args.len() {
-        0 => Ok(OverloadArg::Get),
-        1 => Ok(OverloadArg::Set(args.get_item(0)?)),
-        _ => Err(PyRuntimeError::new_err(format!(
-            "{method} takes 1 or 2 positional arguments"
-        ))),
-    }
-}
-
 // ─── Style-parsing helpers ────────────────────────────────────────────────────
 
 pub(crate) fn parse_scalar_style(style: &str) -> PyResult<ScalarStyle> {
@@ -1148,6 +1123,23 @@ pub(crate) fn parse_container_style(style: &str) -> PyResult<ContainerStyle> {
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown style {other:?}; expected \"block\" or \"flow\""
         ))),
+    }
+}
+
+pub(crate) fn scalar_style_str(s: ScalarStyle) -> &'static str {
+    match s {
+        ScalarStyle::Plain => "plain",
+        ScalarStyle::SingleQuoted => "single",
+        ScalarStyle::DoubleQuoted => "double",
+        ScalarStyle::Literal => "literal",
+        ScalarStyle::Folded => "folded",
+    }
+}
+
+pub(crate) fn container_style_str(s: ContainerStyle) -> &'static str {
+    match s {
+        ContainerStyle::Block => "block",
+        ContainerStyle::Flow => "flow",
     }
 }
 
