@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-19
+
+### Fixed
+- Plain scalars with leading or trailing whitespace are now quoted on emit so they survive round-trip; previously the parser stripped the surrounding whitespace and tab-only strings came back as `null`.
+
 ## [0.6.0] - 2026-04-18
 
 Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair.
@@ -132,7 +137,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/theyugin/yarutsk/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/theyugin/yarutsk/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/theyugin/yarutsk/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/theyugin/yarutsk/compare/v0.5.2...v0.5.3

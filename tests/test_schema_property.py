@@ -98,3 +98,69 @@ def test_int_raw_tag_bypass(n: int) -> None:
     doc = yarutsk.loads(f"x: !!int {n}\n", schema=schema)
     assert doc["x"] == n
     assert received == [str(n)]
+
+
+@given(s=st.sampled_from(["null", "Null", "NULL", "~", "anything", "yes", "0"]))
+@settings(max_examples=50, deadline=None)
+def test_null_raw_tag_bypass(s: str) -> None:
+    """A registered !!null loader must receive the raw string verbatim."""
+    received: list[str] = []
+    schema = yarutsk.Schema()
+    schema.add_loader("!!null", lambda raw: received.append(raw) or None)
+
+    doc = yarutsk.loads(f"x: !!null {s}\n", schema=schema)
+    assert doc["x"] is None
+    assert received == [s]
+
+
+@given(
+    s=st.sampled_from(
+        ["true", "True", "TRUE", "false", "False", "yes", "no", "on", "off", "y", "n"]
+    )
+)
+@settings(max_examples=50, deadline=None)
+def test_bool_raw_tag_bypass(s: str) -> None:
+    """A registered !!bool loader must receive the raw string, not the coerced bool."""
+    received: list[str] = []
+    schema = yarutsk.Schema()
+    schema.add_loader(
+        "!!bool",
+        lambda raw: received.append(raw) or (raw.lower() in {"true", "yes", "on", "y"}),
+    )
+
+    doc = yarutsk.loads(f"x: !!bool {s}\n", schema=schema)
+    assert doc["x"] == (s.lower() in {"true", "yes", "on", "y"})
+    assert received == [s]
+
+
+@given(f=st.floats(allow_nan=False, allow_infinity=False, width=64))
+@settings(max_examples=50, deadline=None)
+def test_float_raw_tag_bypass(f: float) -> None:
+    """A registered !!float loader must receive the raw string, not the coerced float."""
+    received: list[str] = []
+    schema = yarutsk.Schema()
+    schema.add_loader("!!float", lambda raw: received.append(raw) or float(raw))
+
+    text = repr(f)
+    doc = yarutsk.loads(f'x: !!float "{text}"\n', schema=schema)
+    assert doc["x"] == f
+    assert received == [text]
+
+
+@given(
+    s=st.text(
+        alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd"), whitelist_characters="_-"),
+        min_size=1,
+        max_size=40,
+    )
+)
+@settings(max_examples=50, deadline=None)
+def test_str_raw_tag_bypass(s: str) -> None:
+    """A registered !!str loader must receive the raw string verbatim."""
+    received: list[str] = []
+    schema = yarutsk.Schema()
+    schema.add_loader("!!str", lambda raw: received.append(raw) or raw)
+
+    doc = yarutsk.loads(f'x: !!str "{s}"\n', schema=schema)
+    assert doc["x"] == s
+    assert received == [s]
