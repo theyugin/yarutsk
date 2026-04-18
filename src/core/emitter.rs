@@ -923,6 +923,10 @@ fn needs_quoting_for_key(s: &str) -> bool {
     if s.is_empty() {
         return true;
     }
+    // Plain keys have leading/trailing whitespace stripped on re-parse.
+    if s.starts_with([' ', '\t']) || s.ends_with([' ', '\t']) {
+        return true;
+    }
     // Document-start/end markers would collide with YAML directives on re-parse.
     if s == "---" || s == "..." {
         return true;
@@ -1045,6 +1049,10 @@ fn double_quote(s: &str) -> String {
 /// Return true if the string needs to be quoted in YAML plain style.
 fn needs_quoting(s: &str) -> bool {
     if s.is_empty() {
+        return true;
+    }
+    // Plain scalars have leading/trailing whitespace stripped on re-parse.
+    if s.starts_with([' ', '\t']) || s.ends_with([' ', '\t']) {
         return true;
     }
     // Check if it would be parsed as a non-string type.
@@ -1918,6 +1926,17 @@ mod tests {
         assert!(needs_quoting_for_key("..."));
     }
 
+    #[test]
+    fn needs_quoting_whitespace_boundary() {
+        assert!(needs_quoting(" leading"));
+        assert!(needs_quoting("trailing "));
+        assert!(needs_quoting("\t"));
+        assert!(needs_quoting("\tleading-tab"));
+        assert!(needs_quoting("trailing-tab\t"));
+        assert!(!needs_quoting("a b"));
+        assert!(!needs_quoting("a\tb"));
+    }
+
     // ── needs_quoting_for_key ────────────────────────────────────────────────
 
     #[test]
@@ -1963,6 +1982,15 @@ mod tests {
     #[test]
     fn needs_quoting_for_key_newline() {
         assert!(needs_quoting_for_key("a\nb"));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_whitespace_boundary() {
+        assert!(needs_quoting_for_key(" leading"));
+        assert!(needs_quoting_for_key("trailing "));
+        assert!(needs_quoting_for_key("\t"));
+        assert!(!needs_quoting_for_key("a b"));
+        assert!(!needs_quoting_for_key("a\tb"));
     }
 
     #[test]
