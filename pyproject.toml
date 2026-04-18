@@ -68,6 +68,7 @@ indent-style = "space"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.100",
     "maturin>=1.13.1",
     "mypy>=1.19.1",
     "pre-commit>=4.0.0",

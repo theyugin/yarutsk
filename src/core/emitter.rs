@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
 use super::builder::DocMetadata;
+use super::char_traits::is_tag_char;
 use super::types::{
     ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
     YamlSequence,
@@ -45,12 +46,36 @@ impl<W: FmtWrite> FmtWrite for LastCharTracker<W> {
 /// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
 fn format_tag(tag: &str) -> Cow<'_, str> {
     if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
-        Cow::Owned(format!("!!{suffix}"))
-    } else if tag.starts_with('!') {
-        Cow::Borrowed(tag)
+        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+    } else if let Some(suffix) = tag.strip_prefix("!!") {
+        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+    } else if let Some(suffix) = tag.strip_prefix('!') {
+        Cow::Owned(format!("!{}", pct_encode_tag(suffix)))
     } else {
-        Cow::Owned(format!("!<{tag}>"))
+        Cow::Owned(format!("!<{}>", pct_encode_tag(tag)))
     }
+}
+
+/// Percent-encode any character that isn't a valid YAML tag character.
+/// The scanner decodes `%XX` escapes on input, so the in-memory tag may
+/// contain whitespace, control characters, or flow indicators that would
+/// break the shorthand form if emitted verbatim.
+fn pct_encode_tag(s: &str) -> Cow<'_, str> {
+    if s.chars().all(|c| c.is_ascii() && is_tag_char(c)) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii() && is_tag_char(c) {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for &b in c.encode_utf8(&mut buf).as_bytes() {
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Emit the `&anchor TAG ` inline prefix with a trailing space after each component.
