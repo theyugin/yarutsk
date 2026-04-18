@@ -12,7 +12,10 @@ use super::py_scalar::PyYamlScalar;
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{ParseOutput, parse_iter, parse_str};
-use crate::core::types::*;
+use crate::core::types::{
+    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlItem, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
+};
 use crate::{DumperError, LoaderError, ParseError};
 
 // ─── Cycle detection ─────────────────────────────────────────────────────────
@@ -200,16 +203,14 @@ fn check_anchor(ptr: usize) -> (Option<String>, Option<String>) {
         {
             // Clone the current slot value to avoid holding a borrow while
             // we call `next_name` (which mutably borrows `st.counter`).
-            let current = st.anchors.get(&ptr).and_then(|v| v.clone());
-            match current {
-                Some(name) => return (Some(name), None), // emit alias
-                None => {
-                    // First encounter of a multi-ref object — assign anchor.
-                    let name = st.next_name();
-                    st.anchors.insert(ptr, Some(name.clone()));
-                    return (None, Some(name));
-                }
+            let current = st.anchors.get(&ptr).and_then(std::clone::Clone::clone);
+            if let Some(name) = current {
+                return (Some(name), None); // emit alias
             }
+            // First encounter of a multi-ref object — assign anchor.
+            let name = st.next_name();
+            st.anchors.insert(ptr, Some(name.clone()));
+            return (None, Some(name));
         }
         (None, None)
     })
@@ -256,14 +257,16 @@ pub(crate) fn scalar_to_py_with_tag(
             return loader_fn
                 .bind(py)
                 .call1((default_val,))
-                .map(|v| v.unbind())
+                .map(pyo3::Bound::unbind)
                 .map_err(|e| {
                     LoaderError::new_err(format!("Schema loader for tag '{tag_name}' raised: {e}"))
                 });
         }
     }
     match s.tag.as_deref() {
-        Some("!!binary") | Some("tag:yaml.org,2002:binary") => {
+        Some("!!binary" | "tag:yaml.org,2002:binary") => {
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            use pyo3::types::PyBytes;
             let raw = s
                 .original
                 .as_deref()
@@ -274,14 +277,12 @@ pub(crate) fn scalar_to_py_with_tag(
                 })
                 .unwrap_or("");
             let stripped: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-            use base64::{Engine, engine::general_purpose::STANDARD};
             let bytes = STANDARD
                 .decode(stripped.as_bytes())
                 .map_err(|e| PyRuntimeError::new_err(format!("!!binary decode error: {e}")))?;
-            use pyo3::types::PyBytes;
             Ok(PyBytes::new(py, &bytes).into_any().unbind())
         }
-        Some("!!timestamp") | Some("tag:yaml.org,2002:timestamp") => {
+        Some("!!timestamp" | "tag:yaml.org,2002:timestamp") => {
             let raw = s
                 .original
                 .as_deref()
@@ -354,6 +355,7 @@ pub(crate) fn plain_item(value: YamlNode) -> YamlItem {
 
 /// Resolve a Python sequence index (supports negative indices).
 /// Returns an error if the index is out of range.
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // see py_sequence::__setitem__
 pub(crate) fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
     let len_i = len as isize;
     let real = if idx < 0 { len_i + idx } else { idx };
@@ -365,8 +367,8 @@ pub(crate) fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
     Ok(real as usize)
 }
 
-/// Convert a YamlNode to its Python representation.
-/// Mapping → PyYamlMapping (dict subclass), Sequence → PyYamlSequence (list subclass),
+/// Convert a `YamlNode` to its Python representation.
+/// Mapping → `PyYamlMapping` (dict subclass), Sequence → `PyYamlSequence` (list subclass),
 /// scalar/null → Python primitive.
 pub(crate) fn node_to_py(
     py: Python<'_>,
@@ -390,8 +392,8 @@ pub(crate) fn node_to_py(
     }
 }
 
-/// If *schema* has a loader for *tag*, call it with *py_obj* and return the result.
-/// Otherwise return *py_obj* unchanged.
+/// If *schema* has a loader for *tag*, call it with *`py_obj`* and return the result.
+/// Otherwise return *`py_obj`* unchanged.
 pub(crate) fn apply_loader(
     py: Python<'_>,
     schema: Option<&Bound<'_, Schema>>,
@@ -407,7 +409,7 @@ pub(crate) fn apply_loader(
             return loader_fn
                 .bind(py)
                 .call1((py_obj,))
-                .map(|v| v.unbind())
+                .map(pyo3::Bound::unbind)
                 .map_err(|e| {
                     LoaderError::new_err(format!("Schema loader for tag '{t}' raised: {e}"))
                 });
@@ -416,7 +418,7 @@ pub(crate) fn apply_loader(
     Ok(py_obj)
 }
 
-/// Convert a Python primitive (None/bool/int/float/str) to a scalar YamlNode.
+/// Convert a Python primitive (None/bool/int/float/str) to a scalar `YamlNode`.
 /// Returns None if *obj* is not a recognised primitive type.
 pub(crate) fn py_primitive_to_scalar(obj: &Bound<'_, PyAny>) -> Option<YamlNode> {
     if obj.is_none() {
@@ -438,7 +440,8 @@ pub(crate) fn py_primitive_to_scalar(obj: &Bound<'_, PyAny>) -> Option<YamlNode>
     None
 }
 
-/// Convert a Python object to a YamlNode.
+/// Convert a Python object to a `YamlNode`.
+#[allow(clippy::too_many_lines)] // single dispatch over Python types
 pub(crate) fn py_to_node(
     obj: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
@@ -459,8 +462,7 @@ pub(crate) fn py_to_node(
             let type_name = obj
                 .get_type()
                 .qualname()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|_| "?".to_string());
+                .map_or_else(|_| "?".to_string(), |n| n.to_string());
             let call_result = dumper_fn.bind(obj.py()).call1((obj,)).map_err(|e| {
                 DumperError::new_err(format!("Schema dumper for {type_name} raised: {e}"))
             })?;
@@ -658,7 +660,7 @@ impl DocMeta {
     }
 }
 
-/// Convert a top-level YamlNode to PyYamlMapping, PyYamlSequence, or PyYamlScalar.
+/// Convert a top-level `YamlNode` to `PyYamlMapping`, `PyYamlSequence`, or `PyYamlScalar`.
 pub(crate) fn node_to_doc(
     py: Python<'_>,
     node: YamlNode,
@@ -681,11 +683,12 @@ pub(crate) fn node_to_doc(
     }
 }
 
-/// Extract a YamlNode from a PyYamlMapping, PyYamlSequence, or PyYamlScalar for serialisation.
+/// Extract a `YamlNode` from a `PyYamlMapping`, `PyYamlSequence`, or `PyYamlScalar` for serialisation.
 ///
 /// For mappings and sequences, current values come from the parent dict/list (so that
 /// mutations made to nested objects after they were returned from __getitem__ are visible),
 /// while key ordering and comment metadata come from `inner`.
+#[allow(clippy::too_many_lines)] // single dispatch over container/scalar types
 pub(crate) fn extract_yaml_node(
     obj: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
@@ -699,8 +702,8 @@ pub(crate) fn extract_yaml_node(
         let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
         // Preserve container style, tag, anchor, and trailing blank lines from inner.
         mapping.style = borrow.inner.style;
-        mapping.tag = borrow.inner.tag.clone();
-        mapping.anchor = borrow.inner.anchor.clone();
+        mapping.tag.clone_from(&borrow.inner.tag);
+        mapping.anchor.clone_from(&borrow.inner.anchor);
         mapping.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         // Walk inner.entries for key order and comment data.
         // For scalar/null values, inner.entries[k].value is always current and has
@@ -711,9 +714,8 @@ pub(crate) fn extract_yaml_node(
             let node = match &e.value {
                 YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => e.value.clone(),
                 _ => {
-                    let py_val = match dict_part.get_item(k)? {
-                        Some(v) => v,
-                        None => continue, // key was removed; skip
+                    let Some(py_val) = dict_part.get_item(k)? else {
+                        continue; // key was removed; skip
                     };
                     extract_yaml_node(&py_val, schema)?
                 }
@@ -738,8 +740,8 @@ pub(crate) fn extract_yaml_node(
         let mut seq = YamlSequence::with_capacity(inner_len);
         // Preserve container style, tag, anchor, and trailing blank lines from inner.
         seq.style = borrow.inner.style;
-        seq.tag = borrow.inner.tag.clone();
-        seq.anchor = borrow.inner.anchor.clone();
+        seq.tag.clone_from(&borrow.inner.tag);
+        seq.anchor.clone_from(&borrow.inner.anchor);
         seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         for i in 0..inner_len {
             let node = match &borrow.inner.items[i].value {
@@ -834,7 +836,7 @@ pub(crate) fn extract_yaml_node(
 
 // ─── Python object creation helpers ──────────────────────────────────────────
 
-/// Create a PyYamlMapping (dict subclass) from a Rust YamlMapping.
+/// Create a `PyYamlMapping` (dict subclass) from a Rust `YamlMapping`.
 /// The parent dict is populated with the mapping's entries.
 pub(crate) fn mapping_to_py_obj(
     py: Python<'_>,
@@ -875,7 +877,7 @@ pub(crate) fn mapping_to_py_obj(
     Ok(obj.into_any())
 }
 
-/// Create a PyYamlSequence (list subclass) from a Rust YamlSequence.
+/// Create a `PyYamlSequence` (list subclass) from a Rust `YamlSequence`.
 /// The parent list is populated with the sequence's items.
 pub(crate) fn sequence_to_py_obj(
     py: Python<'_>,
@@ -979,7 +981,7 @@ pub(crate) fn sequence_to_python(py: Python<'_>, s: &YamlSequence) -> PyResult<P
 
 pub(crate) fn parse_text(text: &str, schema: Option<&Schema>) -> PyResult<ParseOutput> {
     let policy = schema.and_then(Schema::tag_policy);
-    parse_str(text, policy.as_ref()).map_err(|e| ParseError::new_err(e.to_string()))
+    parse_str(text, policy.as_ref()).map_err(|e| ParseError::new_err(e.clone()))
 }
 
 pub(crate) fn parse_stream(
@@ -1036,7 +1038,7 @@ pub(crate) fn sort_mapping(
     recursive: bool,
 ) -> PyResult<()> {
     if recursive {
-        for (_, entry) in m.entries.iter_mut() {
+        for (_, entry) in &mut m.entries {
             if let YamlNode::Mapping(nested) = &mut entry.value {
                 sort_mapping(py, nested, key, reverse, recursive)?;
             }
@@ -1048,7 +1050,12 @@ pub(crate) fn sort_mapping(
     if let Some(key_fn) = key {
         let computed: Vec<Py<PyAny>> = entries
             .iter()
-            .map(|(k, _)| key_fn.bind(py).call1((k.as_str(),)).map(|r| r.unbind()))
+            .map(|(k, _)| {
+                key_fn
+                    .bind(py)
+                    .call1((k.as_str(),))
+                    .map(pyo3::Bound::unbind)
+            })
             .collect::<PyResult<_>>()?;
 
         let mut zipped: Vec<(Py<PyAny>, (String, YamlEntry))> =

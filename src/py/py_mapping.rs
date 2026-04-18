@@ -11,7 +11,7 @@ use super::convert::{
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
-use crate::core::types::*;
+use crate::core::types::{ContainerStyle, FormatOptions, ScalarStyle, YamlMapping, YamlNode};
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
 
@@ -62,6 +62,7 @@ impl PyYamlMapping {
     // which would otherwise insert them as dict entries. Populate from `mapping`
     // here because the parent dict is accessible via slf.as_super() at this point.
     #[pyo3(signature = (mapping = None, *, style = "block", tag = None, schema = None))]
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     fn __init__(
         slf: &Bound<'_, Self>,
         mapping: Option<&Bound<'_, PyAny>>,
@@ -82,7 +83,7 @@ impl PyYamlMapping {
                     let mut borrow = slf.borrow_mut();
                     // Preserve style/tag from __new__, overlay entries from parsed.
                     let style = borrow.inner.style;
-                    let tag = borrow.inner.tag.clone();
+                    let tag = std::mem::take(&mut borrow.inner.tag);
                     borrow.inner = parsed;
                     borrow.inner.style = style;
                     borrow.inner.tag = tag;
@@ -161,11 +162,10 @@ impl PyYamlMapping {
         }
     }
 
-    fn clear(slf: &Bound<'_, Self>) -> PyResult<()> {
+    fn clear(slf: &Bound<'_, Self>) {
         slf.borrow_mut().inner.entries.clear();
         // PyDict::clear() calls PyDict_Clear at C level — does not re-enter our override.
         slf.as_super().clear();
-        Ok(())
     }
 
     fn popitem(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<(String, Py<PyAny>)> {
@@ -176,7 +176,7 @@ impl PyYamlMapping {
                 let py_val = slf
                     .as_super()
                     .get_item(&k)?
-                    .map_or_else(|| py.None(), |v| v.unbind());
+                    .map_or_else(|| py.None(), pyo3::Bound::unbind);
                 Self::__delitem__(slf, &k)?;
                 Ok((k, py_val))
             }
@@ -222,11 +222,8 @@ impl PyYamlMapping {
                 let (node, py_val) = py_to_node_with_fallback(py, &val, None, || {
                     YamlNode::Mapping(YamlMapping::new())
                 })?;
-                slf.borrow_mut()
-                    .inner
-                    .entries
-                    .insert(k.clone(), plain_entry(node));
                 dict_part.set_item(k.as_str(), py_val.bind(py))?;
+                slf.borrow_mut().inner.entries.insert(k, plain_entry(node));
             }
             return Ok(());
         }
@@ -235,11 +232,8 @@ impl PyYamlMapping {
             let (k, val): (String, Bound<'_, PyAny>) = item.extract()?;
             let (node, py_val) =
                 py_to_node_with_fallback(py, &val, None, || YamlNode::Mapping(YamlMapping::new()))?;
-            slf.borrow_mut()
-                .inner
-                .entries
-                .insert(k.clone(), plain_entry(node));
             dict_part.set_item(k.as_str(), py_val.bind(py))?;
+            slf.borrow_mut().inner.entries.insert(k, plain_entry(node));
         }
         Ok(())
     }
@@ -268,10 +262,11 @@ impl PyYamlMapping {
         slf.as_super()
             .get_item(key)?
             .ok_or_else(|| PyKeyError::new_err(key.to_owned()))
-            .map(|v| v.unbind())
+            .map(pyo3::Bound::unbind)
     }
 
     #[pyo3(signature = (key=None, reverse=false, recursive=false))]
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     pub fn sort_keys(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -294,7 +289,7 @@ impl PyYamlMapping {
             let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
             let py_vals: Vec<Py<PyAny>> = sorted_keys
                 .iter()
-                .filter_map(|k| dict_part.get_item(k).ok()?.map(|v| v.unbind()))
+                .filter_map(|k| dict_part.get_item(k).ok()?.map(pyo3::Bound::unbind))
                 .collect();
             dict_part.clear();
             for (k, v) in sorted_keys.iter().zip(py_vals.iter()) {
@@ -317,7 +312,7 @@ impl PyYamlMapping {
             let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
             let py_vals: Vec<Py<PyAny>> = sorted_keys
                 .iter()
-                .filter_map(|k| dict_part.get_item(k).ok()?.map(|v| v.unbind()))
+                .filter_map(|k| dict_part.get_item(k).ok()?.map(pyo3::Bound::unbind))
                 .collect();
             dict_part.clear();
             for (k, v) in sorted_keys.iter().zip(py_vals.iter()) {
@@ -348,7 +343,7 @@ impl PyYamlMapping {
                 .inner
                 .entries
                 .get(key)
-                .and_then(|e| e.comment_inline.clone())
+                .and_then(|e| e.comment_inline.as_deref())
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
@@ -383,7 +378,7 @@ impl PyYamlMapping {
                 .inner
                 .entries
                 .get(key)
-                .and_then(|e| e.comment_before.clone())
+                .and_then(|e| e.comment_before.as_deref())
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
@@ -536,9 +531,9 @@ impl PyYamlMapping {
         Ok(())
     }
 
-    /// Return the underlying YAML node for a key as a YamlScalar, YamlMapping,
-    /// or YamlSequence object, preserving style/tag metadata.
-    /// Raises KeyError if the key is absent.
+    /// Return the underlying YAML node for a key as a `YamlScalar`, `YamlMapping`,
+    /// or `YamlSequence` object, preserving style/tag metadata.
+    /// Raises `KeyError` if the key is absent.
     fn node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.inner.entries.get(key) {
             Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?),
@@ -629,7 +624,7 @@ impl PyYamlMapping {
     ) -> PyResult<Py<PyAny>> {
         match args.len() {
             0 => match self.inner.entries.get(key) {
-                Some(entry) => Ok((entry.blank_lines_before as u32)
+                Some(entry) => Ok(u32::from(entry.blank_lines_before)
                     .into_pyobject(py)?
                     .into_any()
                     .unbind()),

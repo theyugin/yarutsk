@@ -109,6 +109,7 @@ fn emit_doc_to_stream(
 
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn load(
     py: Python<'_>,
     stream: &Bound<'_, PyAny>,
@@ -126,6 +127,7 @@ fn load(
 
 #[pyfunction]
 #[pyo3(signature = (text, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn loads(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
@@ -139,6 +141,7 @@ fn loads(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<
 
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn load_all(
     py: Python<'_>,
     stream: &Bound<'_, PyAny>,
@@ -157,6 +160,7 @@ fn load_all(
 
 #[pyfunction]
 #[pyo3(signature = (text, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn loads_all(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
@@ -171,6 +175,7 @@ fn loads_all(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult
 
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn iter_load_all(
     py: Python<'_>,
     stream: &Bound<'_, PyAny>,
@@ -227,6 +232,7 @@ fn iter_loads_all(
 
 #[pyfunction]
 #[pyo3(signature = (doc, stream, *, schema=None, indent=2))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dump(
     doc: &Bound<'_, PyAny>,
     stream: &Bound<'_, PyAny>,
@@ -239,6 +245,7 @@ fn dump(
 
 #[pyfunction]
 #[pyo3(signature = (doc, *, schema=None, indent=2))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
     emit_doc_to_string(doc, sb, indent)
@@ -246,6 +253,7 @@ fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> P
 
 #[pyfunction]
 #[pyo3(signature = (docs, stream, *, schema=None, indent=2))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dump_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,
@@ -272,6 +280,7 @@ fn dump_all(
 
 #[pyfunction]
 #[pyo3(signature = (docs, *, schema=None, indent=2))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dumps_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,

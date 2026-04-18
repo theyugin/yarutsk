@@ -167,17 +167,15 @@ impl PyStreamWriter {
         match self.text_mode {
             Some(true) => self.stream.call_method1(py, "write", (s,))?,
             Some(false) => self.stream.call_method1(py, "write", (s.as_bytes(),))?,
-            None => match self.stream.call_method1(py, "write", (s,)) {
-                Ok(_) => {
+            None => {
+                if self.stream.call_method1(py, "write", (s,)).is_ok() {
                     self.text_mode = Some(true);
-                    return Ok(());
-                }
-                Err(_) => {
+                } else {
                     self.stream.call_method1(py, "write", (s.as_bytes(),))?;
                     self.text_mode = Some(false);
-                    return Ok(());
                 }
-            },
+                return Ok(());
+            }
         };
         Ok(())
     }

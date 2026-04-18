@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use super::convert::{
     parse_scalar_style, parse_yaml_version, py_primitive_to_scalar, scalar_to_py,
 };
-use crate::core::types::*;
+use crate::core::types::{FormatOptions, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
 
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 

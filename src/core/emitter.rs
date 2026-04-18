@@ -4,7 +4,10 @@ use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
 use super::builder::DocMetadata;
-use super::types::*;
+use super::types::{
+    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
+    YamlSequence,
+};
 
 // ─── LastCharTracker ─────────────────────────────────────────────────────────
 
@@ -111,7 +114,7 @@ pub fn emit_node<W: FmtWrite>(
         // column `step`, safely inside the block scalar.
         YamlNode::Scalar(s) if is_block_scalar(s) => {
             let effective = if indent == 0 { step } else { indent };
-            emit_block_scalar(s, effective, step, None, out)?
+            emit_block_scalar(s, effective, step, None, out)?;
         }
         YamlNode::Scalar(s) => emit_scalar(s, out)?,
         YamlNode::Null => {
@@ -172,6 +175,7 @@ pub fn emit_docs_to<W: FmtWrite>(
 
 /// Emit a full document list to a `String`.
 /// Convenience wrapper around [`emit_docs_to`] for callers that need a `String`.
+#[must_use]
 pub fn emit_docs(docs: &[YamlNode], meta: &[DocMetadata], indent_step: usize) -> String {
     let mut out = String::with_capacity(256);
     emit_docs_to(docs, meta, indent_step, &mut out).expect("writing to String is infallible");
@@ -759,7 +763,8 @@ fn emit_block_scalar<W: FmtWrite>(
     out.write_char(indicator)?;
     if explicit_indicator > 0 {
         // Digit before chomping (YAML spec allows either order; digit-first is conventional).
-        out.write_char(char::from_digit(explicit_indicator as u32, 10).unwrap_or('1'))?;
+        let digit = u32::try_from(explicit_indicator).unwrap_or(1);
+        out.write_char(char::from_digit(digit, 10).unwrap_or('1'))?;
     }
     out.write_str(chomping)?;
     push_inline_comment(inline_comment, out)?;
@@ -1011,6 +1016,8 @@ fn needs_quoting(s: &str) -> bool {
     }
     // Check if it would be parsed as a non-string type.
     // Mirrors ScalarValue::from_str but avoids allocating a String.
+    // Separate arm for `---`/`...` documents the markers' meaning.
+    #[allow(clippy::match_same_arms)]
     match s {
         "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
         | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
@@ -1024,7 +1031,7 @@ fn needs_quoting(s: &str) -> bool {
     // Numeric: hex/octal prefix → int; decimal int; float with . or e
     // s is non-empty (checked above); safe to index b[0].
     let b = s.as_bytes();
-    let start = if b[0] == b'-' || b[0] == b'+' { 1 } else { 0 };
+    let start = usize::from(b[0] == b'-' || b[0] == b'+');
     let rest = &s[start..];
     if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
         if i64::from_str_radix(hex, 16).is_ok() {
@@ -1077,6 +1084,7 @@ fn needs_quoting(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::YamlItem;
     use super::*;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1123,9 +1131,9 @@ mod tests {
         YamlScalar {
             value,
             style,
-            tag: tag.map(|s| s.to_owned()),
-            original: original.map(|s| s.to_owned()),
-            anchor: anchor.map(|s| s.to_owned()),
+            tag: tag.map(std::borrow::ToOwned::to_owned),
+            original: original.map(std::borrow::ToOwned::to_owned),
+            anchor: anchor.map(std::borrow::ToOwned::to_owned),
         }
     }
 

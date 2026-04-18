@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-18
+
+### Changed
+- Reduce `.clone()` calls across builder, mapping, and sequence hot paths.
+- Enable `clippy::pedantic` (warn) and fix its diagnostics.
+
 ## [0.5.1] - 2026-04-18
 
 ### Fixed

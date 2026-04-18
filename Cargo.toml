@@ -1,6 +1,6 @@
 [package]
 name = "yarutsk"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A YAML round-trip library that preserves comments and insertion order"
@@ -24,3 +24,4 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
