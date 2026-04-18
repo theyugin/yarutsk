@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-18
+
 ### Added
 - `idempotent_emit` fuzz target and `hypothesis` property tests for `Schema`.
 
@@ -100,7 +102,8 @@ All notable changes to this project are documented here. The format is based on 
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/theyugin/yarutsk/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/theyugin/yarutsk/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/theyugin/yarutsk/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/theyugin/yarutsk/compare/v0.4.2...v0.5.0
