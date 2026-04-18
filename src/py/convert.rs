@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyDict, PyList, PyTuple, PyType};
 
 use super::py_mapping::PyYamlMapping;
 use super::py_scalar::PyYamlScalar;
@@ -17,6 +18,19 @@ use crate::core::types::{
     YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
+
+// ─── Cached Python type handles ──────────────────────────────────────────────
+
+static DATETIME_TYPE: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static DATE_TYPE: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+pub(crate) fn datetime_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    DATETIME_TYPE.import(py, "datetime", "datetime")
+}
+
+pub(crate) fn date_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    DATE_TYPE.import(py, "datetime", "date")
+}
 
 // ─── Cycle detection ─────────────────────────────────────────────────────────
 
@@ -294,17 +308,12 @@ pub(crate) fn scalar_to_py_with_tag(
                 .unwrap_or("");
             // YAML allows a space in place of 'T' between date and time.
             let normalized = raw.replacen(' ', "T", 1);
-            let datetime_mod = py.import("datetime")?;
             // Date-only values contain no 'T' and no time ':' after the date portion.
             if !normalized.contains('T') && normalized.len() > 5 && !normalized[5..].contains(':') {
-                let date = datetime_mod
-                    .getattr("date")?
-                    .call_method1("fromisoformat", (&*normalized,))?;
+                let date = date_type(py)?.call_method1("fromisoformat", (&*normalized,))?;
                 Ok(date.into_any().unbind())
             } else {
-                let dt = datetime_mod
-                    .getattr("datetime")?
-                    .call_method1("fromisoformat", (&*normalized,))?;
+                let dt = datetime_type(py)?.call_method1("fromisoformat", (&*normalized,))?;
                 Ok(dt.into_any().unbind())
             }
         }
@@ -543,10 +552,8 @@ pub(crate) fn py_to_node(
     }
     // datetime.datetime / datetime.date → !!timestamp scalar
     {
-        let datetime_mod = obj.py().import("datetime")?;
-        let datetime_type = datetime_mod.getattr("datetime")?;
-        let date_type = datetime_mod.getattr("date")?;
-        if obj.is_instance(&datetime_type)? || obj.is_instance(&date_type)? {
+        let py = obj.py();
+        if obj.is_instance(datetime_type(py)?)? || obj.is_instance(date_type(py)?)? {
             let iso: String = obj.call_method0("isoformat")?.extract()?;
             return Ok(YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str(iso),
@@ -711,7 +718,7 @@ pub(crate) fn extract_yaml_node(
         // For container values, read from the parent dict so that any mutations to
         // returned child objects (which don't propagate back to inner) are visible.
         for (k, e) in &borrow.inner.entries {
-            let node = match &e.value {
+            let value = match &e.value {
                 YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => e.value.clone(),
                 _ => {
                     let Some(py_val) = dict_part.get_item(k)? else {
@@ -720,11 +727,20 @@ pub(crate) fn extract_yaml_node(
                     extract_yaml_node(&py_val, schema)?
                 }
             };
+            // Construct field-by-field instead of `..e.clone()` so the original
+            // `e.value` subtree is not cloned (and then immediately dropped).
             mapping.entries.insert(
                 k.clone(),
                 YamlEntry {
-                    value: node,
-                    ..e.clone()
+                    value,
+                    comment_before: e.comment_before.clone(),
+                    comment_inline: e.comment_inline.clone(),
+                    blank_lines_before: e.blank_lines_before,
+                    key_style: e.key_style,
+                    key_anchor: e.key_anchor.clone(),
+                    key_alias: e.key_alias.clone(),
+                    key_tag: e.key_tag.clone(),
+                    key_node: e.key_node.clone(),
                 },
             );
         }
@@ -744,18 +760,19 @@ pub(crate) fn extract_yaml_node(
         seq.anchor.clone_from(&borrow.inner.anchor);
         seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         for i in 0..inner_len {
-            let node = match &borrow.inner.items[i].value {
-                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => {
-                    borrow.inner.items[i].value.clone()
-                }
+            let item = &borrow.inner.items[i];
+            let value = match &item.value {
+                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => item.value.clone(),
                 _ => {
                     let py_val = list_part.get_item(i)?;
                     extract_yaml_node(&py_val, schema)?
                 }
             };
             seq.items.push(YamlItem {
-                value: node,
-                ..borrow.inner.items[i].clone()
+                value,
+                comment_before: item.comment_before.clone(),
+                comment_inline: item.comment_inline.clone(),
+                blank_lines_before: item.blank_lines_before,
             });
         }
         return Ok(YamlNode::Sequence(seq));
@@ -1008,25 +1025,24 @@ pub(crate) fn parse_stream(
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
 
+/// Compare two Python values using `a < b`.
+///
+/// Only the `Lt` rich-compare is dispatched; `!Less` is treated as `Greater` rather than
+/// disambiguating Equal vs Greater with a second call. This is safe for stable-sort
+/// call sites (Rust's `sort_by` only branches on `Less` vs `!Less`), and halves the
+/// Python dispatch cost on the non-Less branch.
 pub(crate) fn py_compare<'py>(
     a: &Bound<'py, PyAny>,
     b: &Bound<'py, PyAny>,
     err: &mut Option<PyErr>,
 ) -> std::cmp::Ordering {
     match a.lt(b) {
+        Ok(true) => std::cmp::Ordering::Less,
+        Ok(false) => std::cmp::Ordering::Greater,
         Err(e) => {
             *err = Some(e);
             std::cmp::Ordering::Equal
         }
-        Ok(true) => std::cmp::Ordering::Less,
-        Ok(false) => match a.gt(b) {
-            Err(e) => {
-                *err = Some(e);
-                std::cmp::Ordering::Equal
-            }
-            Ok(true) => std::cmp::Ordering::Greater,
-            Ok(false) => std::cmp::Ordering::Equal,
-        },
     }
 }
 
@@ -1083,6 +1099,31 @@ pub(crate) fn sort_mapping(
         m.entries.insert(k, v);
     }
     Ok(())
+}
+
+// ─── Overloaded-method dispatch ───────────────────────────────────────────────
+
+/// Result of inspecting `*args` for a `PyO3` method that acts as both getter and setter.
+pub(crate) enum OverloadArg<'py> {
+    /// No extra args — caller should perform the getter.
+    Get,
+    /// One extra arg — caller should extract the value and perform the setter.
+    Set(Bound<'py, PyAny>),
+}
+
+/// Classify `*args` for a 1-or-2 positional-argument overload (get/set).
+/// *method* is used only in the error message when too many args are passed.
+pub(crate) fn overload_arg<'py>(
+    args: &Bound<'py, PyTuple>,
+    method: &str,
+) -> PyResult<OverloadArg<'py>> {
+    match args.len() {
+        0 => Ok(OverloadArg::Get),
+        1 => Ok(OverloadArg::Set(args.get_item(0)?)),
+        _ => Err(PyRuntimeError::new_err(format!(
+            "{method} takes 1 or 2 positional arguments"
+        ))),
+    }
 }
 
 // ─── Style-parsing helpers ────────────────────────────────────────────────────

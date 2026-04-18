@@ -253,13 +253,21 @@ fn emit_node_inline<W: FmtWrite>(
     step: usize,
     out: &mut W,
 ) -> fmt::Result {
-    // Emit to a temp buffer so we can strip any trailing newline before forwarding.
+    // Fast path: scalars (non-block), null, aliases, and flow-style containers never
+    // emit trailing newlines, so we can forward directly without a temp allocation.
+    let needs_strip = match node {
+        YamlNode::Scalar(s) if is_block_scalar(s) => true,
+        YamlNode::Mapping(m) if m.style == ContainerStyle::Block => true,
+        YamlNode::Sequence(s) if s.style == ContainerStyle::Block => true,
+        _ => false,
+    };
+    if !needs_strip {
+        return emit_node(node, indent, step, out);
+    }
+    // Slow path: emit to a temp buffer so trailing newline(s) can be stripped.
     let mut tmp = String::new();
     emit_node(node, indent, step, &mut tmp)?;
-    while tmp.ends_with('\n') {
-        tmp.pop();
-    }
-    out.write_str(&tmp)
+    out.write_str(tmp.trim_end_matches('\n'))
 }
 
 /// Emit a mapping key (alias / complex / block-scalar / plain scalar).

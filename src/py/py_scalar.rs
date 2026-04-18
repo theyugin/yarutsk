@@ -3,7 +3,8 @@
 use pyo3::prelude::*;
 
 use super::convert::{
-    parse_scalar_style, parse_yaml_version, py_primitive_to_scalar, scalar_to_py,
+    date_type, datetime_type, parse_scalar_style, parse_yaml_version, py_primitive_to_scalar,
+    scalar_to_py,
 };
 use crate::core::types::{FormatOptions, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
 
@@ -65,10 +66,7 @@ impl PyYamlScalar {
         } else {
             // datetime.datetime / datetime.date
             let py = value.py();
-            let datetime_mod = py.import("datetime")?;
-            let datetime_type = datetime_mod.getattr("datetime")?;
-            let date_type = datetime_mod.getattr("date")?;
-            if value.is_instance(&datetime_type)? || value.is_instance(&date_type)? {
+            if value.is_instance(datetime_type(py)?)? || value.is_instance(date_type(py)?)? {
                 let iso: String = value.call_method0("isoformat")?.extract()?;
                 YamlNode::Scalar(YamlScalar {
                     value: ScalarValue::Str(iso),
