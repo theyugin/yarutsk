@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Cache `datetime.datetime` / `datetime.date` imports for faster `!!timestamp` round-trip.
+- Streaming parser buffer switched to `String` + byte cursor (less memory for ASCII).
+- Inline scalar emit skips the per-call `String` allocation.
+- Sort comparators (`sort_keys`, `sort`) issue one Python rich-compare per step instead of two.
+
+### Fixed
+- UTF-8 codepoints straddling an 8 KB stream-chunk boundary no longer raise a decode error.
+
 ## [0.5.3] - 2026-04-18
 
 ### Added

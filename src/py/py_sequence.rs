@@ -1,18 +1,18 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice, PyTuple};
 
 use super::convert::{
-    DocMeta, node_to_doc, node_to_py, parse_container_style, parse_yaml_version, plain_item,
-    py_compare, py_to_node, py_to_node_with_fallback, resolve_seq_idx, sequence_repr,
-    sequence_to_py_obj, sequence_to_python,
+    DocMeta, OverloadArg, node_to_doc, node_to_py, overload_arg, parse_container_style,
+    parse_scalar_style, parse_yaml_version, plain_item, py_compare, py_to_node,
+    py_to_node_with_fallback, resolve_seq_idx, sequence_repr, sequence_to_py_obj,
+    sequence_to_python,
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
 use crate::core::types::{
-    ContainerStyle, FormatOptions, ScalarStyle, YamlItem, YamlMapping, YamlNode, YamlSequence,
+    ContainerStyle, FormatOptions, YamlItem, YamlMapping, YamlNode, YamlSequence,
 };
 
 // ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
@@ -462,25 +462,18 @@ impl PyYamlSequence {
         idx: isize,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                Ok(self.inner.items[i]
-                    .comment_inline
-                    .as_deref()
-                    .into_pyobject(py)?
-                    .into_any()
-                    .unbind())
-            }
-            1 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                let comment: Option<String> = args.get_item(0)?.extract()?;
-                self.inner.items[i].comment_inline = comment;
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match overload_arg(args, "comment_inline")? {
+            OverloadArg::Get => Ok(self.inner.items[i]
+                .comment_inline
+                .as_deref()
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            OverloadArg::Set(v) => {
+                self.inner.items[i].comment_inline = v.extract()?;
                 Ok(py.None())
             }
-            _ => Err(PyRuntimeError::new_err(
-                "comment_inline takes 1 or 2 positional arguments",
-            )),
         }
     }
 
@@ -494,25 +487,18 @@ impl PyYamlSequence {
         idx: isize,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                Ok(self.inner.items[i]
-                    .comment_before
-                    .as_deref()
-                    .into_pyobject(py)?
-                    .into_any()
-                    .unbind())
-            }
-            1 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                let comment: Option<String> = args.get_item(0)?.extract()?;
-                self.inner.items[i].comment_before = comment;
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match overload_arg(args, "comment_before")? {
+            OverloadArg::Get => Ok(self.inner.items[i]
+                .comment_before
+                .as_deref()
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            OverloadArg::Set(v) => {
+                self.inner.items[i].comment_before = v.extract()?;
                 Ok(py.None())
             }
-            _ => Err(PyRuntimeError::new_err(
-                "comment_before takes 1 or 2 positional arguments",
-            )),
         }
     }
 
@@ -642,15 +628,7 @@ impl PyYamlSequence {
     /// No-op when the item is a scalar or null.
     /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles.
     fn container_style(slf: &Bound<'_, Self>, idx: isize, style: &str) -> PyResult<()> {
-        let new_style = match style {
-            "block" => ContainerStyle::Block,
-            "flow" => ContainerStyle::Flow,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected \"block\" or \"flow\""
-                )));
-            }
-        };
+        let new_style = parse_container_style(style)?;
         let i = {
             let borrow = slf.borrow();
             resolve_seq_idx(idx, borrow.inner.items.len())?
@@ -679,18 +657,7 @@ impl PyYamlSequence {
     /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
     /// ``TypeError`` if the item is not a scalar (use ``container_style()`` instead).
     fn scalar_style(&mut self, idx: isize, style: &str) -> PyResult<()> {
-        let new_style = match style {
-            "plain" => ScalarStyle::Plain,
-            "single" => ScalarStyle::SingleQuoted,
-            "double" => ScalarStyle::DoubleQuoted,
-            "literal" => ScalarStyle::Literal,
-            "folded" => ScalarStyle::Folded,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected plain/single/double/literal/folded"
-                )));
-            }
-        };
+        let new_style = parse_scalar_style(style)?;
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
         match &mut self.inner.items[i].value {
             YamlNode::Scalar(s) => {
@@ -713,23 +680,17 @@ impl PyYamlSequence {
         idx: isize,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                Ok(u32::from(self.inner.items[i].blank_lines_before)
-                    .into_pyobject(py)?
-                    .into_any()
-                    .unbind())
-            }
-            1 => {
-                let i = resolve_seq_idx(idx, self.inner.items.len())?;
-                let n: u32 = args.get_item(0)?.extract()?;
+        let i = resolve_seq_idx(idx, self.inner.items.len())?;
+        match overload_arg(args, "blank_lines_before")? {
+            OverloadArg::Get => Ok(u32::from(self.inner.items[i].blank_lines_before)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            OverloadArg::Set(v) => {
+                let n: u32 = v.extract()?;
                 self.inner.items[i].blank_lines_before = n.min(255) as u8;
                 Ok(py.None())
             }
-            _ => Err(PyRuntimeError::new_err(
-                "blank_lines_before takes 1 or 2 positional arguments",
-            )),
         }
     }
 

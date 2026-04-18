@@ -1,17 +1,17 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
-use pyo3::exceptions::{PyKeyError, PyRuntimeError};
+use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use super::convert::{
-    DocMeta, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc, node_to_py,
-    parse_container_style, parse_yaml_version, plain_entry, py_to_node, py_to_node_with_fallback,
-    sort_mapping,
+    DocMeta, OverloadArg, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc,
+    node_to_py, overload_arg, parse_container_style, parse_scalar_style, parse_yaml_version,
+    plain_entry, py_to_node, py_to_node_with_fallback, sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
-use crate::core::types::{ContainerStyle, FormatOptions, ScalarStyle, YamlMapping, YamlNode};
+use crate::core::types::{ContainerStyle, FormatOptions, YamlMapping, YamlNode};
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
 
@@ -338,8 +338,8 @@ impl PyYamlMapping {
         key: &str,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => Ok(self
+        match overload_arg(args, "comment_inline")? {
+            OverloadArg::Get => Ok(self
                 .inner
                 .entries
                 .get(key)
@@ -347,8 +347,8 @@ impl PyYamlMapping {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
-            1 => {
-                let comment: Option<String> = args.get_item(0)?.extract()?;
+            OverloadArg::Set(v) => {
+                let comment: Option<String> = v.extract()?;
                 match self.inner.entries.get_mut(key) {
                     Some(entry) => {
                         entry.comment_inline = comment;
@@ -357,9 +357,6 @@ impl PyYamlMapping {
                     None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
                 }
             }
-            _ => Err(PyRuntimeError::new_err(
-                "comment_inline takes 1 or 2 positional arguments",
-            )),
         }
     }
 
@@ -373,8 +370,8 @@ impl PyYamlMapping {
         key: &str,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => Ok(self
+        match overload_arg(args, "comment_before")? {
+            OverloadArg::Get => Ok(self
                 .inner
                 .entries
                 .get(key)
@@ -382,8 +379,8 @@ impl PyYamlMapping {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
-            1 => {
-                let comment: Option<String> = args.get_item(0)?.extract()?;
+            OverloadArg::Set(v) => {
+                let comment: Option<String> = v.extract()?;
                 match self.inner.entries.get_mut(key) {
                     Some(entry) => {
                         entry.comment_before = comment;
@@ -392,9 +389,6 @@ impl PyYamlMapping {
                     None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
                 }
             }
-            _ => Err(PyRuntimeError::new_err(
-                "comment_before takes 1 or 2 positional arguments",
-            )),
         }
     }
 
@@ -546,18 +540,7 @@ impl PyYamlMapping {
     /// Raises ``KeyError`` if the key is absent; ``ValueError`` for unknown styles;
     /// ``TypeError`` if the value is not a scalar (use ``container_style()`` instead).
     fn scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
-        let new_style = match style {
-            "plain" => ScalarStyle::Plain,
-            "single" => ScalarStyle::SingleQuoted,
-            "double" => ScalarStyle::DoubleQuoted,
-            "literal" => ScalarStyle::Literal,
-            "folded" => ScalarStyle::Folded,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected plain/single/double/literal/folded"
-                )));
-            }
-        };
+        let new_style = parse_scalar_style(style)?;
         match self.inner.entries.get_mut(key) {
             Some(entry) => match &mut entry.value {
                 YamlNode::Scalar(s) => {
@@ -577,15 +560,7 @@ impl PyYamlMapping {
     /// No-op when the value is a scalar or null.
     /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles.
     fn container_style(slf: &Bound<'_, Self>, key: &str, style: &str) -> PyResult<()> {
-        let new_style = match style {
-            "block" => ContainerStyle::Block,
-            "flow" => ContainerStyle::Flow,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown style {other:?}; expected \"block\" or \"flow\""
-                )));
-            }
-        };
+        let new_style = parse_container_style(style)?;
         {
             let mut borrow = slf.borrow_mut();
             match borrow.inner.entries.get_mut(key) {
@@ -622,16 +597,16 @@ impl PyYamlMapping {
         key: &str,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<Py<PyAny>> {
-        match args.len() {
-            0 => match self.inner.entries.get(key) {
+        match overload_arg(args, "blank_lines_before")? {
+            OverloadArg::Get => match self.inner.entries.get(key) {
                 Some(entry) => Ok(u32::from(entry.blank_lines_before)
                     .into_pyobject(py)?
                     .into_any()
                     .unbind()),
                 None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
             },
-            1 => {
-                let n: u32 = args.get_item(0)?.extract()?;
+            OverloadArg::Set(v) => {
+                let n: u32 = v.extract()?;
                 let n = n.min(255) as u8;
                 match self.inner.entries.get_mut(key) {
                     Some(entry) => {
@@ -641,9 +616,6 @@ impl PyYamlMapping {
                     None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
                 }
             }
-            _ => Err(PyRuntimeError::new_err(
-                "blank_lines_before takes 1 or 2 positional arguments",
-            )),
         }
     }
 
