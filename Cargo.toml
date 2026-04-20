@@ -1,6 +1,6 @@
 [package]
 name = "yarutsk"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 rust-version = "1.85"
 description = "A YAML round-trip library that preserves comments and insertion order"
@@ -12,9 +12,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 indexmap = "2"
-pyo3 = { version = "0.28", features = ["extension-module", "indexmap"] }
+pyo3 = { version = "0.28", features = ["indexmap"] }
 arraydeque = "0.5"
 base64 = "0.22"
+
+[features]
+extension-module = ["pyo3/extension-module"]
 
 [profile.release]
 lto = true

@@ -27,12 +27,13 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/theyugin/yarutsk"
 Repository = "https://github.com/theyugin/yarutsk"
-Documentation = "https://github.com/theyugin/yarutsk/blob/main/README.md"
+Documentation = "https://theyugin.github.io/yarutsk/"
 Changelog = "https://github.com/theyugin/yarutsk/blob/main/CHANGELOG.md"
 Issues = "https://github.com/theyugin/yarutsk/issues"
 
 [tool.maturin]
 include = ["yarutsk.pyi"]
+features = ["extension-module"]
 
 [tool.mypy]
 files = ["tests/typing_check.py"]
