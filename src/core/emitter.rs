@@ -59,49 +59,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     fn new(out: &'w mut W, step: usize) -> Self {
         Self { out, step }
     }
-}
 
-/// Format a stored tag for emission.
-///
-/// Three cases:
-/// - `tag:yaml.org,2002:T` → `!!T`  (built-in YAML secondary handle)
-/// - `!…` (already starts with `!`) → returned unchanged  (`!custom`, `!local`, …)
-/// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
-fn format_tag(tag: &str) -> Cow<'_, str> {
-    if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
-        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
-    } else if let Some(suffix) = tag.strip_prefix("!!") {
-        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
-    } else if let Some(suffix) = tag.strip_prefix('!') {
-        Cow::Owned(format!("!{}", pct_encode_tag(suffix)))
-    } else {
-        Cow::Owned(format!("!<{}>", pct_encode_tag(tag)))
-    }
-}
-
-/// Percent-encode any character that isn't a valid YAML tag character.
-/// The scanner decodes `%XX` escapes on input, so the in-memory tag may
-/// contain whitespace, control characters, or flow indicators that would
-/// break the shorthand form if emitted verbatim.
-fn pct_encode_tag(s: &str) -> Cow<'_, str> {
-    if s.chars().all(|c| c.is_ascii() && is_tag_char(c)) {
-        return Cow::Borrowed(s);
-    }
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if c.is_ascii() && is_tag_char(c) {
-            out.push(c);
-        } else {
-            let mut buf = [0u8; 4];
-            for &b in c.encode_utf8(&mut buf).as_bytes() {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    Cow::Owned(out)
-}
-
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Emit the `&anchor TAG ` inline prefix with a trailing space after each component.
     /// Used when a prefix precedes other content on the same line (flow containers,
     /// key prefixes, `emit_scalar`).
@@ -136,9 +94,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         Ok(())
     }
-}
 
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Emit a YAML node with the given indentation level.
     ///
     /// `flow_context` is true once we are inside a `[ … ]` / `{ … }` collection;
@@ -172,66 +128,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         Ok(())
     }
-}
 
-/// Emit a full document list to any `fmt::Write` sink.
-/// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
-/// `yaml_versions[i]` emits a `%YAML` directive before `---` when `Some`.
-/// `tag_directives[i]` emits `%TAG` directives before `---` when non-empty.
-/// `indent_step` is the per-level indentation increment (default: 2).
-/// Any slice may be shorter than `docs`; missing entries default to `false` / `None` / empty.
-pub fn emit_docs_to<W: FmtWrite>(
-    docs: &[YamlNode],
-    meta: &[DocMetadata],
-    indent_step: usize,
-    out: &mut W,
-) -> fmt::Result {
-    let step = if indent_step == 0 { 2 } else { indent_step };
-    let empty_meta = DocMetadata::default();
-    for (i, doc) in docs.iter().enumerate() {
-        let m = meta.get(i).unwrap_or(&empty_meta);
-        let want_start = m.explicit_start;
-        let want_end = m.explicit_end;
-        let version = m.yaml_version;
-        let tags = m.tag_directives.as_slice();
-        let has_directives = version.is_some() || !tags.is_empty();
-        if has_directives || docs.len() > 1 || want_start {
-            if let Some((major, minor)) = version {
-                writeln!(out, "%YAML {major}.{minor}")?;
-            }
-            for (handle, prefix) in tags {
-                writeln!(out, "%TAG {handle} {prefix}")?;
-            }
-            out.write_str("---\n")?;
-        }
-        // Use LastCharTracker to detect whether the node ended with a newline.
-        {
-            let mut tracker = LastCharTracker::new(&mut *out);
-            {
-                let mut emitter = Emitter::new(&mut tracker, step);
-                emitter.emit_node(doc, 0, false)?;
-            }
-            if !tracker.ends_with_newline() {
-                tracker.write_char('\n')?;
-            }
-        }
-        if want_end {
-            out.write_str("...\n")?;
-        }
-    }
-    Ok(())
-}
-
-/// Emit a full document list to a `String`.
-/// Convenience wrapper around [`emit_docs_to`] for callers that need a `String`.
-#[must_use]
-pub fn emit_docs(docs: &[YamlNode], meta: &[DocMetadata], indent_step: usize) -> String {
-    let mut out = String::with_capacity(256);
-    emit_docs_to(docs, meta, indent_step, &mut out).expect("writing to String is infallible");
-    out
-}
-
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Append `"  # "` and the comment text, if the comment is present.
     fn push_inline_comment(&mut self, comment: Option<&str>) -> fmt::Result {
         if let Some(ci) = comment {
@@ -253,21 +150,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         Ok(())
     }
-}
 
-// 128 spaces covers any realistic YAML indentation depth.
-// For pathological depths beyond 128, we fall back to an owned allocation.
-const SPACES: &str = "                                                                                                                                ";
-
-fn indent_str(indent: usize) -> Cow<'static, str> {
-    if indent <= SPACES.len() {
-        Cow::Borrowed(&SPACES[..indent])
-    } else {
-        Cow::Owned(" ".repeat(indent))
-    }
-}
-
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Emit `node` without a trailing newline.
     /// Used for scalar values that appear inline after `: ` or `- `.
     ///
@@ -298,9 +181,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         self.out.write_str(tmp.trim_end_matches('\n'))
     }
-}
 
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Emit a mapping key (alias / complex / block-scalar / plain scalar).
     /// The caller is responsible for pushing any leading indentation before this call.
     fn emit_mapping_key(&mut self, key: &str, entry: &YamlEntry, indent: usize) -> fmt::Result {
@@ -420,9 +301,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         Ok(())
     }
-}
 
-impl<W: FmtWrite> Emitter<'_, W> {
     fn emit_mapping(&mut self, m: &YamlMapping, indent: usize) -> fmt::Result {
         if m.style == ContainerStyle::Flow {
             return self.emit_mapping_flow(m);
@@ -486,9 +365,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         self.out.write_char('}')
     }
-}
 
-impl<W: FmtWrite> Emitter<'_, W> {
     /// Emit a tagged/commented container nested in a sequence on a separate
     /// line, or use the inline-first variant when neither a tag, anchor, nor
     /// inline comment is present.
@@ -533,9 +410,7 @@ impl<W: FmtWrite> Emitter<'_, W> {
             }
         }
     }
-}
 
-impl<W: FmtWrite> Emitter<'_, W> {
     fn emit_sequence(&mut self, s: &YamlSequence, indent: usize) -> fmt::Result {
         if s.style == ContainerStyle::Flow {
             return self.emit_sequence_flow(s);
@@ -725,25 +600,18 @@ impl<W: FmtWrite> Emitter<'_, W> {
         }
         Ok(())
     }
-}
 
-/// Returns true if this scalar should be emitted as a block scalar (`|` or `>`).
-fn is_block_scalar(s: &YamlScalar) -> bool {
-    matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded)
-}
-
-/// Emit a block scalar (`|` or `>`), writing the indicator on the current line
-/// and the content on subsequent indented lines.
-///
-/// `inline_comment` is appended after the indicator on the header line (before
-/// the trailing newline), matching the YAML syntax `key: |  # comment\n  content`.
-///
-/// For folded (`>`) scalars the scanner has already joined consecutive source lines
-/// with spaces and turned blank-line separators into `\n` characters in the stored
-/// value.  To prevent the YAML parser from re-folding those `\n` separators into
-/// spaces again on re-parse, this function emits a blank "paragraph separator" line
-/// after every non-empty content line that has more content following it.
-impl<W: FmtWrite> Emitter<'_, W> {
+    /// Emit a block scalar (`|` or `>`), writing the indicator on the current line
+    /// and the content on subsequent indented lines.
+    ///
+    /// `inline_comment` is appended after the indicator on the header line (before
+    /// the trailing newline), matching the YAML syntax `key: |  # comment\n  content`.
+    ///
+    /// For folded (`>`) scalars the scanner has already joined consecutive source lines
+    /// with spaces and turned blank-line separators into `\n` characters in the stored
+    /// value.  To prevent the YAML parser from re-folding those `\n` separators into
+    /// spaces again on re-parse, this function emits a blank "paragraph separator" line
+    /// after every non-empty content line that has more content following it.
     fn emit_block_scalar(
         &mut self,
         s: &YamlScalar,
@@ -1173,6 +1041,124 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
         return true;
     }
     false
+}
+
+// ─── Indentation / tag / scalar-style helpers ────────────────────────────────
+
+// 128 spaces covers any realistic YAML indentation depth.
+// For pathological depths beyond 128, we fall back to an owned allocation.
+const SPACES: &str = "                                                                                                                                ";
+
+fn indent_str(indent: usize) -> Cow<'static, str> {
+    if indent <= SPACES.len() {
+        Cow::Borrowed(&SPACES[..indent])
+    } else {
+        Cow::Owned(" ".repeat(indent))
+    }
+}
+
+/// Format a stored tag for emission.
+///
+/// Three cases:
+/// - `tag:yaml.org,2002:T` → `!!T`  (built-in YAML secondary handle)
+/// - `!…` (already starts with `!`) → returned unchanged  (`!custom`, `!local`, …)
+/// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
+fn format_tag(tag: &str) -> Cow<'_, str> {
+    if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
+        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+    } else if let Some(suffix) = tag.strip_prefix("!!") {
+        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+    } else if let Some(suffix) = tag.strip_prefix('!') {
+        Cow::Owned(format!("!{}", pct_encode_tag(suffix)))
+    } else {
+        Cow::Owned(format!("!<{}>", pct_encode_tag(tag)))
+    }
+}
+
+/// Percent-encode any character that isn't a valid YAML tag character.
+/// The scanner decodes `%XX` escapes on input, so the in-memory tag may
+/// contain whitespace, control characters, or flow indicators that would
+/// break the shorthand form if emitted verbatim.
+fn pct_encode_tag(s: &str) -> Cow<'_, str> {
+    if s.chars().all(|c| c.is_ascii() && is_tag_char(c)) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii() && is_tag_char(c) {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for &b in c.encode_utf8(&mut buf).as_bytes() {
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// Returns true if this scalar should be emitted as a block scalar (`|` or `>`).
+fn is_block_scalar(s: &YamlScalar) -> bool {
+    matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded)
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+/// Emit a full document list to any `fmt::Write` sink.
+/// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
+/// `yaml_versions[i]` emits a `%YAML` directive before `---` when `Some`.
+/// `tag_directives[i]` emits `%TAG` directives before `---` when non-empty.
+/// `indent_step` is the per-level indentation increment (default: 2).
+/// Any slice may be shorter than `docs`; missing entries default to `false` / `None` / empty.
+pub fn emit_docs_to<W: FmtWrite>(
+    docs: &[YamlNode],
+    meta: &[DocMetadata],
+    indent_step: usize,
+    out: &mut W,
+) -> fmt::Result {
+    let step = if indent_step == 0 { 2 } else { indent_step };
+    let empty_meta = DocMetadata::default();
+    for (i, doc) in docs.iter().enumerate() {
+        let m = meta.get(i).unwrap_or(&empty_meta);
+        let want_start = m.explicit_start;
+        let want_end = m.explicit_end;
+        let version = m.yaml_version;
+        let tags = m.tag_directives.as_slice();
+        let has_directives = version.is_some() || !tags.is_empty();
+        if has_directives || docs.len() > 1 || want_start {
+            if let Some((major, minor)) = version {
+                writeln!(out, "%YAML {major}.{minor}")?;
+            }
+            for (handle, prefix) in tags {
+                writeln!(out, "%TAG {handle} {prefix}")?;
+            }
+            out.write_str("---\n")?;
+        }
+        // Use LastCharTracker to detect whether the node ended with a newline.
+        {
+            let mut tracker = LastCharTracker::new(&mut *out);
+            {
+                let mut emitter = Emitter::new(&mut tracker, step);
+                emitter.emit_node(doc, 0, false)?;
+            }
+            if !tracker.ends_with_newline() {
+                tracker.write_char('\n')?;
+            }
+        }
+        if want_end {
+            out.write_str("...\n")?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit a full document list to a `String`.
+/// Convenience wrapper around [`emit_docs_to`] for callers that need a `String`.
+#[must_use]
+pub fn emit_docs(docs: &[YamlNode], meta: &[DocMetadata], indent_step: usize) -> String {
+    let mut out = String::with_capacity(256);
+    emit_docs_to(docs, meta, indent_step, &mut out).expect("writing to String is infallible");
+    out
 }
 
 #[cfg(test)]

@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-04-20
+
+### Changed
+- `pyo3/extension-module` is now gated behind a cargo feature for `cargo check` / IDE ergonomics.
+- Consolidated the scattered `Emitter` impl blocks in `src/core/emitter.rs` into a single block.
+
+### Fixed
+- `Documentation` URL in `pyproject.toml` now points to the mkdocs site.
+
 ## [0.6.2] - 2026-04-19
 
 ### Fixed
@@ -142,7 +151,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/theyugin/yarutsk/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/theyugin/yarutsk/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/theyugin/yarutsk/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/theyugin/yarutsk/compare/v0.5.4...v0.6.0
