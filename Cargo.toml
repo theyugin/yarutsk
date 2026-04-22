@@ -1,6 +1,6 @@
 [package]
 name = "yarutsk"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.85"
 description = "A YAML round-trip library that preserves comments and insertion order"

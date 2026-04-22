@@ -1,11 +1,4 @@
-"""
-Type stubs for yarutsk — a YAML round-trip library that preserves comments
-and insertion order.
-
-load / loads return YamlMapping (a dict subclass) or YamlSequence (a list
-subclass), or None for empty input. Accessing nested nodes returns the same
-types. Scalar leaves and null values are returned as native Python primitives.
-"""
+"""A YAML round-trip library that preserves comments and insertion order."""
 
 import datetime as _datetime
 from collections.abc import Callable, Iterable
