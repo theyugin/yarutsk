@@ -86,7 +86,7 @@ The mkdocs site under `docs/` is the authoritative user-facing reference
 (published to <https://theyugin.github.io/yarutsk/>). When adding, changing,
 or removing any public method on `YamlMapping`, `YamlSequence`, `YamlScalar`,
 or `Schema`, update `docs/api.md` (and `docs/integrations.md` if Schema
-behaviour changes) alongside the `yarutsk.pyi` stub and the Rust source.
+behaviour changes) alongside the `python/yarutsk/__init__.pyi` stub and the Rust source.
 
 `README.md` is a short landing page that points at the docs site and should
 not duplicate API details.

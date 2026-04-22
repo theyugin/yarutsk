@@ -5,9 +5,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::convert::{
-    DocMeta, container_style_str, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_doc,
-    node_to_py, parse_container_style, parse_scalar_style, parse_yaml_version, plain_entry,
-    py_to_node, py_to_node_with_fallback, scalar_style_str, sort_mapping,
+    DocMeta, map_child_node, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_py,
+    parse_container_style, parse_yaml_version, plain_entry, py_to_node, py_to_node_with_fallback,
+    sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
@@ -110,8 +110,36 @@ impl PyYamlMapping {
 
     fn __setitem__(slf: &Bound<'_, Self>, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
-        let (node, py_val) =
-            py_to_node_with_fallback(py, value, None, || YamlNode::Mapping(YamlMapping::new()))?;
+        // If the old value at *key* was a live container, its inner is the
+        // source of truth for metadata — read from it, not from the stale
+        // parent-side copy. Scalars store their metadata on parent inner.
+        let (old_inline, old_before, old_blanks) = read_old_metadata_map(slf, key)?;
+        // Do the conversion ourselves so we can tell the natural-conversion
+        // path from the fallback path. Custom types without a schema land in
+        // the fallback branch; their original Python value must be preserved
+        // in the parent dict so the dumper can see them at emit time.
+        let (mut node, py_val) = match py_to_node(value, None) {
+            Ok(mut n) => {
+                if n.comment_inline().is_none() {
+                    n.set_comment_inline(old_inline);
+                }
+                if n.comment_before().is_none() {
+                    n.set_comment_before(old_before);
+                }
+                if n.blank_lines_before() == 0 {
+                    n.set_blank_lines_before(old_blanks);
+                }
+                // Build py_val AFTER metadata is carried over so the live
+                // child reflects it for later reads via m.node(k).
+                let pv = node_to_py(py, &n, None)?;
+                (n, pv)
+            }
+            Err(_) => (
+                YamlNode::Mapping(YamlMapping::new()),
+                value.clone().unbind(),
+            ),
+        };
+        let _ = &mut node;
         {
             let mut borrow = slf.borrow_mut();
             if let Some(entry) = borrow.inner.entries.get_mut(key) {
@@ -328,50 +356,6 @@ impl PyYamlMapping {
         mapping_to_python(py, &self.inner)
     }
 
-    /// Return the inline comment for *key*, or ``None`` if unset.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn get_comment_inline(&self, key: &str) -> PyResult<Option<String>> {
-        self.inner
-            .entries
-            .get(key)
-            .map(|e| e.comment_inline.clone())
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
-    }
-
-    /// Set the inline comment for *key*; pass ``None`` to clear.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn set_comment_inline(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
-        self.inner
-            .entries
-            .get_mut(key)
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
-            .map(|e| {
-                e.comment_inline = comment.map(str::to_owned);
-            })
-    }
-
-    /// Return the block comment above *key*, or ``None`` if unset.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn get_comment_before(&self, key: &str) -> PyResult<Option<String>> {
-        self.inner
-            .entries
-            .get(key)
-            .map(|e| e.comment_before.clone())
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
-    }
-
-    /// Set the block comment above *key*; pass ``None`` to clear.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn set_comment_before(&mut self, key: &str, comment: Option<&str>) -> PyResult<()> {
-        self.inner
-            .entries
-            .get_mut(key)
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
-            .map(|e| {
-                e.comment_before = comment.map(str::to_owned);
-            })
-    }
-
     /// Return the YAML alias name if the value at *key* is an alias (``*name``), else ``None``.
     /// Raises ``KeyError`` if *key* is absent.
     fn get_alias(&self, key: &str) -> PyResult<Option<&str>> {
@@ -397,6 +381,9 @@ impl PyYamlMapping {
         entry.value = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         };
         Ok(())
     }
@@ -463,116 +450,50 @@ impl PyYamlMapping {
 
     /// Return the underlying YAML node for a key as a `YamlScalar`, `YamlMapping`,
     /// or `YamlSequence` object, preserving style/tag metadata.
+    ///
+    /// Mutations on the returned object propagate back into this mapping: for
+    /// container children the returned object is the live child (identical to
+    /// `m[key]`), and for scalar children it is a fresh `YamlScalar` whose
+    /// setters write through into this mapping's `inner`.
+    ///
     /// Raises `KeyError` if the key is absent.
-    fn node(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
-        match self.inner.entries.get(key) {
-            Some(entry) => Ok(node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?),
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    fn node(slf: &Bound<'_, Self>, key: &str) -> PyResult<Py<PyAny>> {
+        map_child_node(slf, key)
     }
 
-    /// Return the scalar quoting style for the value at *key*.
-    /// Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is not a scalar.
-    fn get_scalar_style(&self, key: &str) -> PyResult<&'static str> {
-        match self.inner.entries.get(key) {
-            Some(entry) => match &entry.value {
-                YamlNode::Scalar(s) => Ok(scalar_style_str(s.style)),
-                _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "value at key {key:?} is not a scalar; use get_container_style() for mappings and sequences"
-                ))),
-            },
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    /// The number of blank lines emitted before this mapping (0–255).
+    #[getter]
+    fn get_blank_lines_before(&self) -> u8 {
+        self.inner.blank_lines_before
     }
 
-    /// Set the scalar style for the value at *key*.
-    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the value is not a scalar (use ``set_container_style()`` instead).
-    fn set_scalar_style(&mut self, key: &str, style: &str) -> PyResult<()> {
-        let new_style = parse_scalar_style(style)?;
-        match self.inner.entries.get_mut(key) {
-            Some(entry) => match &mut entry.value {
-                YamlNode::Scalar(s) => {
-                    s.style = new_style;
-                    Ok(())
-                }
-                _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "value at key {key:?} is not a scalar; use set_container_style() for mappings and sequences"
-                ))),
-            },
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    #[setter]
+    fn set_blank_lines_before(&mut self, n: u32) {
+        self.inner.blank_lines_before = n.min(255) as u8;
     }
 
-    /// Return the container style (``"block"`` or ``"flow"``) for the value at *key*.
-    /// Raises ``KeyError`` if *key* is absent; ``TypeError`` if the value is not a mapping or sequence.
-    fn get_container_style(&self, key: &str) -> PyResult<&'static str> {
-        match self.inner.entries.get(key) {
-            Some(entry) => match &entry.value {
-                YamlNode::Mapping(m) => Ok(container_style_str(m.style)),
-                YamlNode::Sequence(s) => Ok(container_style_str(s.style)),
-                _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "value at key {key:?} is not a container; use get_scalar_style() for scalars"
-                ))),
-            },
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    /// The inline (trailing) comment on this mapping, or ``None``. Assign
+    /// ``None`` to clear.
+    #[getter]
+    fn get_comment_inline(&self) -> Option<&str> {
+        self.inner.comment_inline.as_deref()
     }
 
-    /// Set the block/flow style for the container value at *key*.
-    /// *style* must be ``"block"`` or ``"flow"``.
-    /// Raises ``KeyError`` if *key* is absent; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the value is not a mapping or sequence (use ``set_scalar_style()`` instead).
-    fn set_container_style(slf: &Bound<'_, Self>, key: &str, style: &str) -> PyResult<()> {
-        let new_style = parse_container_style(style)?;
-        {
-            let mut borrow = slf.borrow_mut();
-            match borrow.inner.entries.get_mut(key) {
-                Some(entry) => match &mut entry.value {
-                    YamlNode::Mapping(m) => m.style = new_style,
-                    YamlNode::Sequence(s) => s.style = new_style,
-                    _ => {
-                        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                            "value at key {key:?} is not a container; use set_scalar_style() for scalars"
-                        )));
-                    }
-                },
-                None => return Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-            }
-        }
-        // Also sync the Python-side object stored in the parent dict so that
-        // extract_yaml_node (which reads inner.style from the child object) sees the change.
-        if let Some(py_val) = slf.as_super().get_item(key)? {
-            if let Ok(bound_m) = py_val.cast::<PyYamlMapping>() {
-                bound_m.borrow_mut().inner.style = new_style;
-            } else if let Ok(bound_s) = py_val.cast::<PyYamlSequence>() {
-                bound_s.borrow_mut().inner.style = new_style;
-            }
-        }
-        Ok(())
+    #[setter]
+    fn set_comment_inline(&mut self, comment: Option<String>) {
+        self.inner.comment_inline = comment;
     }
 
-    /// Return the number of blank lines emitted before *key*.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn get_blank_lines_before(&self, key: &str) -> PyResult<u32> {
-        match self.inner.entries.get(key) {
-            Some(entry) => Ok(u32::from(entry.blank_lines_before)),
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    /// The block comment preceding this mapping, or ``None``. Assign ``None``
+    /// to clear.
+    #[getter]
+    fn get_comment_before(&self) -> Option<&str> {
+        self.inner.comment_before.as_deref()
     }
 
-    /// Set the number of blank lines emitted before *key*; values are clamped to 0–255.
-    /// Raises ``KeyError`` if *key* is absent.
-    fn set_blank_lines_before(&mut self, key: &str, n: u32) -> PyResult<()> {
-        let n = n.min(255) as u8;
-        match self.inner.entries.get_mut(key) {
-            Some(entry) => {
-                entry.blank_lines_before = n;
-                Ok(())
-            }
-            None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned())),
-        }
+    #[setter]
+    fn set_comment_before(&mut self, comment: Option<String>) {
+        self.inner.comment_before = comment;
     }
 
     /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
@@ -615,15 +536,14 @@ impl PyYamlMapping {
     /// Return a list of ``(key, node)`` pairs for all entries in this mapping.
     ///
     /// Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
-    /// preserving style/tag metadata. Unlike ``items()``, which returns Python
-    /// primitives, ``nodes()`` returns the full typed node objects.
-    fn nodes(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
-        self.inner
-            .entries
-            .iter()
-            .map(|(k, entry)| {
-                let node = node_to_doc(py, entry.value.clone(), DocMeta::none(), None)?;
-                Ok((k.clone(), node))
+    /// preserving style/tag metadata. Mutations on the returned nodes propagate
+    /// back into this mapping — same semantics as ``node(key)``.
+    fn nodes(slf: &Bound<'_, Self>) -> PyResult<Vec<(String, Py<PyAny>)>> {
+        let keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+        keys.into_iter()
+            .map(|k| {
+                let node = map_child_node(slf, &k)?;
+                Ok((k, node))
             })
             .collect()
     }
@@ -652,4 +572,51 @@ impl PyYamlMapping {
     fn __repr__(&self, py: Python<'_>) -> String {
         mapping_repr(py, &self.inner)
     }
+}
+
+/// Read `(comment_inline, comment_before, blank_lines_before)` at *key*,
+/// preferring the live child object for container values (its inner is the
+/// source of truth, see `extract_yaml_node`) and falling back to the parent's
+/// `inner.entries` for scalars, aliases, and missing keys.
+fn read_old_metadata_map(
+    slf: &Bound<'_, PyYamlMapping>,
+    key: &str,
+) -> PyResult<(Option<String>, Option<String>, u8)> {
+    let (is_container, fallback) = {
+        let borrow = slf.borrow();
+        match borrow.inner.entries.get(key) {
+            Some(entry) => (
+                matches!(entry.value, YamlNode::Mapping(_) | YamlNode::Sequence(_)),
+                (
+                    entry.value.comment_inline().map(str::to_owned),
+                    entry.value.comment_before().map(str::to_owned),
+                    entry.value.blank_lines_before(),
+                ),
+            ),
+            None => return Ok((None, None, 0)),
+        }
+    };
+    if !is_container {
+        return Ok(fallback);
+    }
+    let Some(py_val) = slf.as_super().get_item(key)? else {
+        return Ok(fallback);
+    };
+    if let Ok(child) = py_val.cast::<PyYamlMapping>() {
+        let b = child.borrow();
+        return Ok((
+            b.inner.comment_inline.clone(),
+            b.inner.comment_before.clone(),
+            b.inner.blank_lines_before,
+        ));
+    }
+    if let Ok(child) = py_val.cast::<PyYamlSequence>() {
+        let b = child.borrow();
+        return Ok((
+            b.inner.comment_inline.clone(),
+            b.inner.comment_before.clone(),
+            b.inner.blank_lines_before,
+        ));
+    }
+    Ok(fallback)
 }

@@ -100,7 +100,7 @@ class TestRoundTripScalarStyles:
 
     def test_scalar_style_can_be_changed(self):
         doc = yarutsk.loads("key: hello")
-        doc.set_scalar_style("key", "double")
+        doc.node("key").style = "double"
         out = yarutsk.dumps(doc)
         assert out == 'key: "hello"\n'
 
@@ -506,6 +506,13 @@ class TestBlankLinePreservation:
         out2 = yarutsk.dumps(yarutsk.loads(out1))
         assert out1 == out2
 
+    def test_mapping_setitem_preserves_blank_lines(self):
+        # Reassigning an existing key via __setitem__ preserves the blank line
+        # that preceded it — parity with sequence __setitem__.
+        doc = yarutsk.loads("a: 1\n\nb: 2\n")
+        doc["b"] = 99
+        assert yarutsk.dumps(doc) == "a: 1\n\nb: 99\n"
+
 
 class TestNonCanonicalScalarForms:
     """Non-canonical plain scalars round-trip as their original source text."""
@@ -651,14 +658,13 @@ class TestTagRoundTrip:
         src = "x: !!python/tuple [1, 2]\n"
         assert yarutsk.dumps(yarutsk.loads(src)) == src
 
-    def test_tag_accessible_after_load(self):
-        """get_node returns a snapshot; set_tag on it does not mutate the mapping."""
+    def test_tag_mutation_via_node_propagates(self):
+        """node() is a write-through proxy: tag mutations land on the parent."""
         doc = yarutsk.loads("value: !!str 42")
         node = doc.node("value")
         assert node.tag is not None
         node.tag = None
-        # The change is local to the snapshot — the mapping still emits the tag.
-        assert "!!" in yarutsk.dumps(doc)
+        assert "!!" not in yarutsk.dumps(doc)
 
     def test_tag_on_multiple_keys(self):
         src = dedent("""\
@@ -694,7 +700,7 @@ class TestTagRoundTrip:
         # dropped. Found by idempotent_emit fuzz target.
         src = "- 'foo'  # bar\n"
         doc = yarutsk.loads(src)
-        assert doc.get_comment_inline(0) == "bar"
+        assert doc.node(0).comment_inline == "bar"
         assert yarutsk.dumps(doc) == src
 
     def test_tag_with_pct_escape_is_reencoded(self):
@@ -1039,38 +1045,32 @@ class TestContainerStyleSetter:
     def test_mapping_set_seq_value_to_flow(self):
         doc = yarutsk.loads("k: placeholder\n")
         doc["k"] = ["a", "b", "c"]
-        doc.set_container_style("k", "flow")
+        doc.node("k").style = "flow"
         assert "[" in yarutsk.dumps(doc)
 
     def test_mapping_set_seq_value_back_to_block(self):
         doc = yarutsk.loads("k: [a, b, c]\n")
         assert doc.node("k").style == "flow"
-        doc.set_container_style("k", "block")
+        doc.node("k").style = "block"
         out = yarutsk.dumps(doc)
         assert "- a\n" in out
 
-    def test_mapping_node_clone_does_not_affect_dump(self):
-        """node() returns a clone — style mutations on it are silently ignored."""
+    def test_mapping_node_mutation_propagates(self):
+        """node() is a write-through proxy: style mutations land on the parent."""
         doc = yarutsk.loads("k: [1, 2]\n")
-        clone = doc.node("k")
-        clone.style = "block"
-        assert "[" in yarutsk.dumps(doc)
+        child = doc.node("k")
+        child.style = "block"
+        assert "[" not in yarutsk.dumps(doc)
 
     def test_mapping_container_style_key_error(self):
         doc = yarutsk.loads("a: 1\n")
         with pytest.raises(KeyError):
-            doc.set_container_style("missing", "flow")
+            doc.node("missing").style = "flow"
 
     def test_mapping_container_style_invalid_raises(self):
         doc = yarutsk.loads("k: [a, b]\n")
         with pytest.raises(ValueError):
-            doc.set_container_style("k", "bad")
-
-    def test_mapping_container_style_on_scalar_raises(self):
-        """set_container_style on a scalar value raises TypeError."""
-        doc = yarutsk.loads("k: hello\n")
-        with pytest.raises(TypeError):
-            doc.set_container_style("k", "flow")
+            doc.node("k").style = "bad"
 
     def test_mapping_nested_mapping_set_to_flow(self):
         doc = yarutsk.loads(
@@ -1081,13 +1081,13 @@ class TestContainerStyleSetter:
         """)
         )
         assert doc.node("k").style == "block"
-        doc.set_container_style("k", "flow")
+        doc.node("k").style = "flow"
         out = yarutsk.dumps(doc)
         assert "{" in out
 
     def test_mapping_nested_mapping_set_to_block(self):
         doc = yarutsk.loads("k: {a: 1, b: 2}\n")
-        doc.set_container_style("k", "block")
+        doc.node("k").style = "block"
         out = yarutsk.dumps(doc)
         assert "a: 1\n" in out
 
@@ -1099,14 +1099,14 @@ class TestContainerStyleSetter:
         """)
         )
         assert doc.node(0).style == "block"
-        doc.set_container_style(0, "flow")
+        doc.node(0).style = "flow"
         out = yarutsk.dumps(doc)
         assert "[" in out
 
     def test_sequence_item_set_to_block(self):
         doc = yarutsk.loads("- [a, b]\n")
         assert doc.node(0).style == "flow"
-        doc.set_container_style(0, "block")
+        doc.node(0).style = "block"
         out = yarutsk.dumps(doc)
         assert "- a\n" in out
 
@@ -1117,7 +1117,7 @@ class TestContainerStyleSetter:
             - [c, d]
         """)
         )
-        doc.set_container_style(-1, "block")
+        doc.node(-1).style = "block"
         out = yarutsk.dumps(doc)
         assert "[a, b]" in out
         assert "- c\n" in out
@@ -1125,12 +1125,7 @@ class TestContainerStyleSetter:
     def test_sequence_container_style_invalid_raises(self):
         doc = yarutsk.loads("- [a, b]\n")
         with pytest.raises(ValueError):
-            doc.set_container_style(0, "bad")
-
-    def test_sequence_container_style_on_scalar_raises(self):
-        doc = yarutsk.loads("- hello\n")
-        with pytest.raises(TypeError):
-            doc.set_container_style(0, "flow")
+            doc.node(0).style = "bad"
 
 
 class TestStreamRoundTrip:

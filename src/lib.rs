@@ -105,6 +105,31 @@ fn emit_doc_to_stream(
     Ok(())
 }
 
+/// Accept either `str` or `bytes`/`bytearray`; returns an owned `String`.
+/// Bytes input must be UTF-8 — invalid sequences raise `UnicodeDecodeError`.
+fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(s) = obj.extract::<String>() {
+        return Ok(s);
+    }
+    if let Ok(b) = obj.extract::<Vec<u8>>() {
+        let py = obj.py();
+        return match String::from_utf8(b) {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                let bytes = e.as_bytes().to_vec();
+                let utf8_err = e.utf8_error();
+                match pyo3::exceptions::PyUnicodeDecodeError::new_utf8(py, &bytes, utf8_err) {
+                    Ok(err) => Err(PyErr::from_value(err.into_any())),
+                    Err(pyerr) => Err(pyerr),
+                }
+            }
+        };
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "expected str, bytes, or bytearray",
+    ))
+}
+
 // ─── Module-level functions ───────────────────────────────────────────────────
 
 #[pyfunction]
@@ -128,10 +153,15 @@ fn load(
 #[pyfunction]
 #[pyo3(signature = (text, *, schema=None))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
-fn loads(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
+fn loads(
+    py: Python<'_>,
+    text: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<Py<PyAny>> {
+    let text = coerce_text(text)?;
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let mut out = parse_text(text, sb_borrow.as_deref())?;
+    let mut out = parse_text(&text, sb_borrow.as_deref())?;
     if out.docs.is_empty() {
         return Ok(py.None());
     }
@@ -161,10 +191,15 @@ fn load_all(
 #[pyfunction]
 #[pyo3(signature = (text, *, schema=None))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
-fn loads_all(py: Python<'_>, text: &str, schema: Option<Py<Schema>>) -> PyResult<Py<PyAny>> {
+fn loads_all(
+    py: Python<'_>,
+    text: &Bound<'_, PyAny>,
+    schema: Option<Py<Schema>>,
+) -> PyResult<Py<PyAny>> {
+    let text = coerce_text(text)?;
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let builder::ParseOutput { docs, docs_meta } = parse_text(text, sb_borrow.as_deref())?;
+    let builder::ParseOutput { docs, docs_meta } = parse_text(&text, sb_borrow.as_deref())?;
     let pydocs: Vec<Py<PyAny>> = docs
         .into_iter()
         .enumerate()
@@ -210,12 +245,13 @@ fn iter_load_all(
 #[pyo3(signature = (text, *, schema=None))]
 fn iter_loads_all(
     py: Python<'_>,
-    text: String,
+    text: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyYamlIter>> {
     use core::builder::Builder;
     use core::parser::Parser;
 
+    let text = coerce_text(text)?;
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
     let policy = sb_borrow.as_deref().and_then(Schema::tag_policy);
@@ -298,9 +334,9 @@ fn dumps_all(
     Ok(emit_docs(&nodes, &meta, indent))
 }
 
-/// The yarutsk module.
+/// The yarutsk module (private implementation, re-exported via `yarutsk/__init__.py`).
 #[pymodule]
-fn yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("YarutskError", m.py().get_type::<YarutskError>())?;
     m.add("ParseError", m.py().get_type::<ParseError>())?;
     m.add("LoaderError", m.py().get_type::<LoaderError>())?;

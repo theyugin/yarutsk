@@ -1,17 +1,17 @@
 # API reference
 
-The complete public surface of yarutsk on a single page. Authoritative signatures live in [`yarutsk.pyi`](https://github.com/theyugin/yarutsk/blob/main/yarutsk.pyi).
+The complete public surface of yarutsk on a single page. Authoritative signatures live in [`python/yarutsk/__init__.pyi`](https://github.com/theyugin/yarutsk/blob/main/python/yarutsk/__init__.pyi).
 
 ## Loading and dumping
 
 | Function | Purpose |
 |---|---|
 | `load(stream, *, schema=None)` | Load the first document from a file-like object |
-| `loads(text, *, schema=None)` | Load the first document from a string |
+| `loads(text, *, schema=None)` | Load the first document from a string or UTF-8 bytes |
 | `load_all(stream, *, schema=None)` | Load every document from a multi-doc stream |
-| `loads_all(text, *, schema=None)` | Load every document from a multi-doc string |
+| `loads_all(text, *, schema=None)` | Load every document from a multi-doc string or UTF-8 bytes |
 | `iter_load_all(stream, *, schema=None)` | Iterator over documents in a stream |
-| `iter_loads_all(text, *, schema=None)` | Iterator over documents in a string |
+| `iter_loads_all(text, *, schema=None)` | Iterator over documents in a string or UTF-8 bytes |
 | `dump(doc, stream, *, schema=None, indent=2)` | Emit a single document to a file-like object |
 | `dumps(doc, *, schema=None, indent=2)` | Emit a single document to a string |
 | `dump_all(docs, stream, *, schema=None, indent=2)` | Emit multiple documents to a stream |
@@ -33,6 +33,15 @@ for doc in yarutsk.iter_load_all(stream):
 ```
 
 `load` / `load_all` also stream from IO in 8 KB chunks rather than reading the entire input first, but they still build and return the full document tree.
+
+`loads` / `loads_all` / `iter_loads_all` accept either `str` or UTF-8 `bytes`/`bytearray` — useful for feeding raw process output directly:
+
+```python
+out = subprocess.run([...], capture_output=True, check=True).stdout
+doc = yarutsk.loads(out)
+```
+
+Non-UTF-8 bytes raise `UnicodeDecodeError`; any other type raises `TypeError`.
 
 ## Type conversions
 
@@ -145,6 +154,12 @@ doc = yarutsk.loads("42")
 doc.value                              # 42 (Python int)
 doc.to_python()                        # same as .value
 
+# .value applies built-in tag handling
+doc = yarutsk.loads("!!binary aGVsbG8=")
+doc.value                              # b'hello'
+doc = yarutsk.loads("!!timestamp 2024-01-01")
+doc.value                              # datetime.date(2024, 1, 1)
+
 # Style
 doc = yarutsk.loads("---\n'hello'\n")
 doc.style                              # 'single'
@@ -173,6 +188,28 @@ doc["x"] = yarutsk.YamlScalar(datetime.date(2024, 1, 15)) # 'x: !!timestamp 2024
 - `style` — `"plain"` (default), `"single"`, `"double"`, `"literal"`, `"folded"`
 - `tag` — YAML tag string, or `None`. For `bytes` defaults to `"!!binary"`, for datetime defaults to `"!!timestamp"`
 
+### Comments and blank lines
+
+Comments and blank-lines-before live directly on each node. Reach the child via `parent.node(key)` (or `parent.node(index)` for a sequence) and read/write the attribute directly:
+
+```python
+doc = yarutsk.loads("port: 5432  # db port\n")
+doc.node("port").comment_inline          # 'db port'
+
+doc.node("port").comment_inline = "updated"
+yarutsk.dumps(doc)                       # 'port: 5432  # updated\n'
+
+doc.node("port").blank_lines_before = 2  # int property, clamped 0–255
+```
+
+For bare-scalar documents, `comment_before` and `comment_inline` are both preserved on the scalar:
+
+```python
+doc = yarutsk.loads("# hello\n42  # answer\n")
+doc.comment_before                       # 'hello'
+doc.comment_inline                       # 'answer'
+```
+
 ## YamlMapping
 
 `YamlMapping` is a subclass of `dict` with insertion-ordered keys. Constructor:
@@ -191,47 +228,35 @@ Every standard `dict` method works unchanged: `doc[k]`, `doc[k] = v`, `del doc[k
 
 Also:
 
-- `doc.to_python()` — deep conversion to a plain Python `dict` / `list` / primitive tree (loses all style metadata)
+- `doc.to_python()` — deep conversion to a plain Python `dict` / `list` / primitive tree (loses all style metadata). Applies built-in tag handling (`!!binary`→`bytes`, `!!timestamp`→`datetime`/`date`)
 - `doc.node(key)` — returns the underlying `YamlScalar` / `YamlMapping` / `YamlSequence` preserving style/tag/anchor; `KeyError` if absent
 - `doc.nodes()` — `[(key, node)]` pairs with metadata preserved
 
-### Style
+### Per-child metadata — use `node(key)`
 
-Per-child style setters/getters form `get_/set_` pairs and raise `TypeError` when applied to the wrong node kind:
-
-- `doc.style` / `doc.style = "block" | "flow"` — container style of this mapping
-- `doc.get_scalar_style(key)` / `doc.set_scalar_style(key, "plain" | "single" | "double" | "literal" | "folded")` — scalar-only; `TypeError` on containers
-- `doc.get_container_style(key)` / `doc.set_container_style(key, "block" | "flow")` — container-only; `TypeError` on scalars
-- `doc.tag` / `doc.tag = "!!map"` — YAML tag
-- `doc.anchor` / `doc.anchor = "myanchor"` — emits `&myanchor` before the mapping
-- For top-level nodes: `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`
+Style, comments, and blank-lines-before live on each child node. Reach the child with `doc.node(key)` and read/write the attribute directly:
 
 ```python
 doc["nested"] = yarutsk.YamlMapping(style="flow")
 doc["nested"]["x"] = 1
-doc["nested"].set_scalar_style("x", "double")
+doc["nested"].node("x").style = "double"           # scalar style
+
+doc.node("key").comment_inline = "hi"              # comment on a child
+doc.node("key").comment_inline = None              # clear
+doc.node("key").comment_before = "block\ncomment"
+doc.node("key").blank_lines_before = 2             # int, clamped 0–255
 ```
 
-### Comments
+`node(key)` returns a live handle: setter calls propagate to the parent, so the change is visible on the next `dumps(doc)`.
 
-`get_/set_` pairs; pass `None` to `set_*` to clear:
+### Whole-mapping properties
 
-```python
-doc.get_comment_inline("key")
-doc.set_comment_inline("key", "hi")
-doc.set_comment_inline("key", None)       # clear
-
-doc.get_comment_before("key")
-doc.set_comment_before("key", "block\ncomment")
-```
-
-### Blank lines
-
-```python
-doc.get_blank_lines_before("key")      # int
-doc.set_blank_lines_before("key", 2)   # set to 2 (clamped 0–255)
-doc.trailing_blank_lines = 1           # blank lines after all entries
-```
+- `doc.style` / `doc.style = "block" | "flow"` — container style of this mapping itself
+- `doc.tag` / `doc.tag = "!!map"` — YAML tag
+- `doc.anchor` / `doc.anchor = "myanchor"` — emits `&myanchor` before the mapping
+- `doc.blank_lines_before` — `int`, clamped 0–255
+- `doc.trailing_blank_lines = 1` — blank lines after all entries
+- Top-level-only: `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`
 
 ### Aliases
 
@@ -276,29 +301,24 @@ yarutsk.dumps(s)                       # '[1, 2, 3]\n'
 
 All standard `list` operations work: indexing (negative supported), slicing, `append`, `insert`, `pop`, `remove`, `extend`, `index`, `count`, `reverse`, `in`, `len`, iteration, equality, `json.dumps`.
 
-Index-keyed variants of the same methods. `IndexError` on out-of-range indices; `TypeError` when a per-kind accessor is applied to the wrong node kind.
+Per-item metadata is reached the same way as mappings — via `seq.node(i)`. `IndexError` on out-of-range indices.
 
 ```python
 # Underlying node access
 doc.node(0)                              # YamlScalar / YamlMapping / YamlSequence
 doc.nodes()                              # [node, node, ...] preserving metadata
 
-# Style / tags / anchors
-doc.get_scalar_style(0)
-doc.set_scalar_style(0, "double")        # scalar-only; TypeError on containers
-doc.get_container_style(0)
-doc.set_container_style(0, "flow")       # container-only; TypeError on scalars
+# Style
+doc.node(0).style = "double"             # scalar: plain|single|double|literal|folded
+doc.node(1).style = "flow"               # container: block|flow
 doc[0] = yarutsk.YamlScalar("item", style="single")
 
-# Comments — index-keyed
-doc.get_comment_inline(0)
-doc.set_comment_inline(0, "first item")
-doc.get_comment_before(2)
-doc.set_comment_before(2, "group B")
+# Comments
+doc.node(0).comment_inline = "first item"
+doc.node(2).comment_before = "group B"
 
 # Blank lines
-doc.get_blank_lines_before(0)
-doc.set_blank_lines_before(0, 1)
+doc.node(0).blank_lines_before = 1
 
 # Aliases
 doc.get_alias(idx)                       # anchor name if alias, else None

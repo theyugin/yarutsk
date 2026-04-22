@@ -137,8 +137,10 @@ def check_none_narrowing() -> str:
 
 
 def check_scalar_value(s: YamlScalar) -> None:
-    v: int | float | bool | str | None = s.value
-    d: int | float | bool | str | None = s.to_python()
+    import datetime
+
+    v: int | float | bool | str | bytes | datetime.datetime | datetime.date | None = s.value
+    d: int | float | bool | str | bytes | datetime.datetime | datetime.date | None = s.to_python()
     eq: bool = s == 42
     _ = v, d, eq
 
@@ -213,10 +215,10 @@ def check_mapping_dict_compat(m: YamlMapping) -> None:
 
 
 def check_mapping_comments(m: YamlMapping) -> None:
-    inline: str | None = m.get_comment_inline("key")
-    before: str | None = m.get_comment_before("key")
-    m.set_comment_inline("key", "note")
-    m.set_comment_before("key", "header")
+    inline: str | None = m.node("key").comment_inline
+    before: str | None = m.node("key").comment_before
+    m.node("key").comment_inline = "note"
+    m.node("key").comment_before = "header"
     _ = inline, before
 
 
@@ -261,9 +263,9 @@ def check_mapping_node(m: YamlMapping) -> None:
 
 
 def check_mapping_scalar_style(m: YamlMapping) -> None:
-    m.set_scalar_style("key", "single")
-    m.set_scalar_style("key", "double")
-    m.set_scalar_style("key", "plain")
+    m.node("key").style = "single"
+    m.node("key").style = "double"
+    m.node("key").style = "plain"
 
 
 # ── YamlSequence interface ────────────────────────────────────────────────────
@@ -302,10 +304,10 @@ def check_sequence_list_compat(s: YamlSequence) -> None:
 
 
 def check_sequence_comments(s: YamlSequence) -> None:
-    inline: str | None = s.get_comment_inline(0)
-    before: str | None = s.get_comment_before(-1)
-    s.set_comment_inline(0, "note")
-    s.set_comment_before(0, "header")
+    inline: str | None = s.node(0).comment_inline
+    before: str | None = s.node(-1).comment_before
+    s.node(0).comment_inline = "note"
+    s.node(0).comment_before = "header"
     _ = inline, before
 
 

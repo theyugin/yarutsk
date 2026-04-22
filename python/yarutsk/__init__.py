@@ -1,0 +1,57 @@
+from ._yarutsk import (
+    DumperError,
+    LoaderError,
+    ParseError,
+    Schema,
+    YamlIter,
+    YamlMapping,
+    YamlScalar,
+    YamlSequence,
+    YarutskError,
+    dump,
+    dump_all,
+    dumps,
+    dumps_all,
+    iter_load_all,
+    iter_loads_all,
+    load,
+    load_all,
+    loads,
+    loads_all,
+)
+
+for _cls in (
+    YamlMapping,
+    YamlSequence,
+    YamlScalar,
+    YamlIter,
+    Schema,
+    YarutskError,
+    ParseError,
+    LoaderError,
+    DumperError,
+):
+    _cls.__module__ = "yarutsk"
+del _cls
+
+__all__ = [
+    "DumperError",
+    "LoaderError",
+    "ParseError",
+    "Schema",
+    "YamlIter",
+    "YamlMapping",
+    "YamlScalar",
+    "YamlSequence",
+    "YarutskError",
+    "dump",
+    "dump_all",
+    "dumps",
+    "dumps_all",
+    "iter_load_all",
+    "iter_loads_all",
+    "load",
+    "load_all",
+    "loads",
+    "loads_all",
+]

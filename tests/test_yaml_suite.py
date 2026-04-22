@@ -13,6 +13,8 @@ Usage:
     pytest tests/test_yaml_suite.py -v -k "test_parse"    # parse/reject only
 """
 
+import base64
+import datetime
 import io
 import json as json_mod
 import re
@@ -44,6 +46,34 @@ def _decode(value: str | None) -> str | None:
 
 
 # ── JSON field parsing ────────────────────────────────────────────────────────
+
+
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/\s]*={0,2}\s*$")
+
+
+def _normalize_for_json_compare(value):
+    """Coerce yarutsk's tag-aware scalars (``bytes``, ``datetime``, ``date``) into
+    a canonical form for comparison with the yaml-test-suite's ``json`` field.
+
+    ``datetime``/``date`` → ISO string. For ``bytes`` and base64-looking strings
+    (as the suite's JSON encodes ``!!binary`` payloads), both sides decode to
+    ``bytes`` so embedded base64 whitespace from literal-block YAML blocks is
+    normalised away.
+    """
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if isinstance(value, str) and _BASE64_RE.fullmatch(value) and ("=" in value or "\n" in value):
+        try:
+            return base64.b64decode(value, validate=False)
+        except Exception:
+            return value
+    if isinstance(value, dict):
+        return {k: _normalize_for_json_compare(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_for_json_compare(v) for v in value]
+    return value
 
 
 def _parse_json_docs(json_str: str) -> list:
@@ -169,8 +199,11 @@ class TestYamlSuite:
         except Exception as e:
             pytest.skip(f"parse failed (covered by test_parse): {e}")
 
-        expected = _parse_json_docs(json_str)
-        actual = [d.to_python() if hasattr(d, "to_python") else d for d in docs]
+        expected = [_normalize_for_json_compare(d) for d in _parse_json_docs(json_str)]
+        actual = [
+            _normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
+            for d in docs
+        ]
         assert actual == expected, (
             f"\nExpected: {expected}\nActual:   {actual}\nYAML:\n{test['yaml']}"
         )
@@ -210,8 +243,11 @@ class TestYamlSuite:
 
         # ── Hard check: re-parsed values must match original ─────────────────
         if test["json"]:
-            expected = _parse_json_docs(test["json"])
-            actual = [d.to_python() if hasattr(d, "to_python") else d for d in re_docs]
+            expected = [_normalize_for_json_compare(d) for d in _parse_json_docs(test["json"])]
+            actual = [
+                _normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
+                for d in re_docs
+            ]
             if actual != expected:
                 pytest.fail(
                     f"Re-parsed values changed after round-trip.\n"

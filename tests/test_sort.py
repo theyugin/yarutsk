@@ -118,9 +118,9 @@ m: 3  # m comment
 
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "m", "z"]
-        assert doc.get_comment_inline("a") == "a comment"
-        assert doc.get_comment_inline("m") == "m comment"
-        assert doc.get_comment_inline("z") == "z comment"
+        assert doc.node("a").comment_inline == "a comment"
+        assert doc.node("m").comment_inline == "m comment"
+        assert doc.node("z").comment_inline == "z comment"
 
     def test_sort_keys_reverse_custom(self):
         content = io.StringIO(
@@ -337,8 +337,8 @@ class TestSequenceRecursiveSort:
         """)
         doc = yarutsk.loads(src)
         doc.sort(recursive=True)
-        assert doc[0].get_comment_inline(0) == "first"
-        assert doc[0].get_comment_inline(1) == "second"
+        assert doc[0].node(0).comment_inline == "first"
+        assert doc[0].node(1).comment_inline == "second"
 
 
 if __name__ == "__main__":

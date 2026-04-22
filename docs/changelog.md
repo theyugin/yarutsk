@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-22
+
+### Added
+- `comment_inline`, `comment_before`, `blank_lines_before` properties on `YamlScalar`.
+- `loads` / `loads_all` / `iter_loads_all` accept UTF-8 `bytes` / `bytearray`.
+- `YamlScalar.value` and `.to_python()` apply `!!binary` and `!!timestamp` tag handling.
+
+### Changed
+- **Breaking**: per-key / per-index metadata accessors removed from `YamlMapping` and `YamlSequence`; use `parent.node(key).<field>` instead.
+- **Breaking**: mixed Python / Rust layout — extension is now `yarutsk._yarutsk`, stubs moved to `python/yarutsk/__init__.pyi`.
+
 ## [0.6.3] - 2026-04-20
 
 ### Changed
@@ -151,7 +162,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/theyugin/yarutsk/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/theyugin/yarutsk/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/theyugin/yarutsk/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/theyugin/yarutsk/compare/v0.6.0...v0.6.1
