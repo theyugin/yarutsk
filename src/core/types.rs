@@ -14,7 +14,85 @@ pub enum YamlNode {
     Alias {
         name: String,
         resolved: Box<YamlNode>,
+        /// Trailing `# comment` on the alias's line (e.g. `key: *ref  # note`).
+        comment_inline: Option<String>,
+        /// Block `# comment` lines above the alias.
+        comment_before: Option<String>,
+        /// Blank lines in the source before this alias (capped at 255).
+        blank_lines_before: u8,
     },
+}
+
+impl YamlNode {
+    /// Read the trailing inline comment on this node, if any.
+    #[must_use]
+    pub fn comment_inline(&self) -> Option<&str> {
+        match self {
+            YamlNode::Mapping(m) => m.comment_inline.as_deref(),
+            YamlNode::Sequence(s) => s.comment_inline.as_deref(),
+            YamlNode::Scalar(s) => s.comment_inline.as_deref(),
+            YamlNode::Alias { comment_inline, .. } => comment_inline.as_deref(),
+            YamlNode::Null => None,
+        }
+    }
+
+    /// Read the block comment rendered above this node, if any.
+    #[must_use]
+    pub fn comment_before(&self) -> Option<&str> {
+        match self {
+            YamlNode::Mapping(m) => m.comment_before.as_deref(),
+            YamlNode::Sequence(s) => s.comment_before.as_deref(),
+            YamlNode::Scalar(s) => s.comment_before.as_deref(),
+            YamlNode::Alias { comment_before, .. } => comment_before.as_deref(),
+            YamlNode::Null => None,
+        }
+    }
+
+    pub fn set_comment_inline(&mut self, c: Option<String>) {
+        match self {
+            YamlNode::Mapping(m) => m.comment_inline = c,
+            YamlNode::Sequence(s) => s.comment_inline = c,
+            YamlNode::Scalar(s) => s.comment_inline = c,
+            YamlNode::Alias { comment_inline, .. } => *comment_inline = c,
+            YamlNode::Null => {}
+        }
+    }
+
+    pub fn set_comment_before(&mut self, c: Option<String>) {
+        match self {
+            YamlNode::Mapping(m) => m.comment_before = c,
+            YamlNode::Sequence(s) => s.comment_before = c,
+            YamlNode::Scalar(s) => s.comment_before = c,
+            YamlNode::Alias { comment_before, .. } => *comment_before = c,
+            YamlNode::Null => {}
+        }
+    }
+
+    /// Read the number of blank lines preceding this node in its parent, if any.
+    #[must_use]
+    pub fn blank_lines_before(&self) -> u8 {
+        match self {
+            YamlNode::Mapping(m) => m.blank_lines_before,
+            YamlNode::Sequence(s) => s.blank_lines_before,
+            YamlNode::Scalar(s) => s.blank_lines_before,
+            YamlNode::Alias {
+                blank_lines_before, ..
+            } => *blank_lines_before,
+            YamlNode::Null => 0,
+        }
+    }
+
+    pub fn set_blank_lines_before(&mut self, n: u8) {
+        match self {
+            YamlNode::Mapping(m) => m.blank_lines_before = n,
+            YamlNode::Sequence(s) => s.blank_lines_before = n,
+            YamlNode::Scalar(s) => s.blank_lines_before = n,
+            YamlNode::Alias {
+                blank_lines_before, ..
+            } => *blank_lines_before = n,
+            YamlNode::Null => {}
+        }
+    }
 }
 
 /// How a scalar value was written in the source.
@@ -49,6 +127,12 @@ pub struct YamlScalar {
     pub original: Option<String>,
     /// Anchor name declared on this scalar (`&name`), if any.
     pub anchor: Option<String>,
+    /// Trailing `# comment` on the scalar's line.
+    pub comment_inline: Option<String>,
+    /// Block `# comment` lines rendered immediately above this scalar.
+    pub comment_before: Option<String>,
+    /// Blank lines in the source before this scalar (capped at 255).
+    pub blank_lines_before: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +220,13 @@ pub struct YamlMapping {
     pub trailing_blank_lines: u8,
     /// Anchor name declared on this mapping (`&name`), if any.
     pub anchor: Option<String>,
+    /// Trailing `# comment` on the mapping's opening line.  For a mapping
+    /// appearing as a value in `key:  # note\n  …`, `# note` is stored here.
+    pub comment_inline: Option<String>,
+    /// Block `# comment` lines rendered immediately above this mapping.
+    pub comment_before: Option<String>,
+    /// Blank lines in the source before this mapping (capped at 255).
+    pub blank_lines_before: u8,
 }
 
 impl YamlMapping {
@@ -147,6 +238,9 @@ impl YamlMapping {
             tag: None,
             trailing_blank_lines: 0,
             anchor: None,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         }
     }
 
@@ -158,6 +252,9 @@ impl YamlMapping {
             tag: None,
             trailing_blank_lines: 0,
             anchor: None,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         }
     }
 }
@@ -171,10 +268,6 @@ impl Default for YamlMapping {
 #[derive(Debug, Clone)]
 pub struct YamlEntry {
     pub value: YamlNode,
-    pub comment_before: Option<String>,
-    pub comment_inline: Option<String>,
-    /// Blank lines in the source before this entry (capped at 255).
-    pub blank_lines_before: u8,
     /// The quoting style the key was written with in the source.
     pub key_style: ScalarStyle,
     /// Anchor declared on the key scalar (`&name`), if any.
@@ -190,7 +283,7 @@ pub struct YamlEntry {
 
 #[derive(Debug, Clone)]
 pub struct YamlSequence {
-    pub items: Vec<YamlItem>,
+    pub items: Vec<YamlNode>,
     /// Block (`- item`) or flow (`[item]`) style.
     pub style: ContainerStyle,
     /// Optional YAML tag.
@@ -199,6 +292,12 @@ pub struct YamlSequence {
     pub trailing_blank_lines: u8,
     /// Anchor name declared on this sequence (`&name`), if any.
     pub anchor: Option<String>,
+    /// Trailing `# comment` on the sequence's opening line.
+    pub comment_inline: Option<String>,
+    /// Block `# comment` lines rendered immediately above this sequence.
+    pub comment_before: Option<String>,
+    /// Blank lines in the source before this sequence (capped at 255).
+    pub blank_lines_before: u8,
 }
 
 impl YamlSequence {
@@ -210,6 +309,9 @@ impl YamlSequence {
             tag: None,
             trailing_blank_lines: 0,
             anchor: None,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         }
     }
 
@@ -221,6 +323,9 @@ impl YamlSequence {
             tag: None,
             trailing_blank_lines: 0,
             anchor: None,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         }
     }
 }
@@ -231,15 +336,6 @@ impl Default for YamlSequence {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct YamlItem {
-    pub value: YamlNode,
-    pub comment_before: Option<String>,
-    pub comment_inline: Option<String>,
-    /// Blank lines in the source before this item (capped at 255).
-    pub blank_lines_before: u8,
-}
-
 // ─── Format options ───────────────────────────────────────────────────────────
 
 /// Controls which cosmetic fields are reset by `format_with()`.
@@ -248,7 +344,7 @@ pub struct FormatOptions {
     /// Reset scalar quoting → plain (literal for multi-line), container style → block,
     /// and clear `original` so non-canonical forms (hex, exponent) emit canonically.
     pub styles: bool,
-    /// Clear `comment_before` and `comment_inline` on every entry/item.
+    /// Clear `comment_before` and `comment_inline` on every node.
     pub comments: bool,
     /// Zero `blank_lines_before` on every entry/item and `trailing_blank_lines` on containers.
     pub blank_lines: bool,
@@ -267,6 +363,13 @@ impl YamlScalar {
             };
             self.original = None;
         }
+        if opts.comments {
+            self.comment_inline = None;
+            self.comment_before = None;
+        }
+        if opts.blank_lines {
+            self.blank_lines_before = 0;
+        }
         // tag and anchor are semantic — always preserved.
     }
 }
@@ -276,17 +379,15 @@ impl YamlMapping {
         if opts.styles {
             self.style = ContainerStyle::Block;
         }
+        if opts.comments {
+            self.comment_before = None;
+            self.comment_inline = None;
+        }
         if opts.blank_lines {
             self.trailing_blank_lines = 0;
+            self.blank_lines_before = 0;
         }
         for entry in self.entries.values_mut() {
-            if opts.comments {
-                entry.comment_before = None;
-                entry.comment_inline = None;
-            }
-            if opts.blank_lines {
-                entry.blank_lines_before = 0;
-            }
             if opts.styles {
                 entry.key_style = ScalarStyle::Plain;
             }
@@ -304,18 +405,16 @@ impl YamlSequence {
         if opts.styles {
             self.style = ContainerStyle::Block;
         }
+        if opts.comments {
+            self.comment_before = None;
+            self.comment_inline = None;
+        }
         if opts.blank_lines {
             self.trailing_blank_lines = 0;
+            self.blank_lines_before = 0;
         }
         for item in &mut self.items {
-            if opts.comments {
-                item.comment_before = None;
-                item.comment_inline = None;
-            }
-            if opts.blank_lines {
-                item.blank_lines_before = 0;
-            }
-            item.value.format_with(opts);
+            item.format_with(opts);
         }
     }
 }
@@ -326,7 +425,21 @@ impl YamlNode {
             YamlNode::Mapping(m) => m.format_with(opts),
             YamlNode::Sequence(s) => s.format_with(opts),
             YamlNode::Scalar(s) => s.format_with(opts),
-            YamlNode::Alias { .. } | YamlNode::Null => {}
+            YamlNode::Alias {
+                comment_inline,
+                comment_before,
+                blank_lines_before,
+                ..
+            } => {
+                if opts.comments {
+                    *comment_inline = None;
+                    *comment_before = None;
+                }
+                if opts.blank_lines {
+                    *blank_lines_before = 0;
+                }
+            }
+            YamlNode::Null => {}
         }
     }
 }

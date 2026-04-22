@@ -71,6 +71,37 @@ items:
         assert doc["b"] == 2
 
 
+class TestLoadsBytes:
+    def test_loads_bytes(self):
+        doc = yarutsk.loads(b"a: 1\nb: two\n")
+        assert doc["a"] == 1
+        assert doc["b"] == "two"
+
+    def test_loads_bytearray(self):
+        doc = yarutsk.loads(bytearray(b"x: [1, 2, 3]\n"))
+        assert list(doc["x"]) == [1, 2, 3]
+
+    def test_loads_bytes_utf8_multibyte(self):
+        doc = yarutsk.loads("greeting: héllo\n".encode())
+        assert doc["greeting"] == "héllo"
+
+    def test_loads_all_bytes(self):
+        docs = yarutsk.loads_all(b"a: 1\n---\nb: 2\n")
+        assert [dict(d) for d in docs] == [{"a": 1}, {"b": 2}]
+
+    def test_iter_loads_all_bytes(self):
+        docs = list(yarutsk.iter_loads_all(b"a: 1\n---\nb: 2\n"))
+        assert [dict(d) for d in docs] == [{"a": 1}, {"b": 2}]
+
+    def test_loads_invalid_utf8_raises_unicode_decode_error(self):
+        with pytest.raises(UnicodeDecodeError):
+            yarutsk.loads(b"\xff\xfe bad")
+
+    def test_loads_rejects_non_text_type(self):
+        with pytest.raises(TypeError):
+            yarutsk.loads(123)  # type: ignore[arg-type]
+
+
 class TestTypePreservation:
     def test_integer(self):
         content = io.StringIO("value: 42")

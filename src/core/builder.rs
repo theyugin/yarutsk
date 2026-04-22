@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Marker, TScalarStyle};
 use super::types::{
-    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlItem, YamlMapping, YamlNode,
-    YamlScalar, YamlSequence,
+    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
+    YamlSequence,
 };
 
 /// Tags that should bypass built-in `ScalarValue` coercion in the builder.
@@ -94,13 +94,19 @@ impl PendingKey {
     /// Consume the pending key and insert a new entry into `mapping`.
     /// Returns `None` on success.  If no key is pending (i.e. this node IS
     /// the complex key), returns `Some(value)` so the caller can store it.
-    fn insert_entry(&mut self, mapping: &mut YamlMapping, value: YamlNode) -> Option<YamlNode> {
+    fn insert_entry(&mut self, mapping: &mut YamlMapping, mut value: YamlNode) -> Option<YamlNode> {
         if let Some(key) = self.key.take() {
+            if let Some(cb) = self.comment_before.take() {
+                value.set_comment_before(Some(cb));
+            }
+            if let Some(ci) = self.comment_inline.take() {
+                value.set_comment_inline(Some(ci));
+            }
+            if self.blank_lines > 0 {
+                value.set_blank_lines_before(self.blank_lines);
+            }
             let entry = YamlEntry {
                 value,
-                comment_before: self.comment_before.take(),
-                comment_inline: self.comment_inline.take(),
-                blank_lines_before: self.blank_lines,
                 key_style: self.key_style,
                 key_anchor: self.key_anchor.take(),
                 key_alias: self.key_alias.take(),
@@ -113,11 +119,17 @@ impl PendingKey {
         } else if self.key_node.is_some() {
             // Complex key already saved; this node is the VALUE.
             let key = format!("\x00{}", mapping.entries.len());
+            if let Some(cb) = self.comment_before.take() {
+                value.set_comment_before(Some(cb));
+            }
+            if let Some(ci) = self.comment_inline.take() {
+                value.set_comment_inline(Some(ci));
+            }
+            if self.blank_lines > 0 {
+                value.set_blank_lines_before(self.blank_lines);
+            }
             let entry = YamlEntry {
                 value,
-                comment_before: self.comment_before.take(),
-                comment_inline: self.comment_inline.take(),
-                blank_lines_before: self.blank_lines,
                 key_style: ScalarStyle::Plain,
                 key_anchor: None,
                 key_alias: None,
@@ -169,6 +181,9 @@ fn make_scalar(
         tag,
         original,
         anchor,
+        comment_inline: None,
+        comment_before: None,
+        blank_lines_before: 0,
     })
 }
 
@@ -234,8 +249,10 @@ impl Builder {
                     // Key was last; value not yet seen → store inline on frame
                     mf.pending.comment_inline = Some(text);
                 } else if let Some((_, entry)) = mf.mapping.entries.last_mut() {
-                    // Value was just finalized → update last inserted entry
-                    entry.comment_inline = Some(text);
+                    // Value was just finalized → attach inline to the value node.
+                    if entry.value.comment_inline().is_none() {
+                        entry.value.set_comment_inline(Some(text));
+                    }
                 } else {
                     // No entry yet — the comment was drained between the scanner
                     // emitting a quoted/block key scalar and the builder
@@ -245,7 +262,9 @@ impl Builder {
             }
             Some(Frame::Sequence(sf)) => {
                 if let Some(item) = sf.seq.items.last_mut() {
-                    item.comment_inline = Some(text);
+                    if item.comment_inline().is_none() {
+                        item.set_comment_inline(Some(text));
+                    }
                 } else {
                     // Same rationale as the empty-mapping branch above.
                     self.pending_inline = Some(text);
@@ -253,7 +272,11 @@ impl Builder {
             }
             None => {
                 // Stack is empty: the last doc was just pushed; retroactively update it
-                retroactive_inline(self.docs.last_mut(), text);
+                if let Some(doc) = self.docs.last_mut()
+                    && doc.comment_inline().is_none()
+                {
+                    doc.set_comment_inline(Some(text));
+                }
             }
         }
     }
@@ -317,12 +340,14 @@ impl Builder {
                 let comment_before = sf.current_comment_before.take();
                 let blank_lines_before = sf.current_blank_lines;
                 sf.current_blank_lines = 0;
-                sf.seq.items.push(YamlItem {
-                    value: node,
-                    comment_before,
-                    comment_inline: None,
-                    blank_lines_before,
-                });
+                let mut node = node;
+                if let Some(cb) = comment_before {
+                    node.set_comment_before(Some(cb));
+                }
+                if blank_lines_before > 0 {
+                    node.set_blank_lines_before(blank_lines_before);
+                }
+                sf.seq.items.push(node);
             }
         }
     }
@@ -571,8 +596,9 @@ impl Builder {
                 // A scalar is a KEY if: in mapping context AND no pending key.
                 let needs_context = match self.stack.last() {
                     Some(Frame::Mapping(mf)) => !mf.pending.has_key(),
-                    Some(Frame::Sequence(_)) => true,
-                    None => false,
+                    // Bare-scalar documents collect before-comments and blanks
+                    // so they can be attached to the scalar itself.
+                    Some(Frame::Sequence(_)) | None => true,
                 };
                 // yaml-rust2 reports empty plain scalars (implicit nulls) at
                 // the position of the next token, not where the node
@@ -627,6 +653,12 @@ impl Builder {
                 let deferred_inline = self.pending_inline.take();
                 match self.stack.last_mut() {
                     None => {
+                        // Bare-scalar document: attach before/inline comments to the
+                        // scalar itself.  The enclosing `YamlNode` has no parent entry,
+                        // so this is the only place metadata can live.
+                        let mut node = node;
+                        node.set_comment_before(comment_before);
+                        node.set_comment_inline(deferred_inline);
                         self.commit_next_meta();
                         self.docs.push(node);
                     }
@@ -636,8 +668,9 @@ impl Builder {
                             let _ = mf.pending.insert_entry(&mut mf.mapping, node);
                             if let Some(text) = deferred_inline
                                 && let Some((_, entry)) = mf.mapping.entries.last_mut()
+                                && entry.value.comment_inline().is_none()
                             {
-                                entry.comment_inline = Some(text);
+                                entry.value.set_comment_inline(Some(text));
                             }
                         } else {
                             // Mapping key — store key string and positioning metadata.
@@ -654,12 +687,17 @@ impl Builder {
                         }
                     }
                     Some(Frame::Sequence(sf)) => {
-                        sf.seq.items.push(YamlItem {
-                            value: node,
-                            comment_before,
-                            comment_inline: deferred_inline,
-                            blank_lines_before: blank_lines,
-                        });
+                        let mut node = node;
+                        if let Some(cb) = comment_before {
+                            node.set_comment_before(Some(cb));
+                        }
+                        if let Some(text) = deferred_inline {
+                            node.set_comment_inline(Some(text));
+                        }
+                        if blank_lines > 0 {
+                            node.set_blank_lines_before(blank_lines);
+                        }
+                        sf.seq.items.push(node);
                     }
                 }
                 self.last_content_line = Some(effective_scalar_end_line);
@@ -697,31 +735,11 @@ impl Builder {
                 self.push_node(YamlNode::Alias {
                     name,
                     resolved: Box::new(resolved),
+                    comment_inline: None,
+                    comment_before: None,
+                    blank_lines_before: 0,
                 });
             }
-        }
-    }
-}
-
-/// Retroactively set `comment_inline` on the last leaf entry of a node.
-fn retroactive_inline(node: Option<&mut YamlNode>, text: String) {
-    if let Some(node) = node {
-        match node {
-            YamlNode::Mapping(m) => {
-                if let Some((_, entry)) = m.entries.last_mut()
-                    && entry.comment_inline.is_none()
-                {
-                    entry.comment_inline = Some(text);
-                }
-            }
-            YamlNode::Sequence(s) => {
-                if let Some(item) = s.items.last_mut()
-                    && item.comment_inline.is_none()
-                {
-                    item.comment_inline = Some(text);
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -1108,7 +1126,7 @@ mod tests {
         let node = parse_one(src);
         if let YamlNode::Mapping(m) = node {
             let alias_entry = &m.entries["ref"].value;
-            if let YamlNode::Alias { name, resolved } = alias_entry {
+            if let YamlNode::Alias { name, resolved, .. } = alias_entry {
                 assert_eq!(name, "val");
                 assert!(matches!(
                     resolved.as_ref(),
@@ -1158,7 +1176,10 @@ mod tests {
     fn inline_comment_attached() {
         let node = parse_one("a: 1  # comment\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["a"].comment_inline.as_deref(), Some("comment"));
+            let YamlNode::Scalar(s) = &m.entries["a"].value else {
+                panic!("expected Scalar");
+            };
+            assert_eq!(s.comment_inline.as_deref(), Some("comment"));
         } else {
             panic!("expected Mapping");
         }
@@ -1168,7 +1189,10 @@ mod tests {
     fn before_comment_attached() {
         let node = parse_one("a: 1\n# before b\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["b"].comment_before.as_deref(), Some("before b"));
+            let YamlNode::Scalar(s) = &m.entries["b"].value else {
+                panic!("expected Scalar");
+            };
+            assert_eq!(s.comment_before.as_deref(), Some("before b"));
         } else {
             panic!("expected Mapping");
         }
@@ -1180,7 +1204,7 @@ mod tests {
     fn blank_lines_before_entry_counted() {
         let node = parse_one("a: 1\n\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["b"].blank_lines_before, 1);
+            assert_eq!(m.entries["b"].value.blank_lines_before(), 1);
         } else {
             panic!("expected Mapping");
         }
@@ -1190,7 +1214,7 @@ mod tests {
     fn two_blank_lines_before_entry() {
         let node = parse_one("a: 1\n\n\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["b"].blank_lines_before, 2);
+            assert_eq!(m.entries["b"].value.blank_lines_before(), 2);
         } else {
             panic!("expected Mapping");
         }

@@ -4,16 +4,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    DocMeta, container_style_str, node_to_doc, node_to_py, parse_container_style,
-    parse_scalar_style, parse_yaml_version, plain_item, py_compare, py_to_node,
-    py_to_node_with_fallback, resolve_seq_idx, scalar_style_str, sequence_repr, sequence_to_py_obj,
+    DocMeta, node_to_py, parse_container_style, parse_yaml_version, py_compare, py_to_node,
+    py_to_node_with_fallback, resolve_seq_idx, seq_child_node, sequence_repr, sequence_to_py_obj,
     sequence_to_python,
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
-use crate::core::types::{
-    ContainerStyle, FormatOptions, YamlItem, YamlMapping, YamlNode, YamlSequence,
-};
+use crate::core::types::{ContainerStyle, FormatOptions, YamlMapping, YamlNode, YamlSequence};
 
 // ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
 
@@ -89,7 +86,7 @@ impl PyYamlSequence {
                     drop(borrow);
                     let borrow = slf.borrow();
                     for item in &borrow.inner.items {
-                        let py_val = node_to_py(py, &item.value, Some(sb))?;
+                        let py_val = node_to_py(py, item, Some(sb))?;
                         list_part.append(py_val.bind(py))?;
                     }
                 } else {
@@ -118,19 +115,38 @@ impl PyYamlSequence {
         let py = slf.py();
         if let Ok(idx) = key.extract::<isize>() {
             let real_idx = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
-            let (node, py_val) =
-                py_to_node_with_fallback(
-                    py,
-                    value,
-                    None,
-                    || YamlNode::Mapping(YamlMapping::new()),
-                )?;
+            let (old_inline, old_before, old_blanks) = read_old_metadata_seq(slf, real_idx)?;
+            // Do the conversion ourselves so we can tell the natural-conversion
+            // path from the fallback path. Custom types without a schema land
+            // in the fallback branch; their original Python value must be
+            // preserved in the parent list so the dumper can see them.
+            let (node, py_val) = match py_to_node(value, None) {
+                Ok(mut n) => {
+                    if n.comment_inline().is_none() {
+                        n.set_comment_inline(old_inline);
+                    }
+                    if n.comment_before().is_none() {
+                        n.set_comment_before(old_before);
+                    }
+                    if n.blank_lines_before() == 0 {
+                        n.set_blank_lines_before(old_blanks);
+                    }
+                    // Build py_val AFTER metadata is carried over so the live
+                    // child reflects it for later reads via seq.node(i).
+                    let pv = node_to_py(py, &n, None)?;
+                    (n, pv)
+                }
+                Err(_) => (
+                    YamlNode::Mapping(YamlMapping::new()),
+                    value.clone().unbind(),
+                ),
+            };
             {
                 let mut borrow = slf.borrow_mut();
-                borrow.inner.items[real_idx as usize].value = node;
+                let slot = &mut borrow.inner.items[real_idx];
+                *slot = node;
             }
-            slf.as_super()
-                .set_item(real_idx as usize, py_val.bind(py))?;
+            slf.as_super().set_item(real_idx, py_val.bind(py))?;
             return Ok(());
         }
         if let Ok(slice) = key.cast::<PySlice>() {
@@ -143,14 +159,14 @@ impl PyYamlSequence {
             }
             let start = indices.start as usize;
             let stop = indices.stop as usize;
-            let mut new_items: Vec<YamlItem> = Vec::new();
+            let mut new_items: Vec<YamlNode> = Vec::new();
             let mut new_py: Vec<Py<PyAny>> = Vec::new();
             for py_item in value.try_iter()? {
                 let py_item = py_item?;
                 let (node, py_val) = py_to_node_with_fallback(py, &py_item, None, || {
                     YamlNode::Mapping(YamlMapping::new())
                 })?;
-                new_items.push(plain_item(node));
+                new_items.push(node);
                 new_py.push(py_val);
             }
             {
@@ -216,7 +232,7 @@ impl PyYamlSequence {
             py_to_node_with_fallback(py, value, None, || YamlNode::Mapping(YamlMapping::new()))?;
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items.push(plain_item(node));
+            borrow.inner.items.push(node);
         }
         slf.as_super().append(py_val.bind(py))?;
         Ok(())
@@ -238,7 +254,7 @@ impl PyYamlSequence {
         };
         {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.items.insert(real_idx, plain_item(node));
+            borrow.inner.items.insert(real_idx, node);
         }
         slf.as_super().insert(real_idx, py_val_insert.bind(py))?;
         Ok(())
@@ -262,7 +278,7 @@ impl PyYamlSequence {
                 ));
             }
             let item = borrow.inner.items.remove(real_idx as usize);
-            (real_idx, item.value)
+            (real_idx, item)
         };
         // Same C-level slice trick as __delitem__ to avoid re-entering our override.
         let empty = PyList::empty(py);
@@ -277,7 +293,7 @@ impl PyYamlSequence {
             let borrow = slf.borrow();
             let mut found = None;
             for (i, item) in borrow.inner.items.iter().enumerate() {
-                let v = node_to_py(py, &item.value, None)?;
+                let v = node_to_py(py, item, None)?;
                 if v.bind(py).eq(value)? {
                     found = Some(i);
                     break;
@@ -296,7 +312,7 @@ impl PyYamlSequence {
     fn extend(slf: &Bound<'_, Self>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
         // Collect (YamlItem, Py<PyAny>) pairs.
-        let mut pairs: Vec<(YamlItem, Py<PyAny>)> = Vec::new();
+        let mut pairs: Vec<(YamlNode, Py<PyAny>)> = Vec::new();
         if let Ok(other_seq) = iterable.cast::<PyYamlSequence>() {
             // Preserve full YamlItem metadata (comments, blank lines) when
             // extending from another YamlSequence, mirroring what update() does
@@ -314,7 +330,7 @@ impl PyYamlSequence {
                 let (node, py_val) = py_to_node_with_fallback(py, &py_item, None, || {
                     YamlNode::Mapping(YamlMapping::new())
                 })?;
-                pairs.push((plain_item(node), py_val));
+                pairs.push((node, py_val));
             }
         }
         {
@@ -365,7 +381,7 @@ impl PyYamlSequence {
         let n = list_part.len();
         // Collect (inner_item, py_obj) pairs — reuse Python objects from parent list
         // so we never call node_to_py here.
-        let pairs: Vec<(YamlItem, Py<PyAny>)> = {
+        let pairs: Vec<(YamlNode, Py<PyAny>)> = {
             let borrow = slf.borrow();
             (0..n)
                 .map(|i| {
@@ -390,7 +406,7 @@ impl PyYamlSequence {
                 }
             })
             .collect::<PyResult<_>>()?;
-        let mut zipped: Vec<(Py<PyAny>, YamlItem, Py<PyAny>)> = sort_keys
+        let mut zipped: Vec<(Py<PyAny>, YamlNode, Py<PyAny>)> = sort_keys
             .into_iter()
             .zip(pairs)
             .map(|(k, (item, obj))| (k, item, obj))
@@ -452,41 +468,11 @@ impl PyYamlSequence {
         sequence_to_python(py, &self.inner)
     }
 
-    /// Return the inline comment for the item at *idx*, or ``None`` if unset.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn get_comment_inline(&self, idx: isize) -> PyResult<Option<String>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(self.inner.items[i].comment_inline.clone())
-    }
-
-    /// Set the inline comment for the item at *idx*; pass ``None`` to clear.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn set_comment_inline(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        self.inner.items[i].comment_inline = comment.map(str::to_owned);
-        Ok(())
-    }
-
-    /// Return the block comment above the item at *idx*, or ``None`` if unset.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn get_comment_before(&self, idx: isize) -> PyResult<Option<String>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(self.inner.items[i].comment_before.clone())
-    }
-
-    /// Set the block comment above the item at *idx*; pass ``None`` to clear.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn set_comment_before(&mut self, idx: isize, comment: Option<&str>) -> PyResult<()> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        self.inner.items[i].comment_before = comment.map(str::to_owned);
-        Ok(())
-    }
-
     /// Return the YAML alias name if the item at *idx* is an alias (``*name``), else ``None``.
     /// Raises ``IndexError`` for out-of-range indices.
     fn get_alias(&self, idx: isize) -> PyResult<Option<&str>> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(match &self.inner.items[i].value {
+        Ok(match &self.inner.items[i] {
             YamlNode::Alias { name, .. } => Some(name.as_str()),
             _ => None,
         })
@@ -497,10 +483,13 @@ impl PyYamlSequence {
     /// Raises ``IndexError`` for out-of-range indices.
     fn set_alias(&mut self, idx: isize, anchor_name: &str) -> PyResult<()> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        let resolved = Box::new(self.inner.items[i].value.clone());
-        self.inner.items[i].value = YamlNode::Alias {
+        let resolved = Box::new(self.inner.items[i].clone());
+        self.inner.items[i] = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
         };
         Ok(())
     }
@@ -567,114 +556,61 @@ impl PyYamlSequence {
 
     /// Return the underlying YAML node for the item at *idx* as a `YamlScalar`,
     /// `YamlMapping`, or `YamlSequence` object, preserving style/tag metadata.
+    ///
+    /// Mutations on the returned object propagate back into this sequence: for
+    /// container items the returned object is the live child (identical to
+    /// `s[idx]`), and for scalar items it is a fresh `YamlScalar` whose
+    /// setters write through into this sequence's `inner`.
+    ///
     /// Raises ``IndexError`` for out-of-range indices.
-    fn node(&self, py: Python<'_>, idx: isize) -> PyResult<Py<PyAny>> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        node_to_doc(py, self.inner.items[i].value.clone(), DocMeta::none(), None)
+    fn node(slf: &Bound<'_, Self>, idx: isize) -> PyResult<Py<PyAny>> {
+        let i = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
+        seq_child_node(slf, i)
     }
 
     /// Return a list of underlying YAML nodes for every item in this sequence.
     ///
     /// Each node is a ``YamlMapping``, ``YamlSequence``, or ``YamlScalar``,
-    /// preserving style/tag metadata. Unlike iterating the sequence, which
-    /// yields Python primitives, ``nodes()`` returns the full typed node objects.
-    fn nodes(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        self.inner
-            .items
-            .iter()
-            .map(|item| node_to_doc(py, item.value.clone(), DocMeta::none(), None))
-            .collect()
+    /// preserving style/tag metadata. Mutations on the returned nodes propagate
+    /// back into this sequence — same semantics as ``node(idx)``.
+    fn nodes(slf: &Bound<'_, Self>) -> PyResult<Vec<Py<PyAny>>> {
+        let n = slf.borrow().inner.items.len();
+        (0..n).map(|i| seq_child_node(slf, i)).collect()
     }
 
-    /// Return the scalar quoting style for the item at *idx*.
-    /// Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the item is not a scalar.
-    fn get_scalar_style(&self, idx: isize) -> PyResult<&'static str> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match &self.inner.items[i].value {
-            YamlNode::Scalar(s) => Ok(scalar_style_str(s.style)),
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "item at index {idx} is not a scalar; use get_container_style() for mappings and sequences"
-            ))),
-        }
+    /// The number of blank lines emitted before this sequence (0–255).
+    #[getter]
+    fn get_blank_lines_before(&self) -> u8 {
+        self.inner.blank_lines_before
     }
 
-    /// Set the scalar style for the item at *idx*.
-    /// *style* must be one of ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, ``"folded"``.
-    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the item is not a scalar (use ``set_container_style()`` instead).
-    fn set_scalar_style(&mut self, idx: isize, style: &str) -> PyResult<()> {
-        let new_style = parse_scalar_style(style)?;
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match &mut self.inner.items[i].value {
-            YamlNode::Scalar(s) => {
-                s.style = new_style;
-                Ok(())
-            }
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "item at index {idx} is not a scalar; use set_container_style() for mappings and sequences"
-            ))),
-        }
+    #[setter]
+    fn set_blank_lines_before(&mut self, n: u32) {
+        self.inner.blank_lines_before = n.min(255) as u8;
     }
 
-    /// Return the container style (``"block"`` or ``"flow"``) for the item at *idx*.
-    /// Raises ``IndexError`` for out-of-range indices; ``TypeError`` if the item is not a mapping or sequence.
-    fn get_container_style(&self, idx: isize) -> PyResult<&'static str> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        match &self.inner.items[i].value {
-            YamlNode::Mapping(m) => Ok(container_style_str(m.style)),
-            YamlNode::Sequence(s) => Ok(container_style_str(s.style)),
-            _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "item at index {idx} is not a container; use get_scalar_style() for scalars"
-            ))),
-        }
+    /// The inline (trailing) comment on this sequence, or ``None``. Assign
+    /// ``None`` to clear.
+    #[getter]
+    fn get_comment_inline(&self) -> Option<&str> {
+        self.inner.comment_inline.as_deref()
     }
 
-    /// Set the block/flow style for the container value at *idx*.
-    /// *style* must be ``"block"`` or ``"flow"``.
-    /// Raises ``IndexError`` for out-of-range indices; ``ValueError`` for unknown styles;
-    /// ``TypeError`` if the item is not a mapping or sequence (use ``set_scalar_style()`` instead).
-    fn set_container_style(slf: &Bound<'_, Self>, idx: isize, style: &str) -> PyResult<()> {
-        let new_style = parse_container_style(style)?;
-        let i = {
-            let borrow = slf.borrow();
-            resolve_seq_idx(idx, borrow.inner.items.len())?
-        };
-        {
-            let mut borrow = slf.borrow_mut();
-            match &mut borrow.inner.items[i].value {
-                YamlNode::Mapping(m) => m.style = new_style,
-                YamlNode::Sequence(s) => s.style = new_style,
-                _ => {
-                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                        "item at index {idx} is not a container; use set_scalar_style() for scalars"
-                    )));
-                }
-            }
-        }
-        // Also sync the Python-side object stored in the parent list so that
-        // extract_yaml_node (which reads inner.style from the child object) sees the change.
-        let py_val = slf.as_super().get_item(i)?;
-        if let Ok(bound_m) = py_val.cast::<PyYamlMapping>() {
-            bound_m.borrow_mut().inner.style = new_style;
-        } else if let Ok(bound_s) = py_val.cast::<PyYamlSequence>() {
-            bound_s.borrow_mut().inner.style = new_style;
-        }
-        Ok(())
+    #[setter]
+    fn set_comment_inline(&mut self, comment: Option<String>) {
+        self.inner.comment_inline = comment;
     }
 
-    /// Return the number of blank lines emitted before the item at *idx*.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn get_blank_lines_before(&self, idx: isize) -> PyResult<u32> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        Ok(u32::from(self.inner.items[i].blank_lines_before))
+    /// The block comment preceding this sequence, or ``None``. Assign ``None``
+    /// to clear.
+    #[getter]
+    fn get_comment_before(&self) -> Option<&str> {
+        self.inner.comment_before.as_deref()
     }
 
-    /// Set the number of blank lines emitted before the item at *idx*; values are clamped to 0–255.
-    /// Raises ``IndexError`` for out-of-range indices.
-    fn set_blank_lines_before(&mut self, idx: isize, n: u32) -> PyResult<()> {
-        let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        self.inner.items[i].blank_lines_before = n.min(255) as u8;
-        Ok(())
+    #[setter]
+    fn set_comment_before(&mut self, comment: Option<String>) {
+        self.inner.comment_before = comment;
     }
 
     /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
@@ -738,4 +674,47 @@ impl PyYamlSequence {
     fn __repr__(&self, py: Python<'_>) -> String {
         sequence_repr(py, &self.inner)
     }
+}
+
+/// Read `(comment_inline, comment_before, blank_lines_before)` at *idx*,
+/// preferring the live child object for container items (its inner is the
+/// source of truth, see `extract_yaml_node`) and falling back to the parent's
+/// `inner.items` for scalars and aliases.
+fn read_old_metadata_seq(
+    slf: &Bound<'_, PyYamlSequence>,
+    idx: usize,
+) -> PyResult<(Option<String>, Option<String>, u8)> {
+    let (is_container, fallback) = {
+        let borrow = slf.borrow();
+        let item = &borrow.inner.items[idx];
+        (
+            matches!(item, YamlNode::Mapping(_) | YamlNode::Sequence(_)),
+            (
+                item.comment_inline().map(str::to_owned),
+                item.comment_before().map(str::to_owned),
+                item.blank_lines_before(),
+            ),
+        )
+    };
+    if !is_container {
+        return Ok(fallback);
+    }
+    let py_val = slf.as_super().get_item(idx)?;
+    if let Ok(child) = py_val.cast::<PyYamlMapping>() {
+        let b = child.borrow();
+        return Ok((
+            b.inner.comment_inline.clone(),
+            b.inner.comment_before.clone(),
+            b.inner.blank_lines_before,
+        ));
+    }
+    if let Ok(child) = py_val.cast::<PyYamlSequence>() {
+        let b = child.borrow();
+        return Ok((
+            b.inner.comment_inline.clone(),
+            b.inner.comment_before.clone(),
+            b.inner.blank_lines_before,
+        ));
+    }
+    Ok(fallback)
 }

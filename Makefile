@@ -86,15 +86,17 @@ test-invalid:
 test-roundtrip:
 	$(PYTEST) tests/test_roundtrip.py -v
 
-bench: build-release
+bench:
 	uv sync --group benchmark
+	$(MATURIN) develop --release
 	$(PYTEST) benchmarks/ --benchmark-only -q \
 	    --benchmark-group-by=group \
 	    --benchmark-sort=name \
 	    --override-ini="python_files=bench_*.py"
 
-bench-compare: build-release
+bench-compare:
 	uv sync --group benchmark
+	$(MATURIN) develop --release
 	$(PYTEST) benchmarks/ --benchmark-only \
 	    --benchmark-group-by=group \
 	    --benchmark-histogram=histograms/bench \

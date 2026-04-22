@@ -12,6 +12,7 @@ Covers:
 - Tag on YamlMapping / YamlSequence appears in dump output
 """
 
+import datetime
 from textwrap import dedent
 
 import pytest
@@ -565,6 +566,361 @@ class TestConstructorTagInOutput:
         doc = yarutsk.YamlMapping()
         doc["v"] = yarutsk.YamlScalar("x", tag="!scalar-tag")
         assert "!scalar-tag" in yarutsk.dumps(doc)
+
+
+class TestCommentsFromScratch:
+    """Comments attached to freshly-constructed nodes (no source document)."""
+
+    def test_mapping_inline_comment_on_entry(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.node("a").comment_inline = "note"
+        assert yarutsk.dumps(doc) == "a: 1  # note\n"
+
+    def test_mapping_block_comment_on_entry(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.node("a").comment_before = "above"
+        assert yarutsk.dumps(doc) == "# above\na: 1\n"
+
+    def test_mapping_entry_both_comments(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.node("a").comment_before = "above"
+        doc.node("a").comment_inline = "trailing"
+        assert yarutsk.dumps(doc) == "# above\na: 1  # trailing\n"
+
+    def test_multi_line_comment_before(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.node("a").comment_before = "line1\nline2\nline3"
+        assert yarutsk.dumps(doc) == dedent("""\
+            # line1
+            # line2
+            # line3
+            a: 1
+        """)
+
+    def test_sequence_item_inline_comment(self):
+        seq = yarutsk.YamlSequence()
+        seq.extend([1, 2])
+        seq.node(0).comment_inline = "one"
+        seq.node(1).comment_inline = "two"
+        assert yarutsk.dumps(seq) == "- 1  # one\n- 2  # two\n"
+
+    def test_sequence_item_block_comment(self):
+        seq = yarutsk.YamlSequence()
+        seq.extend([1, 2])
+        seq.node(0).comment_before = "first"
+        assert yarutsk.dumps(seq) == "# first\n- 1\n- 2\n"
+
+    def test_scalar_constructor_with_comments(self):
+        doc = yarutsk.YamlMapping()
+        s = yarutsk.YamlScalar("v", style="double")
+        s.comment_before = "header"
+        s.comment_inline = "note"
+        doc["k"] = s
+        assert yarutsk.dumps(doc) == '# header\nk: "v"  # note\n'
+
+    def test_comment_clear_roundtrip(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.node("a").comment_inline = "temp"
+        doc.node("a").comment_inline = None
+        assert yarutsk.dumps(doc) == "a: 1\n"
+
+    def test_nested_mapping_comment_on_child(self):
+        outer = yarutsk.YamlMapping()
+        inner = yarutsk.YamlMapping()
+        inner["x"] = 1
+        inner.node("x").comment_inline = "deep"
+        outer["inner"] = inner
+        out = yarutsk.dumps(outer)
+        assert "# deep" in out
+        assert "x: 1" in out
+
+    def test_flow_mapping_comments_not_emitted(self):
+        """Per-entry comments are dropped when the parent is flow-styled — known
+        emitter behavior."""
+        m = yarutsk.YamlMapping(style="flow")
+        m["a"] = 1
+        m.node("a").comment_inline = "ignored"
+        doc = yarutsk.YamlMapping()
+        doc["p"] = m
+        assert "ignored" not in yarutsk.dumps(doc)
+
+
+class TestAnchorsAndAliasesFromScratch:
+    """Anchors and alias references built entirely from Python."""
+
+    def test_anchor_on_scalar(self):
+        doc = yarutsk.YamlMapping()
+        s = yarutsk.YamlScalar("hi", style="double")
+        s.anchor = "greeting"
+        doc["a"] = s
+        assert yarutsk.dumps(doc) == 'a: &greeting "hi"\n'
+
+    def test_anchor_via_node_setter(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = "hello"
+        doc.node("a").anchor = "g"
+        assert yarutsk.dumps(doc) == "a: &g hello\n"
+
+    def test_alias_reference_to_scalar(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = yarutsk.YamlScalar("value")
+        doc.node("a").anchor = "ref"
+        doc["b"] = "placeholder"
+        doc.set_alias("b", "ref")
+        assert yarutsk.dumps(doc) == "a: &ref value\nb: *ref\n"
+
+    def test_anchor_on_mapping(self):
+        inner = yarutsk.YamlMapping()
+        inner["x"] = 1
+        inner.anchor = "cfg"
+        doc = yarutsk.YamlMapping()
+        doc["a"] = inner
+        out = yarutsk.dumps(doc)
+        assert "&cfg" in out
+        assert "x: 1" in out
+
+    def test_alias_reference_to_mapping(self):
+        inner = yarutsk.YamlMapping()
+        inner["x"] = 1
+        inner.anchor = "cfg"
+        doc = yarutsk.YamlMapping()
+        doc["a"] = inner
+        doc["b"] = yarutsk.YamlMapping()
+        doc.set_alias("b", "cfg")
+        out = yarutsk.dumps(doc)
+        assert "&cfg" in out
+        assert "b: *cfg" in out
+
+    def test_alias_in_sequence(self):
+        doc = yarutsk.YamlMapping()
+        doc["orig"] = "x"
+        doc.node("orig").anchor = "a1"
+        seq = yarutsk.YamlSequence()
+        seq.append("placeholder")
+        seq.set_alias(0, "a1")
+        doc["refs"] = seq
+        out = yarutsk.dumps(doc)
+        assert "&a1" in out
+        assert "*a1" in out
+
+    def test_get_alias_returns_anchor_name(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = "v"
+        doc.node("a").anchor = "x"
+        doc["b"] = "v"
+        doc.set_alias("b", "x")
+        assert doc.get_alias("b") == "x"
+        assert doc.get_alias("a") is None
+
+    def test_anchor_clear_via_none(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = "v"
+        doc.node("a").anchor = "n"
+        doc.node("a").anchor = None
+        assert "&" not in yarutsk.dumps(doc)
+
+
+class TestBlankLinesFromScratch:
+    def test_blank_lines_before_entry(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc["b"] = 2
+        doc.node("b").blank_lines_before = 2
+        assert yarutsk.dumps(doc) == "a: 1\n\n\nb: 2\n"
+
+    def test_blank_lines_before_clamped_at_255(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc["b"] = 2
+        doc.node("b").blank_lines_before = 10_000
+        assert doc.node("b").blank_lines_before == 255
+
+    def test_trailing_blank_lines_after_mapping(self):
+        inner = yarutsk.YamlMapping()
+        inner["x"] = 1
+        inner.trailing_blank_lines = 2
+        doc = yarutsk.YamlMapping()
+        doc["nested"] = inner
+        doc["other"] = 2
+        out = yarutsk.dumps(doc)
+        assert "\n\n\nother:" in out
+
+    def test_trailing_blank_lines_after_sequence(self):
+        seq = yarutsk.YamlSequence()
+        seq.extend([1, 2])
+        seq.trailing_blank_lines = 1
+        doc = yarutsk.YamlMapping()
+        doc["items"] = seq
+        doc["next"] = "x"
+        out = yarutsk.dumps(doc)
+        assert "\n\nnext:" in out
+
+    def test_blank_lines_before_sequence_item(self):
+        seq = yarutsk.YamlSequence()
+        seq.extend([1, 2])
+        seq.node(1).blank_lines_before = 1
+        assert yarutsk.dumps(seq) == "- 1\n\n- 2\n"
+
+
+class TestDocumentMarkersFromScratch:
+    def test_explicit_start_on_mapping(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.explicit_start = True
+        assert yarutsk.dumps(doc) == "---\na: 1\n"
+
+    def test_explicit_end_on_mapping(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.explicit_end = True
+        assert yarutsk.dumps(doc).endswith("...\n")
+
+    def test_yaml_version_directive(self):
+        doc = yarutsk.YamlMapping()
+        doc["a"] = 1
+        doc.yaml_version = "1.2"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("%YAML 1.2\n---\n")
+
+    def test_yaml_version_rejects_invalid(self):
+        doc = yarutsk.YamlMapping()
+        with pytest.raises(ValueError):
+            doc.yaml_version = "not-a-version"
+
+    def test_tag_directive(self):
+        doc = yarutsk.YamlMapping()
+        doc["x"] = 1
+        doc.tag_directives = [("!local!", "tag:example.com,2024:")]
+        out = yarutsk.dumps(doc)
+        assert "%TAG !local! tag:example.com,2024:" in out
+
+    def test_all_document_markers_on_sequence(self):
+        seq = yarutsk.YamlSequence()
+        seq.append(1)
+        seq.explicit_start = True
+        seq.explicit_end = True
+        seq.yaml_version = "1.2"
+        out = yarutsk.dumps(seq)
+        assert out.startswith("%YAML 1.2\n---\n")
+        assert out.rstrip().endswith("...")
+
+    def test_document_markers_on_scalar(self):
+        s = yarutsk.YamlScalar("hello", style="double")
+        s.explicit_start = True
+        s.explicit_end = True
+        out = yarutsk.dumps(s)
+        assert "---" in out
+        assert "..." in out
+
+
+class TestSpecialScalarsFromScratch:
+    def test_date_scalar(self):
+        doc = yarutsk.YamlMapping()
+        doc["when"] = yarutsk.YamlScalar(datetime.date(2024, 1, 15))
+        out = yarutsk.dumps(doc)
+        assert "!!timestamp 2024-01-15" in out
+
+    def test_datetime_scalar(self):
+        doc = yarutsk.YamlMapping()
+        doc["at"] = yarutsk.YamlScalar(datetime.datetime(2024, 6, 30, 12, 34, 56))
+        out = yarutsk.dumps(doc)
+        assert "!!timestamp 2024-06-30T12:34:56" in out
+
+    def test_bytes_scalar_base64_encoded(self):
+        doc = yarutsk.YamlMapping()
+        doc["blob"] = yarutsk.YamlScalar(b"hello")
+        out = yarutsk.dumps(doc)
+        assert "!!binary" in out
+        assert "aGVsbG8=" in out  # base64 of "hello"
+
+    def test_bytearray_scalar(self):
+        doc = yarutsk.YamlMapping()
+        doc["blob"] = yarutsk.YamlScalar(bytearray(b"abc"))
+        out = yarutsk.dumps(doc)
+        assert "!!binary" in out
+
+    def test_date_roundtrip_via_load(self):
+        """A date built from scratch re-loads as a datetime.date."""
+        doc = yarutsk.YamlMapping()
+        doc["d"] = yarutsk.YamlScalar(datetime.date(2024, 1, 1))
+        reloaded = yarutsk.loads(yarutsk.dumps(doc))
+        assert reloaded["d"] == datetime.date(2024, 1, 1)
+
+    def test_bytes_roundtrip_via_load(self):
+        doc = yarutsk.YamlMapping()
+        doc["b"] = yarutsk.YamlScalar(b"payload")
+        reloaded = yarutsk.loads(yarutsk.dumps(doc))
+        assert reloaded["b"] == b"payload"
+
+    def test_custom_tag_overrides_binary_default(self):
+        doc = yarutsk.YamlMapping()
+        doc["b"] = yarutsk.YamlScalar(b"x", tag="!raw")
+        out = yarutsk.dumps(doc)
+        assert "!raw" in out
+        assert "!!binary" not in out
+
+
+class TestCombinedFromScratch:
+    """Build a document that exercises every surface in one go, then verify
+    the emitted YAML and a load→compare round-trip."""
+
+    def test_build_from_scratch_with_all_features(self):
+        # Top-level mapping with document markers + %YAML directive.
+        doc = yarutsk.YamlMapping()
+        doc.explicit_start = True
+        doc.yaml_version = "1.2"
+
+        # Plain entry with a block comment.
+        doc["name"] = "demo"
+        doc.node("name").comment_before = "the demo config"
+
+        # Scalar with a custom style + anchor.
+        addr = yarutsk.YamlScalar("127.0.0.1", style="double")
+        addr.anchor = "localhost"
+        doc["primary"] = addr
+
+        # Alias back to the anchored scalar, with a blank line between the two.
+        doc["fallback"] = "placeholder"
+        doc.set_alias("fallback", "localhost")
+        doc.node("fallback").blank_lines_before = 1
+
+        # Nested flow-style sequence with a tag.
+        ports = yarutsk.YamlSequence(style="flow", tag="!ports")
+        ports.extend([80, 443])
+        doc["ports"] = ports
+
+        # Nested block-style mapping with a trailing inline comment on an entry.
+        meta = yarutsk.YamlMapping()
+        meta["created"] = yarutsk.YamlScalar(datetime.date(2024, 1, 1))
+        meta.node("created").comment_inline = "ISO"
+        doc["meta"] = meta
+
+        out = yarutsk.dumps(doc)
+
+        # Spot-check every feature landed in the output.
+        assert "%YAML 1.2" in out
+        assert out.split("\n", 2)[1] == "---"
+        assert "# the demo config" in out
+        assert 'primary: &localhost "127.0.0.1"' in out
+        assert "fallback: *localhost" in out
+        assert "\n\nfallback:" in out  # blank_lines_before = 1
+        assert "!ports" in out
+        assert "[80, 443]" in out
+        assert "!!timestamp 2024-01-01" in out
+        assert "# ISO" in out
+
+        # Re-load and confirm the structural + value view survives.
+        loaded = yarutsk.loads(out)
+        assert loaded["name"] == "demo"
+        assert loaded["primary"] == "127.0.0.1"
+        assert loaded["fallback"] == "127.0.0.1"  # alias resolved
+        assert list(loaded["ports"]) == [80, 443]
+        assert loaded["meta"]["created"] == datetime.date(2024, 1, 1)
 
 
 class TestKnownLimitations:

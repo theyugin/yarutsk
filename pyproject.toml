@@ -32,7 +32,8 @@ Changelog = "https://github.com/theyugin/yarutsk/blob/main/CHANGELOG.md"
 Issues = "https://github.com/theyugin/yarutsk/issues"
 
 [tool.maturin]
-include = ["yarutsk.pyi"]
+module-name = "yarutsk._yarutsk"
+python-source = "python"
 features = ["extension-module"]
 
 [tool.mypy]
@@ -46,6 +47,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+src = ["python"]
 extend-exclude = ["yaml-test-suite", ".venv", "target"]
 
 [tool.ruff.lint]

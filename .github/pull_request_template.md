@@ -10,7 +10,7 @@
 - [ ] `.venv/bin/pytest tests/test_yaml_suite.py` (if touching scanner/parser/emitter)
 - [ ] `.venv/bin/mypy`
 - [ ] `.venv/bin/ruff check . && .venv/bin/ruff format --check .`
-- [ ] README / yarutsk.pyi updated if public API changed
+- [ ] README / `python/yarutsk/__init__.pyi` updated if public API changed
 
 ### Notes
 

@@ -81,32 +81,32 @@ Each PyO3 container type holds a Rust `inner` field with the full data model; th
 - Aliases are stored as `YamlNode::Alias { name, resolved }` — the `resolved` box holds the expanded value for Python access while `name` is preserved for round-trip emission as `*name`.
 - `ScalarValue::from_str` in `src/core/types.rs` implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`) which is preserved as-written via `original: Option<String>` on `YamlScalar`.
 - **Dual mutation sync**: setting style on a nested container requires updating both the Rust `inner` and the Python-side parent dict — both must stay in sync on every mutation.
-- **Uniform `get_/set_` pair convention**: every per-key/per-index metadata accessor follows the `get_foo(key)` / `set_foo(key, value)` shape. No overloaded `*args`, no setter-only naked methods. Kind-specific accessors raise `TypeError` when applied to the wrong node kind.
+- **Metadata lives on the node**: every piece of node-level formatting (style, comments, blank lines) is a property of the `YamlNode` itself and is reached via `parent.node(key).<field>`. There is no per-key/per-index accessor on the parent container — the parent exposes `node(key)` / `nodes()` and that's the only way in. `node(key)` returns a write-through handle (via `NodeParent` back-reference on `PyYamlScalar`; for container children it returns the live Python object already stored in the parent `dict`/`list`), so setter calls propagate to the parent's `inner` automatically.
 
 ### Style mutation API
 
-`YamlMapping` and `YamlSequence` expose read/write properties and methods for controlling YAML formatting:
+`YamlMapping`, `YamlSequence`, and `YamlScalar` expose read/write properties for controlling YAML formatting. The same property set lives on every node type (with kind-appropriate values for `style`):
 
-- **Properties** (read/write): `tag`, `anchor`, `style`, `trailing_blank_lines`, `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`
-- **`node(key)`** — returns the underlying node preserving all style metadata
-- **`nodes()`** — mapping returns `[(key, node)]` pairs; sequence returns `[node, ...]` — with style metadata preserved
-- **`get_scalar_style(key)`** / **`set_scalar_style(key, style)`** — `"plain" | "single" | "double" | "literal" | "folded"`; raises `TypeError` on containers
-- **`get_container_style(key)`** / **`set_container_style(key, style)`** — `"block" | "flow"`; syncs both Rust `inner` and the Python parent container; raises `TypeError` on scalars
-- **`get_blank_lines_before(key)`** / **`set_blank_lines_before(key, n)`** — blank lines before a key/index (0–255, clamped)
-- **`get_comment_inline(key)`** / **`set_comment_inline(key, comment)`** — trailing inline comment on a key/index
-- **`get_comment_before(key)`** / **`set_comment_before(key, comment)`** — comment block on the lines preceding a key/index
-- **`get_alias(key)`** — returns the anchor name if the child is an alias, else `None`
-- **`set_alias(key, anchor_name)`** — replaces the child value with an alias reference to the given anchor
-- **`sort_keys(...)`** (mapping) / **`sort(...)`** / **`index(...)`** (sequence) — in-place operations that preserve per-entry metadata
-- **`copy()`** / **`__copy__`** / **`__deepcopy__`** — metadata-preserving copies
-- **`to_python()`** — collapse to a plain Python `dict`/`list`/primitive tree (loses all style metadata)
-- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` with only `styles=True` (scalars have no comments or blank lines to reset).
+- **Common properties** (read/write on all three node types): `tag`, `anchor`, `style`, `blank_lines_before`, `comment_inline`, `comment_before`
+  - `style` on `YamlScalar`: `"plain" | "single" | "double" | "literal" | "folded"`
+  - `style` on `YamlMapping` / `YamlSequence`: `"block" | "flow"`
+  - `blank_lines_before`: `int`, clamped 0–255 on write
+  - `comment_inline` / `comment_before`: `str | None` — assign `None` to clear
+- **Container-only properties**: `trailing_blank_lines`, `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives` (top-level only)
+- **Container navigation**:
+  - `node(key)` — returns the live child node (write-through); used to reach any per-child metadata
+  - `nodes()` — mapping: `[(key, node)]` pairs; sequence: `[node, ...]` — all with metadata preserved
+- **Alias helpers on containers**: `get_alias(key)` / `set_alias(key, anchor_name)` — distinct from formatting metadata; stays on the parent because it replaces the child value with an alias reference.
+- **In-place ops**: `sort_keys(...)` (mapping), `sort(...)` / `index(...)` (sequence) — preserve per-entry metadata
+- **Copy**: `copy()` / `__copy__` / `__deepcopy__` — metadata-preserving
+- **`to_python()`** — collapse to a plain `dict`/`list`/primitive tree (loses all metadata)
+- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` with only `styles=True`.
 
-Sequence variants use integer indices instead of string keys.
+Typical usage: `doc.node("key").style = "double"`, `doc.node("key").comment_inline = "hi"`, `doc.node(0).blank_lines_before = 2`. Sequence variants use integer indices instead of string keys; otherwise the surface is identical.
 
 ### Docs
 
-When adding, changing, or removing public API methods, **update `docs/api.md`** (and `docs/integrations.md` if Schema behaviour changes) to match, alongside the `yarutsk.pyi` stub and the Rust source. The mkdocs site at <https://theyugin.github.io/yarutsk/> is the authoritative user-facing reference; `README.md` is a short landing page that points at the docs and should not duplicate API details.
+When adding, changing, or removing public API methods, **update `docs/api.md`** (and `docs/integrations.md` if Schema behaviour changes) to match, alongside the `python/yarutsk/__init__.pyi` stub and the Rust source. The mkdocs site at <https://theyugin.github.io/yarutsk/> is the authoritative user-facing reference; `README.md` is a short landing page that points at the docs and should not duplicate API details.
 
 ### Schema / custom type handling
 
@@ -137,4 +137,4 @@ doc = yarutsk.load(text, schema=schema)
 - `tests/test_invalid_input.py` — error handling and validation
 - `tests/test_yaml_suite.py` — [yaml-test-suite](https://github.com/yaml/yaml-test-suite) compliance (requires `yaml-test-suite` submodule)
 - `tests/typing_check.py` — mypy strict type-checking of the public API
-- `yarutsk.pyi` — Python stub file for the extension module
+- `python/yarutsk/__init__.pyi` — Python stub file for the extension module
