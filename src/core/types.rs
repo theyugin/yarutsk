@@ -115,6 +115,21 @@ pub enum ContainerStyle {
     Flow,
 }
 
+/// Chomping indicator for block scalars (`|` / `>`).
+///
+/// Mirrors `scanner::Chomping` at the data-model layer, so the builder
+/// can carry the scanner's chomping through without leaking scanner
+/// internals into the emitter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chomping {
+    /// `-` — strip: remove the final line break and any trailing empty lines.
+    Strip,
+    /// No indicator — clip: keep exactly one final line break.
+    Clip,
+    /// `+` — keep: preserve the final line break and any trailing empty lines.
+    Keep,
+}
+
 #[derive(Debug, Clone)]
 pub struct YamlScalar {
     pub value: ScalarValue,
@@ -125,6 +140,13 @@ pub struct YamlScalar {
     /// Original source text preserved for scalars where formatting matters
     /// (e.g. floats written in exponent form: `1.5e10`).
     pub original: Option<String>,
+    /// Source chomping indicator for block scalars (`|-`/`|`/`|+` and
+    /// `>-`/`>`/`>+`). `None` for non-block scalars and new constructions.
+    /// When present and consistent with the value's trailing-newline count,
+    /// the emitter uses this instead of re-inferring — so `>+` on a value
+    /// with exactly one trailing `\n` round-trips as `>+`, not `>`. Cleared
+    /// on any value mutation.
+    pub chomping: Option<Chomping>,
     /// Anchor name declared on this scalar (`&name`), if any.
     pub anchor: Option<String>,
     /// Trailing `# comment` on the scalar's line.
@@ -362,6 +384,7 @@ impl YamlScalar {
                 ScalarStyle::Plain
             };
             self.original = None;
+            self.chomping = None;
         }
         if opts.comments {
             self.comment_inline = None;

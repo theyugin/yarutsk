@@ -6,8 +6,8 @@ use std::fmt::{self, Write as FmtWrite};
 use super::builder::DocMetadata;
 use super::char_traits::{is_tag_char, is_uri_char};
 use super::types::{
-    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
-    YamlSequence,
+    Chomping, ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
 };
 
 // ─── LastCharTracker ─────────────────────────────────────────────────────────
@@ -223,6 +223,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 style: entry.key_style,
                 tag: entry.key_tag.clone(),
                 original: None,
+                chomping: None,
                 anchor: entry.key_anchor.clone(),
                 comment_inline: None,
                 comment_before: None,
@@ -654,15 +655,28 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             ScalarValue::Str(text) => text.as_str(),
             _ => "",
         };
-        // Choose chomping indicator based on trailing newlines:
-        //   strip (`-`)  → 0 trailing newlines
-        //   clip (none)  → exactly 1 trailing newline
-        //   keep (`+`)   → 2 or more trailing newlines
+        // Choose chomping indicator. Honour the source indicator (`s.chomping`)
+        // when it's consistent with the value's trailing-newline count, so that
+        // `>+` on a value with exactly one trailing `\n` round-trips as `>+`
+        // rather than the inference-picked `>`. Fall back to pure inference
+        // when the field is absent or when a value mutation has made the
+        // stored indicator inconsistent (e.g. loaded `>-`, value mutated to
+        // have trailings — `>-` would strip them, losing data).
+        //
+        // Consistency rules:
+        //   Strip  → requires 0 trailings
+        //   Clip   → requires exactly 1 trailing
+        //   Keep   → always consistent (preserves whatever is there)
         let trailing_newlines = content.bytes().rev().take_while(|&b| b == b'\n').count();
-        let chomping = match trailing_newlines {
-            0 => "-",
-            1 => "",
-            _ => "+",
+        let chomping = match s.chomping {
+            Some(Chomping::Strip) if trailing_newlines == 0 => "-",
+            Some(Chomping::Clip) if trailing_newlines == 1 => "",
+            Some(Chomping::Keep) => "+",
+            _ => match trailing_newlines {
+                0 => "-",
+                1 => "",
+                _ => "+",
+            },
         };
         // Emit all lines except the artifact empty string produced by a trailing '\n'.
         let lines: Vec<&str> = content.split('\n').collect();
@@ -1300,6 +1314,7 @@ mod tests {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            chomping: None,
             anchor: None,
             comment_inline: None,
             comment_before: None,
@@ -1313,6 +1328,7 @@ mod tests {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            chomping: None,
             anchor: None,
             comment_inline: None,
             comment_before: None,
@@ -1348,6 +1364,7 @@ mod tests {
             style,
             tag: tag.map(std::borrow::ToOwned::to_owned),
             original: original.map(std::borrow::ToOwned::to_owned),
+            chomping: None,
             anchor: anchor.map(std::borrow::ToOwned::to_owned),
             comment_inline: None,
             comment_before: None,
@@ -1871,6 +1888,7 @@ mod tests {
             style: ScalarStyle::Plain,
             tag: None,
             original: None,
+            chomping: None,
             anchor: None,
             comment_inline: None,
             comment_before: None,
@@ -1905,6 +1923,7 @@ mod tests {
                 style: ScalarStyle::Literal,
                 tag: None,
                 original: None,
+                chomping: None,
                 anchor: None,
                 comment_inline: None,
                 comment_before: None,
@@ -1932,6 +1951,7 @@ mod tests {
                 style: ScalarStyle::Folded,
                 tag: None,
                 original: None,
+                chomping: None,
                 anchor: None,
                 comment_inline: None,
                 comment_before: None,
@@ -1957,6 +1977,7 @@ mod tests {
                 style,
                 tag: None,
                 original: None,
+                chomping: None,
                 anchor: None,
                 comment_inline: None,
                 comment_before: None,
@@ -1993,6 +2014,7 @@ mod tests {
                     style: ScalarStyle::Folded,
                     tag: None,
                     original: None,
+                    chomping: None,
                     anchor: None,
                     comment_inline: None,
                     comment_before: None,
@@ -2025,6 +2047,7 @@ mod tests {
                 style: ScalarStyle::Literal,
                 tag: None,
                 original: None,
+                chomping: None,
                 anchor: None,
                 comment_inline: None,
                 comment_before: None,
@@ -2049,6 +2072,7 @@ mod tests {
                 style: ScalarStyle::Literal,
                 tag: None,
                 original: None,
+                chomping: None,
                 anchor: None,
                 comment_inline: None,
                 comment_before: None,

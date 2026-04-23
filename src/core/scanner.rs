@@ -216,7 +216,20 @@ pub enum TokenType {
         String,
     ),
     /// A regular YAML scalar.
-    Scalar(TScalarStyle, String),
+    ///
+    /// - 3rd field — the 0-indexed line number of the scalar's last source
+    ///   line for block scalars (`|` / `>`). `None` for plain and flow-quoted
+    ///   scalars; those occupy a single source line, so the token's start mark
+    ///   already pins both endpoints. Block scalars span multiple lines and
+    ///   their folded/chomped value no longer carries that line count, so the
+    ///   builder needs the scanner's end position to advance its
+    ///   `last_content_line` correctly.
+    /// - 4th field — the source chomping indicator for block scalars only
+    ///   (`Strip`/`Clip`/`Keep` for `|-`/`|`/`|+` and `>-`/`>`/`>+`). The
+    ///   emitter uses this to round-trip `>+` / `|+` on values that happen
+    ///   to have exactly one trailing newline — without it, inference
+    ///   would downgrade them to `>` / `|`.
+    Scalar(TScalarStyle, String, Option<usize>, Option<Chomping>),
     /// A YAML comment (text after `#`, stripped of leading whitespace and the `#` itself).
     Comment(String),
 }
@@ -1711,7 +1724,10 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                 // Otherwise, the newline after chomping is ignored.
                 Chomping::Keep => trailing_breaks,
             };
-            return Ok(Token(start_mark, TokenType::Scalar(style, contents)));
+            return Ok(Token(
+                start_mark,
+                TokenType::Scalar(style, contents, Some(self.mark.line()), Some(chomping)),
+            ));
         }
 
         if self.mark.col < indent && (self.mark.col as isize) > self.indent {
@@ -1777,7 +1793,10 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             string.push_str(&trailing_breaks);
         }
 
-        Ok(Token(start_mark, TokenType::Scalar(style, string)))
+        Ok(Token(
+            start_mark,
+            TokenType::Scalar(style, string, Some(self.mark.line()), Some(chomping)),
+        ))
     }
 
     /// Retrieve the contents of the line, parsing it as a block scalar.
@@ -2059,7 +2078,14 @@ impl<T: Iterator<Item = char>> Scanner<T> {
         } else {
             TScalarStyle::DoubleQuoted
         };
-        Ok(Token(start_mark, TokenType::Scalar(style, string)))
+        // Quoted scalars are typically single-line; a multi-line quoted scalar
+        // folds to spaces like a folded block scalar, so its in-memory value
+        // loses the source line count. Leave `end_line` unset here for now —
+        // the builder falls back to `node_line` which matches prior behaviour.
+        Ok(Token(
+            start_mark,
+            TokenType::Scalar(style, string, None, None),
+        ))
     }
 
     /// Consume successive non-whitespace characters from a flow scalar.
@@ -2318,9 +2344,13 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             self.allow_simple_key();
         }
 
+        // Plain scalars can technically span lines (folded to spaces), but
+        // their scanner eats trailing whitespace including line breaks, so
+        // `self.mark.line()` here is not a reliable end-of-content marker.
+        // Leave `end_line` unset; the builder falls back to `node_line`.
         Ok(Token(
             start_mark,
-            TokenType::Scalar(TScalarStyle::Plain, string),
+            TokenType::Scalar(TScalarStyle::Plain, string, None, None),
         ))
     }
 
@@ -2622,7 +2652,7 @@ impl SkipTabs {
 /// Chomping, how final line breaks and trailing empty lines are interpreted.
 ///
 /// See YAML spec 8.1.1.2.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Chomping {
     /// The final line break and any trailing empty lines are excluded.
     Strip,
