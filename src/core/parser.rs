@@ -14,7 +14,7 @@
 //! compliance, and emits a stream of tokens that can be used by the [`crate::YamlLoader`] to
 //! construct the [`crate::Yaml`] object.
 
-use super::scanner::{Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
+use super::scanner::{Chomping, Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
 use std::collections::HashMap;
 
 /// Return type of [`Parser::parser_process_directives`]: parsed YAML version and TAG directives.
@@ -75,8 +75,27 @@ pub enum Event {
     DocumentEnd(bool),
     /// A YAML Alias — carries the anchor name so the builder can reconstruct `*name`.
     Alias(String),
-    /// Value, style, anchor name (None if no anchor), tag.
-    Scalar(String, TScalarStyle, Option<String>, Option<Tag>),
+    /// Value, style, anchor name (None if no anchor), tag, end-line,
+    /// source chomping indicator.
+    ///
+    /// - `end_line` — 0-indexed line of the scalar's last source line when
+    ///   the scalar spans multiple lines (block `|` / `>`, or a wrapped
+    ///   quoted scalar). `None` for single-line scalars. The builder uses
+    ///   this to advance `last_content_line` correctly for folded/chomped
+    ///   values whose newline count no longer reflects the source.
+    /// - `chomping` — the chomping indicator for block scalars only
+    ///   (`Strip`/`Clip`/`Keep` for `|-`/`|`/`|+` and `>-`/`>`/`>+`). The
+    ///   emitter preserves this instead of re-inferring from trailing
+    ///   newlines — which would otherwise downgrade `>+` to `>` on values
+    ///   with exactly one trailing `\n`.
+    Scalar(
+        String,
+        TScalarStyle,
+        Option<String>,
+        Option<Tag>,
+        Option<usize>,
+        Option<Chomping>,
+    ),
     /// The start of a YAML sequence (array).
     SequenceStart(
         /// The anchor name of the sequence, if any.
@@ -114,12 +133,12 @@ impl Event {
     /// Create an empty scalar.
     fn empty_scalar() -> Event {
         // a null scalar
-        Event::Scalar(String::new(), TScalarStyle::Plain, None, None)
+        Event::Scalar(String::new(), TScalarStyle::Plain, None, None, None, None)
     }
 
     /// Create an empty scalar with the given anchor name.
     fn empty_scalar_with_anchor(anchor: Option<String>, tag: Option<Tag>) -> Event {
-        Event::Scalar(String::new(), TScalarStyle::Plain, anchor, tag)
+        Event::Scalar(String::new(), TScalarStyle::Plain, anchor, tag, None, None)
     }
 }
 
@@ -776,8 +795,13 @@ impl<T: Iterator<Item = char>> Parser<T> {
             }
             Token(_, TokenType::Scalar(..)) => {
                 self.pop_state();
-                if let Token(mark, TokenType::Scalar(style, v)) = self.fetch_token() {
-                    Ok((Event::Scalar(v, style, anchor_name, tag), mark))
+                if let Token(mark, TokenType::Scalar(style, v, end_line, chomping)) =
+                    self.fetch_token()
+                {
+                    Ok((
+                        Event::Scalar(v, style, anchor_name, tag, end_line, chomping),
+                        mark,
+                    ))
                 } else {
                     unreachable!()
                 }

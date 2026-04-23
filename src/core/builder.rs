@@ -3,11 +3,21 @@
 use std::collections::{HashMap, HashSet};
 
 use super::parser::{Event, Parser, Tag};
-use super::scanner::{Marker, TScalarStyle};
+use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
 use super::types::{
-    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
-    YamlSequence,
+    Chomping, ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
 };
+
+/// Translate the scanner's `Chomping` enum to the data-model enum stored on
+/// `YamlScalar`, so emitter/types layers stay decoupled from scanner internals.
+fn map_chomping(c: ScannerChomping) -> Chomping {
+    match c {
+        ScannerChomping::Strip => Chomping::Strip,
+        ScannerChomping::Clip => Chomping::Clip,
+        ScannerChomping::Keep => Chomping::Keep,
+    }
+}
 
 /// Tags that should bypass built-in `ScalarValue` coercion in the builder.
 /// When a tag is in this set the scalar value is kept as `ScalarValue::Str`
@@ -174,12 +184,14 @@ fn make_scalar(
     tag: Option<String>,
     original: Option<String>,
     anchor: Option<String>,
+    chomping: Option<Chomping>,
 ) -> YamlNode {
     YamlNode::Scalar(YamlScalar {
         value,
         style,
         tag,
         original,
+        chomping,
         anchor,
         comment_inline: None,
         comment_before: None,
@@ -493,7 +505,7 @@ impl Builder {
                 }
             }
 
-            Event::Scalar(value, style, anchor_name, tag) => {
+            Event::Scalar(value, style, anchor_name, tag, end_line, chomping) => {
                 let scalar_style = map_scalar_style(style);
                 let scalar_tag = tag_to_string(tag);
                 let is_plain = style == TScalarStyle::Plain;
@@ -553,14 +565,14 @@ impl Builder {
                 };
 
                 let node_line = mark.line();
-                // For block scalars the content spans multiple source lines; advance
-                // last_content_line past them so outer containers don't double-count.
-                let effective_scalar_end_line =
-                    if matches!(scalar_style, ScalarStyle::Literal | ScalarStyle::Folded) {
-                        node_line + value.bytes().filter(|&b| b == b'\n').count()
-                    } else {
-                        node_line
-                    };
+                // Multi-line scalars (block `|` / `>`, or a wrapped quoted scalar)
+                // span several source lines, but folding/chomping can leave the
+                // in-memory value with a different newline count than the source —
+                // e.g. `>-` on 3 source lines produces a value with zero newlines.
+                // The scanner passes the true end line so outer containers don't
+                // get phantom `trailing_blank_lines` for lines the scalar actually
+                // occupied.
+                let effective_scalar_end_line = end_line.unwrap_or(node_line);
 
                 // Preserve the original source text when the plain-scalar representation
                 // differs from what the emitter would produce canonically.  This covers:
@@ -643,6 +655,7 @@ impl Builder {
                     scalar_tag.clone(),
                     scalar_original,
                     anchor_name.clone(),
+                    chomping.map(map_chomping),
                 );
                 let anchor_node = anchor_name.as_ref().map(|_| node.clone());
 
@@ -1413,6 +1426,45 @@ mod tests {
         rt("text: >\n  ab cd\n\n  ef\n");
         // Double blank-line separator (two \n between paragraphs)
         rt("text: >\n  ab cd\n\n\n  gh\n");
+    }
+
+    #[test]
+    fn keep_chomping_survives_one_trailing_newline() {
+        // Regression: `>+` / `|+` on a value with exactly one trailing newline
+        // would previously downgrade to `>` / `|` because the emitter re-
+        // inferred the indicator from the value alone. The scanner now passes
+        // the source chomping through so Keep is preserved when consistent.
+        for src in &["a: >+\n  hi\n", "a: |+\n  hi\n"] {
+            let node = parse_one(src);
+            if let YamlNode::Mapping(m) = node {
+                let scalar = match &m.entries["a"].value {
+                    YamlNode::Scalar(s) => s,
+                    _ => panic!("expected scalar"),
+                };
+                assert_eq!(scalar.chomping, Some(Chomping::Keep), "for {src:?}");
+            } else {
+                panic!("expected Mapping");
+            }
+        }
+    }
+
+    #[test]
+    fn folded_strip_does_not_leak_trailing_blank_lines() {
+        // Regression: folded block scalars (`>`, `>-`, `>+`) fold source line
+        // breaks into spaces so the value's newline count no longer matches
+        // the source's line count. The builder must use the scanner's end_line
+        // rather than a value-based heuristic, or it over-counts trailing
+        // blanks on the outer container and the emitter prints a spurious
+        // blank line between adjacent block-scalar items.
+        let node = parse_one("- >-\n  first\n- >-\n  second\n");
+        if let YamlNode::Sequence(s) = node {
+            assert_eq!(s.trailing_blank_lines, 0);
+            for item in &s.items {
+                assert_eq!(item.blank_lines_before(), 0);
+            }
+        } else {
+            panic!("expected Sequence");
+        }
     }
 
     #[test]
