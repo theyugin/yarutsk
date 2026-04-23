@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
 use super::builder::DocMetadata;
-use super::char_traits::is_tag_char;
+use super::char_traits::{is_tag_char, is_uri_char};
 use super::types::{
     ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
     YamlSequence,
@@ -209,6 +209,9 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 }
                 _ => {
                     self.emit_node(key_node, indent + self.step, false)?;
+                    // Flow collections (and any other inline form) end without a
+                    // newline; complex-key syntax needs `:` on its own line.
+                    self.out.write_char('\n')?;
                 }
             }
             self.out.write_str(&indent_str(indent))?;
@@ -1159,27 +1162,40 @@ fn indent_str(indent: usize) -> Cow<'static, str> {
 /// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
 fn format_tag(tag: &str) -> Cow<'_, str> {
     if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
-        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+        Cow::Owned(format!("!!{}", pct_encode_shorthand(suffix)))
     } else if let Some(suffix) = tag.strip_prefix("!!") {
-        Cow::Owned(format!("!!{}", pct_encode_tag(suffix)))
+        Cow::Owned(format!("!!{}", pct_encode_shorthand(suffix)))
     } else if let Some(suffix) = tag.strip_prefix('!') {
-        Cow::Owned(format!("!{}", pct_encode_tag(suffix)))
+        Cow::Owned(format!("!{}", pct_encode_shorthand(suffix)))
     } else {
-        Cow::Owned(format!("!<{}>", pct_encode_tag(tag)))
+        // Verbatim form `!<URI>` — the angle brackets delimit the URI, so
+        // flow indicators inside are unambiguous. Only chars outside the URI
+        // char set need percent-encoding (spaces, controls, `<` / `>`).
+        Cow::Owned(format!("!<{}>", pct_encode_uri(tag)))
     }
 }
 
 /// Percent-encode any character that isn't a valid YAML tag character.
-/// The scanner decodes `%XX` escapes on input, so the in-memory tag may
-/// contain whitespace, control characters, or flow indicators that would
-/// break the shorthand form if emitted verbatim.
-fn pct_encode_tag(s: &str) -> Cow<'_, str> {
-    if s.chars().all(|c| c.is_ascii() && is_tag_char(c)) {
+/// Used for shorthand tags (`!foo`, `!!foo`) where flow indicators would
+/// terminate the tag — so they must be escaped.
+fn pct_encode_shorthand(s: &str) -> Cow<'_, str> {
+    pct_encode_with(s, is_tag_char)
+}
+
+/// Percent-encode any character that isn't a valid URI character.
+/// Used for verbatim tags (`!<…>`) where the angle brackets delimit the
+/// URI, so flow indicators (`,` `[` `]` `{` `}`) are allowed.
+fn pct_encode_uri(s: &str) -> Cow<'_, str> {
+    pct_encode_with(s, is_uri_char)
+}
+
+fn pct_encode_with(s: &str, is_allowed: fn(char) -> bool) -> Cow<'_, str> {
+    if s.chars().all(|c| c.is_ascii() && is_allowed(c)) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_ascii() && is_tag_char(c) {
+        if c.is_ascii() && is_allowed(c) {
             out.push(c);
         } else {
             let mut buf = [0u8; 4];
@@ -1843,6 +1859,31 @@ mod tests {
     }
 
     #[test]
+    fn emit_complex_key_flow_seq_puts_colon_on_next_line() {
+        // `? [1, 2]` needs `\n: value` — the `:` must not share the line
+        // with the flow key or it becomes part of the flow scalar and the
+        // mapping entry is unparseable on re-load.
+        let mut key_seq = make_seq(&[plain_int(1), plain_int(2)]);
+        key_seq.style = ContainerStyle::Flow;
+        let mut mapping = YamlMapping::new();
+        let mut entry = make_entry(YamlNode::Scalar(YamlScalar {
+            value: ScalarValue::Str("value".to_owned()),
+            style: ScalarStyle::Plain,
+            tag: None,
+            original: None,
+            anchor: None,
+            comment_inline: None,
+            comment_before: None,
+            blank_lines_before: 0,
+        }));
+        entry.key_node = Some(Box::new(YamlNode::Sequence(key_seq)));
+        mapping.entries.insert(String::new(), entry);
+        let mut out = String::new();
+        let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Mapping(mapping), 0, false);
+        assert_eq!(out, "? [1, 2]\n: value\n");
+    }
+
+    #[test]
     fn emit_sequence_with_inline_comment() {
         let mut s = YamlSequence::new();
         let mut value = plain_int(1);
@@ -2035,6 +2076,26 @@ mod tests {
     fn format_tag_custom_tag_unchanged() {
         assert_eq!(format_tag("!custom").as_ref(), "!custom");
         assert_eq!(format_tag("!!python/tuple").as_ref(), "!!python/tuple");
+    }
+
+    #[test]
+    fn format_tag_verbatim_allows_flow_indicators() {
+        // Inside `!<…>` the angle brackets delimit the URI so `,` `[` `]`
+        // `{` `}` do not terminate the tag and must be emitted literally.
+        assert_eq!(
+            format_tag("tag:example.com,2020:thing").as_ref(),
+            "!<tag:example.com,2020:thing>"
+        );
+        // `[`, `]`, `,` are URI chars (allowed in verbatim); `{`, `}` are not.
+        assert_eq!(format_tag("scheme:a[b]c,d").as_ref(), "!<scheme:a[b]c,d>");
+    }
+
+    #[test]
+    fn format_tag_shorthand_still_percent_encodes_flow() {
+        // Shorthand (`!foo`, `!!foo`) — flow indicators would terminate the
+        // tag so must be percent-encoded.
+        assert_eq!(format_tag("!weird,tag").as_ref(), "!weird%2Ctag");
+        assert_eq!(format_tag("!!has[bracket").as_ref(), "!!has%5Bbracket");
     }
 
     // ── needs_quoting ────────────────────────────────────────────────────────
