@@ -903,3 +903,33 @@ class TestScalarComments:
         doc["key"] = s
         out = yarutsk.dumps(doc)
         assert "# note" in out
+
+
+class TestRootContainerComments:
+    """comment_before / blank_lines_before on root mappings and sequences."""
+
+    def test_mapping_root_comment_before(self):
+        doc = yarutsk.loads("a: 1")
+        doc.comment_before = "header"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("# header\n")
+        assert "a: 1" in out
+
+    def test_sequence_root_comment_before(self):
+        doc = yarutsk.loads("- 1\n- 2\n")
+        doc.comment_before = "items"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("# items\n")
+
+    def test_root_blank_lines_before(self):
+        doc = yarutsk.loads("a: 1")
+        doc.blank_lines_before = 2
+        doc.comment_before = "with blanks"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("\n\n# with blanks\n")
+
+    def test_multiline_root_comment_before(self):
+        doc = yarutsk.loads("a: 1")
+        doc.comment_before = "line one\nline two"
+        out = yarutsk.dumps(doc)
+        assert out.startswith("# line one\n# line two\n")

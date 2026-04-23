@@ -232,7 +232,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         } else {
             // Plain / quoted scalar key: optional anchor + tag, then key text.
             self.write_anchor_tag_inline(entry.key_anchor.as_deref(), entry.key_tag.as_deref())?;
-            self.out.write_str(&emit_key(key, entry.key_style))?;
+            self.out.write_str(&emit_key(key, entry.key_style, false))?;
             self.out.write_char(':')?;
         }
         Ok(())
@@ -368,7 +368,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     entry.key_anchor.as_deref(),
                     entry.key_tag.as_deref(),
                 )?;
-                self.out.write_str(&emit_key(key, entry.key_style))?;
+                self.out.write_str(&emit_key(key, entry.key_style, true))?;
             }
             self.out.write_str(": ")?;
             self.emit_node_inline(&entry.value, 0, true)?;
@@ -832,14 +832,25 @@ fn emit_scalar_value_with_style(
 }
 
 /// Emit a key string with its original quoting style.
+///
 /// For `Plain` style, numeric-looking strings are left unquoted since `1:` is
 /// valid YAML and our library always stores keys as strings anyway.
-fn emit_key(key: &str, style: ScalarStyle) -> String {
+///
+/// `flow_context` is `true` when emitting a key inside `{ … }` — flow
+/// indicators terminate a plain key there, so they force quoting.
+///
+/// Any style containing a character that can't survive plain/single-quoted
+/// emission (C0 controls other than `\t`, plus DEL) is upgraded to double-
+/// quoted so the char is preserved via its `\…` escape.
+fn emit_key(key: &str, style: ScalarStyle, flow_context: bool) -> String {
+    if needs_double_quote(key) {
+        return double_quote(key);
+    }
     match style {
         ScalarStyle::SingleQuoted => single_quote(key),
         ScalarStyle::DoubleQuoted => double_quote(key),
         _ => {
-            if needs_quoting_for_key(key) {
+            if needs_quoting_for_key(key, flow_context) {
                 single_quote(key)
             } else {
                 key.to_owned()
@@ -851,7 +862,10 @@ fn emit_key(key: &str, style: ScalarStyle) -> String {
 /// Like `needs_quoting` but for mapping keys: numeric strings (`1`, `3.14`,
 /// `0xFF`) are left unquoted since they are valid plain-style YAML keys and
 /// our library stores all keys as strings regardless of their YAML type.
-fn needs_quoting_for_key(s: &str) -> bool {
+///
+/// `flow_context` is `true` for keys inside `{ … }` — flow indicators
+/// terminate a plain key there, so they force quoting.
+fn needs_quoting_for_key(s: &str, flow_context: bool) -> bool {
     if s.is_empty() {
         return true;
     }
@@ -863,18 +877,27 @@ fn needs_quoting_for_key(s: &str) -> bool {
     if s == "---" || s == "..." {
         return true;
     }
-    // Check for characters that are structurally significant in YAML
+    // In a flow mapping, an embedded flow indicator ends the key.
+    if flow_context
+        && s.bytes()
+            .any(|b| matches!(b, b',' | b'[' | b']' | b'{' | b'}'))
+    {
+        return true;
+    }
+    // Check for characters that are structurally significant in YAML.
+    // Per YAML 1.2 the c-indicators that can never start a plain scalar are:
+    //   # & * ! | > % @ ` { } [ ] , ' "
+    // The conditional indicators `-` `?` `:` are safe as the first character
+    // when followed by a non-whitespace byte (in flow context, also not a
+    // flow indicator) — `: ` / `": "` / trailing `:` are caught below.
     let b = s.as_bytes();
     let first = b[0] as char;
     if matches!(
         first,
         '#' | '&'
             | '*'
-            | '?'
             | '|'
-            | '<'
             | '>'
-            | '='
             | '!'
             | '%'
             | '@'
@@ -884,13 +907,26 @@ fn needs_quoting_for_key(s: &str) -> bool {
             | '['
             | ']'
             | ','
+            | '\''
+            | '"'
     ) {
         return true;
+    }
+    if matches!(first, '-' | '?') {
+        match b.get(1) {
+            None | Some(b' ' | b'\t') => return true,
+            _ => {}
+        }
     }
     if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
         return true;
     }
-    if s.contains(" #") || s.contains('\n') || s.contains('\r') {
+    if s.contains(" #") {
+        return true;
+    }
+    // C0 controls (other than `\t`) and DEL can't appear raw in plain form;
+    // force quoting so emission can route them through a double-quoted escape.
+    if needs_double_quote(s) {
         return true;
     }
     false
@@ -907,10 +943,11 @@ fn needs_quoting_for_key(s: &str) -> bool {
 fn emit_string_with_style(s: &str, style: ScalarStyle, flow_context: bool) -> String {
     match style {
         ScalarStyle::SingleQuoted => {
-            // Single-quoted strings emit literal newlines, which YAML folds back to
-            // spaces on re-parse.  Switch to double-quoted (with \n escapes) when the
-            // string contains newlines so the value is preserved on round-trip.
-            if s.contains('\n') {
+            // Single-quoted strings fold literal line breaks to a space, strip
+            // CR, and cannot hold other C0 controls or DEL. Switch to double-
+            // quoted (with `\…` escapes) whenever any of those appear, so the
+            // value is preserved on round-trip.
+            if needs_double_quote(s) {
                 double_quote(s)
             } else {
                 single_quote(s)
@@ -920,11 +957,11 @@ fn emit_string_with_style(s: &str, style: ScalarStyle, flow_context: bool) -> St
         ScalarStyle::Literal | ScalarStyle::Folded => {
             // Should have been handled by emit_block_scalar; if we reach here the node
             // is in a context where block scalars are not valid (e.g. flow or key
-            // position).  Use double-quoted if the string contains newlines so that
-            // `\n` escape sequences are emitted rather than literal newlines, which
-            // would cause indentation errors on re-parse.
+            // position).  Use double-quoted when line breaks or other controls
+            // are present so they become escape sequences rather than literal
+            // characters, which would break the surrounding structure.
             if needs_quoting(s, flow_context) {
-                if s.contains('\n') {
+                if needs_double_quote(s) {
                     double_quote(s)
                 } else {
                     single_quote(s)
@@ -935,7 +972,7 @@ fn emit_string_with_style(s: &str, style: ScalarStyle, flow_context: bool) -> St
         }
         ScalarStyle::Plain => {
             if needs_quoting(s, flow_context) {
-                if s.contains('\n') {
+                if needs_double_quote(s) {
                     double_quote(s)
                 } else {
                     single_quote(s)
@@ -945,6 +982,15 @@ fn emit_string_with_style(s: &str, style: ScalarStyle, flow_context: bool) -> St
             }
         }
     }
+}
+
+/// Return true if the string contains a character that cannot survive
+/// plain/single-quoted emission: any C0 control other than `\t`, or DEL.
+/// These characters must be escaped via a `\…` sequence in a double-
+/// quoted scalar to round-trip.
+#[inline]
+fn needs_double_quote(s: &str) -> bool {
+    s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7F)
 }
 
 #[inline]
@@ -970,9 +1016,20 @@ fn double_quote(s: &str) -> String {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
             '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\x0B' => out.push_str("\\v"),
+            '\x0C' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '\x1B' => out.push_str("\\e"),
+            // Remaining C0 controls + DEL: `\xNN` hex escape.
+            c if (c as u32) < 0x20 || c as u32 == 0x7F => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\x{:02X}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -1032,18 +1089,20 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
     {
         return true;
     }
-    // Check for characters that require quoting
+    // Check for characters that are structurally significant in YAML.
+    // Per YAML 1.2 the c-indicators that can never start a plain scalar are:
+    //   # & * ! | > % @ ` { } [ ] , ' "
+    // The conditional indicators `-` `?` `:` are safe as the first character
+    // when followed by a non-whitespace byte. In flow context an embedded
+    // flow indicator is already caught above. `: ` / `": "` / trailing `:`
+    // are caught below.
     let first = b[0] as char;
     if matches!(
         first,
         '#' | '&'
             | '*'
-            | '?'
             | '|'
-            | '-'
-            | '<'
             | '>'
-            | '='
             | '!'
             | '%'
             | '@'
@@ -1053,8 +1112,16 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
             | '['
             | ']'
             | ','
+            | '\''
+            | '"'
     ) {
         return true;
+    }
+    if matches!(first, '-' | '?') {
+        match b.get(1) {
+            None | Some(b' ' | b'\t') => return true,
+            _ => {}
+        }
     }
     if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
         return true;
@@ -1062,7 +1129,9 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
     if s.contains(" #") {
         return true;
     }
-    if s.contains('\n') || s.contains('\r') {
+    // C0 controls (other than `\t`) and DEL can't appear raw in plain form;
+    // force quoting so emission can route them through a double-quoted escape.
+    if needs_double_quote(s) {
         return true;
     }
     false
@@ -1164,11 +1233,15 @@ pub fn emit_docs_to<W: FmtWrite>(
             let mut tracker = LastCharTracker::new(&mut *out);
             {
                 let mut emitter = Emitter::new(&mut tracker, step);
-                // Bare-scalar document: emit its per-scalar comment_before/comment_inline
-                // which would otherwise be lost. Container documents handle their own
-                // per-entry/per-item comments internally.
+                // Root nodes have no parent to emit their blank_lines_before /
+                // comment_before, so surface them here. Container roots have no
+                // header line for comment_inline, so that is only handled for
+                // scalar roots below.
+                for _ in 0..doc.blank_lines_before() {
+                    emitter.out.write_char('\n')?;
+                }
+                emitter.emit_comment_before(doc.comment_before(), 0)?;
                 if let YamlNode::Scalar(s) = doc {
-                    emitter.emit_comment_before(s.comment_before.as_deref(), 0)?;
                     if is_block_scalar(s) {
                         emitter.emit_block_scalar(s, step, s.comment_inline.as_deref())?;
                     } else {
@@ -2024,8 +2097,8 @@ mod tests {
         // collide with YAML directive-end / document-end markers on re-parse.
         assert!(needs_quoting("---", false));
         assert!(needs_quoting("...", false));
-        assert!(needs_quoting_for_key("---"));
-        assert!(needs_quoting_for_key("..."));
+        assert!(needs_quoting_for_key("---", false));
+        assert!(needs_quoting_for_key("...", false));
     }
 
     #[test]
@@ -2037,6 +2110,35 @@ mod tests {
         assert!(needs_quoting("trailing-tab\t", false));
         assert!(!needs_quoting("a b", false));
         assert!(!needs_quoting("a\tb", false));
+    }
+
+    #[test]
+    fn needs_quoting_conditional_indicators() {
+        // `-` and `?` only force quoting when alone or followed by whitespace
+        // (per YAML 1.2 ns-plain-first); followed by a non-whitespace byte
+        // they may start a plain scalar.
+        assert!(needs_quoting("-", false));
+        assert!(needs_quoting("- rest", false));
+        assert!(!needs_quoting("-foo", false));
+        assert!(!needs_quoting("<hostname:abc>", false));
+        assert!(needs_quoting("?", false));
+        assert!(needs_quoting("? rest", false));
+        assert!(!needs_quoting("?x", false));
+    }
+
+    #[test]
+    fn needs_quoting_non_indicator_leading_safe() {
+        // `<` and `=` are not YAML 1.2 indicators and must not force quoting.
+        assert!(!needs_quoting("<tag>", false));
+        assert!(!needs_quoting("=expr", false));
+    }
+
+    #[test]
+    fn needs_quoting_quote_leading() {
+        // `'` and `"` start quoted-scalar openers — plain emission would
+        // be misread as a broken quoted scalar.
+        assert!(needs_quoting("'apos", false));
+        assert!(needs_quoting("\"quote", false));
     }
 
     #[test]
@@ -2057,77 +2159,104 @@ mod tests {
 
     #[test]
     fn needs_quoting_for_key_empty() {
-        assert!(needs_quoting_for_key(""));
+        assert!(needs_quoting_for_key("", false));
     }
 
     #[test]
     fn needs_quoting_for_key_hash_leading() {
-        assert!(needs_quoting_for_key("#comment"));
+        assert!(needs_quoting_for_key("#comment", false));
     }
 
     #[test]
     fn needs_quoting_for_key_star_leading() {
-        assert!(needs_quoting_for_key("*alias"));
+        assert!(needs_quoting_for_key("*alias", false));
     }
 
     #[test]
     fn needs_quoting_for_key_question_leading() {
-        assert!(needs_quoting_for_key("?complex"));
+        // `?` followed by whitespace or alone starts a complex-key indicator;
+        // `?` followed by a non-whitespace byte is a safe plain-scalar start.
+        assert!(needs_quoting_for_key("?", false));
+        assert!(needs_quoting_for_key("? rest", false));
+        assert!(!needs_quoting_for_key("?complex", false));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_dash_leading() {
+        // Same rule as `?`: only `- ` is the sequence indicator.
+        assert!(needs_quoting_for_key("-", false));
+        assert!(needs_quoting_for_key("- rest", false));
+        assert!(!needs_quoting_for_key("-foo", false));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_non_indicator_leading_safe() {
+        // `<` and `=` are not YAML 1.2 indicators and must not force quoting.
+        assert!(!needs_quoting_for_key("<hostname>", false));
+        assert!(!needs_quoting_for_key("=value", false));
+    }
+
+    #[test]
+    fn needs_quoting_for_key_quote_leading() {
+        // `'` and `"` start quoted-scalar openers — plain emission would
+        // be misread as a broken quoted scalar.
+        assert!(needs_quoting_for_key("'apos", false));
+        assert!(needs_quoting_for_key("\"quote", false));
     }
 
     #[test]
     fn needs_quoting_for_key_bang_leading() {
-        assert!(needs_quoting_for_key("!tag"));
+        assert!(needs_quoting_for_key("!tag", false));
     }
 
     #[test]
     fn needs_quoting_for_key_ends_with_colon() {
-        assert!(needs_quoting_for_key("key:"));
+        assert!(needs_quoting_for_key("key:", false));
     }
 
     #[test]
     fn needs_quoting_for_key_colon_space_inside() {
-        assert!(needs_quoting_for_key("key: value"));
+        assert!(needs_quoting_for_key("key: value", false));
     }
 
     #[test]
     fn needs_quoting_for_key_space_hash_inside() {
-        assert!(needs_quoting_for_key("key #comment"));
+        assert!(needs_quoting_for_key("key #comment", false));
     }
 
     #[test]
     fn needs_quoting_for_key_newline() {
-        assert!(needs_quoting_for_key("a\nb"));
+        assert!(needs_quoting_for_key("a\nb", false));
     }
 
     #[test]
     fn needs_quoting_for_key_whitespace_boundary() {
-        assert!(needs_quoting_for_key(" leading"));
-        assert!(needs_quoting_for_key("trailing "));
-        assert!(needs_quoting_for_key("\t"));
-        assert!(!needs_quoting_for_key("a b"));
-        assert!(!needs_quoting_for_key("a\tb"));
+        assert!(needs_quoting_for_key(" leading", false));
+        assert!(needs_quoting_for_key("trailing ", false));
+        assert!(needs_quoting_for_key("\t", false));
+        assert!(!needs_quoting_for_key("a b", false));
+        assert!(!needs_quoting_for_key("a\tb", false));
     }
 
     #[test]
     fn needs_quoting_for_key_numeric_not_quoted() {
         // Keys differ from values: numeric strings are valid plain-style keys
-        assert!(!needs_quoting_for_key("42"));
-        assert!(!needs_quoting_for_key("3.14"));
-        assert!(!needs_quoting_for_key("0xFF"));
+        assert!(!needs_quoting_for_key("42", false));
+        assert!(!needs_quoting_for_key("3.14", false));
+        assert!(!needs_quoting_for_key("0xFF", false));
     }
 
     #[test]
     fn needs_quoting_for_key_plain_safe() {
-        assert!(!needs_quoting_for_key("simple"));
-        assert!(!needs_quoting_for_key("snake_case"));
-        assert!(!needs_quoting_for_key("kebab-case"));
+        assert!(!needs_quoting_for_key("simple", false));
+        assert!(!needs_quoting_for_key("snake_case", false));
+        assert!(!needs_quoting_for_key("kebab-case", false));
     }
 
     // ── emit_key ─────────────────────────────────────────────────────────────
 
     fn do_emit_key(key: &str, style: ScalarStyle) -> String {
-        emit_key(key, style)
+        emit_key(key, style, false)
     }
 
     #[test]
@@ -2155,6 +2284,43 @@ mod tests {
     fn emit_key_numeric_plain_unchanged() {
         // Numeric keys are NOT quoted (they parse back as strings anyway)
         assert_eq!(do_emit_key("42", ScalarStyle::Plain), "42");
+    }
+
+    #[test]
+    fn emit_key_line_break_forces_double_quote() {
+        // Single-quoted keys with a line break would span lines and break the
+        // surrounding map; the line break must become a `\n` / `\r` escape.
+        assert_eq!(
+            emit_key("a\nb", ScalarStyle::Plain, false),
+            "\"a\\nb\"".to_string()
+        );
+        assert_eq!(
+            emit_key("a\rb", ScalarStyle::SingleQuoted, false),
+            "\"a\\rb\"".to_string()
+        );
+    }
+
+    #[test]
+    fn emit_key_flow_context_flow_indicator_quoted() {
+        // Inside `{ … }`, flow indicators terminate a plain key.
+        assert!(emit_key("a, b", ScalarStyle::Plain, true).starts_with('\''));
+        assert!(emit_key("a}b", ScalarStyle::Plain, true).starts_with('\''));
+        // In block context the same key is safe unquoted.
+        assert_eq!(emit_key("a, b", ScalarStyle::Plain, false), "a, b");
+    }
+
+    #[test]
+    fn needs_quoting_for_key_flow_context_indicators() {
+        for s in &["a,b", "a, b", "a]b", "a}b", "x,y,z"] {
+            assert!(
+                needs_quoting_for_key(s, true),
+                "flow-context should need quoting: {s}"
+            );
+            assert!(
+                !needs_quoting_for_key(s, false),
+                "block-context should not: {s}"
+            );
+        }
     }
 
     // ── emit_string_with_style ───────────────────────────────────────────────
