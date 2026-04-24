@@ -13,161 +13,17 @@ Usage:
     pytest tests/test_yaml_suite.py -v -k "test_parse"    # parse/reject only
 """
 
-import base64
-import datetime
 import io
-import json as json_mod
-import re
-from pathlib import Path
 
 import pytest
+from _yaml_suite import load_test_cases, normalize_for_json_compare, parse_json_docs
 
 import yarutsk
 
-SUITE_DIR = Path(__file__).parent.parent / "yaml-test-suite"
-SRC_DIR = SUITE_DIR / "src"
 
-
-# ── Text decoding ─────────────────────────────────────────────────────────────
-
-
-def _decode(value: str | None) -> str | None:
-    """Translate yaml-test-suite visual encodings back to real characters."""
-    if value is None:
-        return None
-    text = re.sub(r"—*»", "\t", value)
-    return (
-        text.replace("␣", " ")
-        .replace("↵", "")
-        .replace("←", "\r")
-        .replace("⇔", "\ufeff")
-        .replace("∎", "")
-    )
-
-
-# ── JSON field parsing ────────────────────────────────────────────────────────
-
-
-_BASE64_RE = re.compile(r"^[A-Za-z0-9+/\s]*={0,2}\s*$")
-
-
-def _normalize_for_json_compare(value):
-    """Coerce yarutsk's tag-aware scalars (``bytes``, ``datetime``, ``date``) into
-    a canonical form for comparison with the yaml-test-suite's ``json`` field.
-
-    ``datetime``/``date`` → ISO string. For ``bytes`` and base64-looking strings
-    (as the suite's JSON encodes ``!!binary`` payloads), both sides decode to
-    ``bytes`` so embedded base64 whitespace from literal-block YAML blocks is
-    normalised away.
-    """
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, (datetime.datetime, datetime.date)):
-        return value.isoformat()
-    if isinstance(value, str) and _BASE64_RE.fullmatch(value) and ("=" in value or "\n" in value):
-        try:
-            return base64.b64decode(value, validate=False)
-        except Exception:
-            return value
-    if isinstance(value, dict):
-        return {k: _normalize_for_json_compare(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_normalize_for_json_compare(v) for v in value]
-    return value
-
-
-def _parse_json_docs(json_str: str) -> list:
-    """Parse one or more JSON values from the json field (multi-doc YAML may
-    produce multiple top-level JSON values separated by whitespace)."""
-    dec = json_mod.JSONDecoder()
-    pos = 0
-    results = []
-    s = json_str.strip()
-    while pos < len(s):
-        val, pos = dec.raw_decode(s, pos)
-        results.append(val)
-        while pos < len(s) and s[pos].isspace():
-            pos += 1
-    return results
-
-
-# ── Test case loading ─────────────────────────────────────────────────────────
-
-
-def _load_test_cases() -> list:
-    if not SRC_DIR.exists():
-        return []
-
-    cases = []
-    for yaml_file in sorted(SRC_DIR.glob("*.yaml")):
-        try:
-            raw = yaml_file.read_text(encoding="utf-8")
-            tests = yarutsk.loads(raw)
-        except Exception:
-            continue
-
-        if not isinstance(tests, list):
-            continue
-
-        # A file-level skip note propagates to every case in that file.
-        file_skip = next(
-            (
-                t.get("note", "skipped by test-suite metadata")
-                for t in tests
-                if isinstance(t, dict) and t.get("skip")
-            ),
-            None,
-        )
-
-        for test in tests:
-            if not isinstance(test, dict):
-                continue
-
-            should_fail = bool(test.get("fail"))
-            should_skip = bool(test.get("skip")) or file_skip is not None
-            skip_reason = test.get("note") or file_skip or "skipped by test-suite metadata"
-
-            marks = []
-            if should_skip:
-                marks.append(pytest.mark.skip(reason=skip_reason))
-            if should_fail:
-                # The parser must reject this input; test_parse is expected to
-                # call pytest.fail() (via the except branch), satisfying xfail.
-                # strict=True turns an unexpected pass into a test error.
-                marks.append(
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason="invalid YAML — parser must reject",
-                    )
-                )
-
-            name = test.get("name", yaml_file.stem)
-            cases.append(
-                pytest.param(
-                    {
-                        "file": yaml_file.stem,
-                        "name": name,
-                        "yaml": _decode(test.get("yaml", "")),
-                        "json": _decode(test.get("json")),
-                        "fail": should_fail,
-                    },
-                    id=f"{yaml_file.stem}:{name}",
-                    marks=marks,
-                )
-            )
-
-    return cases
-
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture(params=_load_test_cases())
+@pytest.fixture(params=load_test_cases())
 def yaml_test_case(request):
     return request.param
-
-
-# ── Test classes ──────────────────────────────────────────────────────────────
 
 
 class TestYamlSuite:
@@ -199,9 +55,9 @@ class TestYamlSuite:
         except Exception as e:
             pytest.skip(f"parse failed (covered by test_parse): {e}")
 
-        expected = [_normalize_for_json_compare(d) for d in _parse_json_docs(json_str)]
+        expected = [normalize_for_json_compare(d) for d in parse_json_docs(json_str)]
         actual = [
-            _normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
+            normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
             for d in docs
         ]
         assert actual == expected, (
@@ -243,9 +99,9 @@ class TestYamlSuite:
 
         # ── Hard check: re-parsed values must match original ─────────────────
         if test["json"]:
-            expected = [_normalize_for_json_compare(d) for d in _parse_json_docs(test["json"])]
+            expected = [normalize_for_json_compare(d) for d in parse_json_docs(test["json"])]
             actual = [
-                _normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
+                normalize_for_json_compare(d.to_python() if hasattr(d, "to_python") else d)
                 for d in re_docs
             ]
             if actual != expected:
