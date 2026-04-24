@@ -293,6 +293,12 @@ impl PyYamlMapping {
             .map(pyo3::Bound::unbind)
     }
 
+    /// Sort mapping keys in-place.
+    ///
+    /// When *recursive* is ``True``, every nested ``YamlMapping`` (including
+    /// those reached through nested ``YamlSequence`` items) has its keys
+    /// sorted with the same *key* / *reverse* arguments. Sequence item order
+    /// is **not** changed — ``sort_keys`` only sorts mapping keys.
     #[pyo3(signature = (key=None, reverse=false, recursive=false))]
     #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     pub fn sort_keys(
@@ -313,7 +319,9 @@ impl PyYamlMapping {
             // path) — do NOT call node_to_py, which would convert the empty-mapping
             // placeholder stored for custom types back to {}, losing the custom object.
             // For nested PyYamlMapping values, call sort_keys recursively so their
-            // Python dict is synced to their already-sorted inner.
+            // Python dict is synced to their already-sorted inner. For nested
+            // PyYamlSequence values, descend (without reordering items) to find
+            // any further mappings whose Python dict needs syncing.
             let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
             let py_vals: Vec<Py<PyAny>> = sorted_keys
                 .iter()
@@ -330,6 +338,8 @@ impl PyYamlMapping {
                         reverse,
                         true,
                     )?;
+                } else if let Ok(nested) = py_val.cast::<PyYamlSequence>() {
+                    descend_seq_for_sort_keys(nested, py, key.as_ref(), reverse)?;
                 }
                 dict_part.set_item(k.as_str(), py_val)?;
             }
@@ -572,6 +582,28 @@ impl PyYamlMapping {
     fn __repr__(&self, py: Python<'_>) -> String {
         mapping_repr(py, &self.inner)
     }
+}
+
+/// Walk a `YamlSequence`'s Python items, syncing the dict order of every
+/// nested `PyYamlMapping` (whose Rust inner has already been sorted by
+/// `sort_mapping`). The sequence itself is **not** reordered — `sort_keys`
+/// only touches mapping keys.
+fn descend_seq_for_sort_keys(
+    seq: &Bound<'_, PyYamlSequence>,
+    py: Python<'_>,
+    key: Option<&Py<PyAny>>,
+    reverse: bool,
+) -> PyResult<()> {
+    let list_part = seq.as_super();
+    for i in 0..list_part.len() {
+        let item = list_part.get_item(i)?;
+        if let Ok(nested_m) = item.cast::<PyYamlMapping>() {
+            PyYamlMapping::sort_keys(nested_m, py, key.map(|k| k.clone_ref(py)), reverse, true)?;
+        } else if let Ok(nested_s) = item.cast::<PyYamlSequence>() {
+            descend_seq_for_sort_keys(nested_s, py, key, reverse)?;
+        }
+    }
+    Ok(())
 }
 
 /// Read `(comment_inline, comment_before, blank_lines_before)` at *key*,

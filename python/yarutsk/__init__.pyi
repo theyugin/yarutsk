@@ -319,7 +319,13 @@ class YamlMapping(dict[str, Any]):
         reverse: bool = False,
         recursive: bool = False,
     ) -> None:
-        """Sort mapping keys in-place."""
+        """Sort mapping keys in-place.
+
+        When *recursive* is ``True``, every nested ``YamlMapping`` (including
+        ones reached through nested ``YamlSequence`` items) has its keys
+        sorted with the same *key* / *reverse* arguments. Sequence item order
+        is **not** changed — ``sort_keys`` only touches mapping keys.
+        """
         ...
 
     def to_python(self) -> Any:
