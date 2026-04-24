@@ -655,6 +655,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             ScalarValue::Str(text) => text.as_str(),
             _ => "",
         };
+        // Emit all lines except the artifact empty string produced by a trailing '\n'.
+        let lines: Vec<&str> = content.split('\n').collect();
         // Choose chomping indicator. Honour the source indicator (`s.chomping`)
         // when it's consistent with the value's trailing-newline count, so that
         // `>+` on a value with exactly one trailing `\n` round-trips as `>+`
@@ -665,21 +667,29 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         //
         // Consistency rules:
         //   Strip  → requires 0 trailings
-        //   Clip   → requires exactly 1 trailing
+        //   Clip   → requires exactly 1 trailing AND at least one non-empty
+        //            content line (clip drops all trailings when content is
+        //            blank, so a `"\n"`-only value parses back as `""`)
         //   Keep   → always consistent (preserves whatever is there)
         let trailing_newlines = content.bytes().rev().take_while(|&b| b == b'\n').count();
+        let emit_count = if content.ends_with('\n') {
+            lines.len() - 1
+        } else {
+            lines.len()
+        };
+        let has_content_line = lines[..emit_count].iter().any(|l| !l.is_empty());
         let chomping = match s.chomping {
             Some(Chomping::Strip) if trailing_newlines == 0 => "-",
-            Some(Chomping::Clip) if trailing_newlines == 1 => "",
+            Some(Chomping::Clip) if trailing_newlines == 1 && has_content_line => "",
             Some(Chomping::Keep) => "+",
-            _ => match trailing_newlines {
-                0 => "-",
-                1 => "",
+            _ => match (trailing_newlines, has_content_line) {
+                (0, _) => "-",
+                (1, true) => "",
+                // Newline-only content or 2+ trailings: only keep can preserve
+                // every trailing break on re-parse.
                 _ => "+",
             },
         };
-        // Emit all lines except the artifact empty string produced by a trailing '\n'.
-        let lines: Vec<&str> = content.split('\n').collect();
         // Determine whether an explicit indentation indicator is needed:
         //
         // Case A — every non-empty line starts with at least `min_leading` spaces:
@@ -738,11 +748,6 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         self.push_inline_comment(inline_comment)?;
         self.out.write_char('\n')?;
         let prefix = indent_str(content_indent);
-        let emit_count = if content.ends_with('\n') {
-            lines.len() - 1
-        } else {
-            lines.len()
-        };
         if indicator == '>' {
             // Folded: emit a blank paragraph-separator line after a base-level content
             // line only when the NEXT non-empty content line is also base-level (B→B
@@ -876,9 +881,14 @@ fn emit_key(key: &str, style: ScalarStyle, flow_context: bool) -> String {
     }
 }
 
-/// Like `needs_quoting` but for mapping keys: numeric strings (`1`, `3.14`,
-/// `0xFF`) are left unquoted since they are valid plain-style YAML keys and
-/// our library stores all keys as strings regardless of their YAML type.
+/// Like `needs_quoting` but for mapping keys.
+///
+/// yarutsk stores all mapping keys as strings regardless of their YAML
+/// type, so its own round-trip is safe either way — but another YAML
+/// parser (ruamel, pyyaml) would load `true:`, `42:`, or `null:` as a
+/// boolean / int / None *key*, yielding a different Python dict. To keep
+/// the output interop-safe we quote keys whose plain form would re-parse
+/// as a non-string scalar (same rule as `needs_quoting`).
 ///
 /// `flow_context` is `true` for keys inside `{ … }` — flow indicators
 /// terminate a plain key there, so they force quoting.
@@ -892,6 +902,11 @@ fn needs_quoting_for_key(s: &str, flow_context: bool) -> bool {
     }
     // Document-start/end markers would collide with YAML directives on re-parse.
     if s == "---" || s == "..." {
+        return true;
+    }
+    // Keyword / numeric lookalikes — quoted so other YAML parsers read the
+    // key as a string rather than resolving it to bool/int/float/null.
+    if would_parse_as_non_string(s) {
         return true;
     }
     // In a flow mapping, an embedded flow indicator ends the key.
@@ -1010,6 +1025,44 @@ fn needs_double_quote(s: &str) -> bool {
     s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7F)
 }
 
+/// Return `true` when the bare string would re-parse as a non-string YAML
+/// scalar (bool, null, int, or float) under the spec's resolution rules.
+///
+/// Used by both the value- and key-side quoting checks so any string whose
+/// plain form would be mis-interpreted as another type gets quoted. Mirrors
+/// `ScalarValue::from_str`, but works on `&str` without allocating.
+fn would_parse_as_non_string(s: &str) -> bool {
+    #[allow(clippy::match_same_arms)]
+    match s {
+        "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
+        | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
+        | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
+        | ".NAN" => return true,
+        _ => {}
+    }
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    // Numeric: hex/octal prefix → int; decimal int; float with `.` or `e`/`E`.
+    let start = usize::from(b[0] == b'-' || b[0] == b'+');
+    let rest = &s[start..];
+    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        if i64::from_str_radix(hex, 16).is_ok() {
+            return true;
+        }
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+        if i64::from_str_radix(oct, 8).is_ok() {
+            return true;
+        }
+    } else if s.parse::<i64>().is_ok()
+        || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
+    {
+        return true;
+    }
+    false
+}
+
 #[inline]
 fn single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -1074,38 +1127,17 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
     {
         return true;
     }
-    // Check if it would be parsed as a non-string type.
-    // Mirrors ScalarValue::from_str but avoids allocating a String.
-    // Separate arm for `---`/`...` documents the markers' meaning.
-    #[allow(clippy::match_same_arms)]
-    match s {
-        "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
-        | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"
-        | "OFF" | ".inf" | ".Inf" | ".INF" | "-.inf" | "-.Inf" | "-.INF" | ".nan" | ".NaN"
-        | ".NAN" => return true,
-        // Document-start/end markers: emitting plain would collide with
-        // directive-end / document-end markers on re-parse.
-        "---" | "..." => return true,
-        _ => {}
-    }
-    // Numeric: hex/octal prefix → int; decimal int; float with . or e
-    // s is non-empty (checked above); safe to index b[0].
-    let b = s.as_bytes();
-    let start = usize::from(b[0] == b'-' || b[0] == b'+');
-    let rest = &s[start..];
-    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-        if i64::from_str_radix(hex, 16).is_ok() {
-            return true;
-        }
-    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-        if i64::from_str_radix(oct, 8).is_ok() {
-            return true;
-        }
-    } else if s.parse::<i64>().is_ok()
-        || ((s.contains('.') || s.contains('e') || s.contains('E')) && s.parse::<f64>().is_ok())
-    {
+    // Force quotes on any string whose plain form would be resolved as a
+    // non-string YAML scalar (bool, null, int, float).
+    if would_parse_as_non_string(s) {
         return true;
     }
+    // Document-start/end markers: emitting plain would collide with
+    // directive-end / document-end markers on re-parse.
+    if s == "---" || s == "..." {
+        return true;
+    }
+    let b = s.as_bytes();
     // Check for characters that are structurally significant in YAML.
     // Per YAML 1.2 the c-indicators that can never start a plain scalar are:
     //   # & * ! | > % @ ` { } [ ] , ' "
@@ -1222,8 +1254,26 @@ fn pct_encode_with(s: &str, is_allowed: fn(char) -> bool) -> Cow<'_, str> {
 }
 
 /// Returns true if this scalar should be emitted as a block scalar (`|` or `>`).
+///
+/// A block scalar can only carry printable text plus `\t` and `\n`. The YAML
+/// parser normalises `\r\n` and lone `\r` to `\n` inside block scalars, and
+/// other C0 controls (and DEL) aren't permitted there at all. When the value
+/// contains any of those, we deny block emission and let
+/// [`emit_string_with_style`] fall back to double-quoted, which can encode
+/// every code point as a `\…` escape.
 fn is_block_scalar(s: &YamlScalar) -> bool {
-    matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded)
+    if !matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded) {
+        return false;
+    }
+    if let ScalarValue::Str(text) = &s.value {
+        if text
+            .bytes()
+            .any(|b| b == b'\r' || b == 0x7F || (b < 0x20 && b != b'\t' && b != b'\n'))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -2324,11 +2374,23 @@ mod tests {
     }
 
     #[test]
-    fn needs_quoting_for_key_numeric_not_quoted() {
-        // Keys differ from values: numeric strings are valid plain-style keys
-        assert!(!needs_quoting_for_key("42", false));
-        assert!(!needs_quoting_for_key("3.14", false));
-        assert!(!needs_quoting_for_key("0xFF", false));
+    fn needs_quoting_for_key_numeric_and_keyword_quoted() {
+        // yarutsk stores all keys as strings, but other YAML parsers
+        // resolve keyword/numeric-looking keys to bool/int/float/null.
+        // Quote them for interop safety.
+        assert!(needs_quoting_for_key("42", false));
+        assert!(needs_quoting_for_key("3.14", false));
+        assert!(needs_quoting_for_key("0xFF", false));
+        assert!(needs_quoting_for_key("0o77", false));
+        assert!(needs_quoting_for_key("-1", false));
+        assert!(needs_quoting_for_key("1e5", false));
+        assert!(needs_quoting_for_key("true", false));
+        assert!(needs_quoting_for_key("False", false));
+        assert!(needs_quoting_for_key("yes", false));
+        assert!(needs_quoting_for_key("null", false));
+        assert!(needs_quoting_for_key("~", false));
+        assert!(needs_quoting_for_key(".inf", false));
+        assert!(needs_quoting_for_key(".nan", false));
     }
 
     #[test]
@@ -2366,9 +2428,13 @@ mod tests {
     }
 
     #[test]
-    fn emit_key_numeric_plain_unchanged() {
-        // Numeric keys are NOT quoted (they parse back as strings anyway)
-        assert_eq!(do_emit_key("42", ScalarStyle::Plain), "42");
+    fn emit_key_numeric_keyword_quoted_for_interop() {
+        // Plain numeric/keyword-looking keys would re-parse as int/bool/null
+        // under other YAML libraries' key-type resolution. Force quotes so
+        // the output stays string-keyed across parsers.
+        assert_eq!(do_emit_key("42", ScalarStyle::Plain), "'42'");
+        assert_eq!(do_emit_key("true", ScalarStyle::Plain), "'true'");
+        assert_eq!(do_emit_key("null", ScalarStyle::Plain), "'null'");
     }
 
     #[test]

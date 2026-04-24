@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-04-24
+
+### Fixed
+- Literal/folded block scalars no longer silently drop `\r` and other C0 controls — the emitter now falls back to double-quoted when the value can't be preserved as a block scalar.
+- Newline-only scalars (`"\n"`, `"\n\n"`, …) now emit with `|+` keep chomping so they round-trip; previously the clip indicator lost every trailing newline.
+
+## [0.7.4] - 2026-04-24
+
+### Fixed
+- Block-scalar chomping indicators (`|-`, `|+`, `>-`, `>+`) are preserved on round-trip.
+
+## [0.7.3] - 2026-04-24
+
+### Fixed
+- Complex mapping keys (`? key` / `: value`) round-trip correctly.
+- Verbatim tags (`!<…>`) no longer percent-encode flow indicators; shorthand tags still do.
+
+## [0.7.2] - 2026-04-24
+
+### Fixed
+- Plain/single-quoted scalars and keys containing C0 controls or DEL are upgraded to double-quoted on emit.
+- Plain keys inside flow mappings are quoted when they contain flow indicators.
+- `comment_before` / `blank_lines_before` emit correctly when set on the first node of a root mapping or sequence.
+
 ## [0.7.1] - 2026-04-22
 
 ### Changed
@@ -167,7 +191,11 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/theyugin/yarutsk/compare/v0.7.4...v0.7.5
+[0.7.4]: https://github.com/theyugin/yarutsk/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/theyugin/yarutsk/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/theyugin/yarutsk/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/theyugin/yarutsk/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/theyugin/yarutsk/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/theyugin/yarutsk/compare/v0.6.2...v0.6.3
