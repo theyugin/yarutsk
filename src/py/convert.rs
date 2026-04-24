@@ -1212,6 +1212,29 @@ pub(crate) fn py_compare<'py>(
     }
 }
 
+/// Walk a node tree applying `sort_mapping` to every mapping found.
+///
+/// Sequence items are visited (so mappings nested inside lists are sorted) but
+/// the sequence itself is never reordered — `sort_keys` is a mapping-key
+/// operation, not an item-order operation.
+fn descend_sort_keys(
+    py: Python<'_>,
+    node: &mut YamlNode,
+    key: Option<&Py<PyAny>>,
+    reverse: bool,
+) -> PyResult<()> {
+    match node {
+        YamlNode::Mapping(nested) => sort_mapping(py, nested, key, reverse, true),
+        YamlNode::Sequence(seq) => {
+            for item in &mut seq.items {
+                descend_sort_keys(py, item, key, reverse)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn sort_mapping(
     py: Python<'_>,
     m: &mut YamlMapping,
@@ -1221,9 +1244,7 @@ pub(crate) fn sort_mapping(
 ) -> PyResult<()> {
     if recursive {
         for (_, entry) in &mut m.entries {
-            if let YamlNode::Mapping(nested) = &mut entry.value {
-                sort_mapping(py, nested, key, reverse, recursive)?;
-            }
+            descend_sort_keys(py, &mut entry.value, key, reverse)?;
         }
     }
 
