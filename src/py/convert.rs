@@ -314,6 +314,32 @@ pub(crate) fn scalar_to_py(py: Python<'_>, v: &ScalarValue) -> PyResult<Py<PyAny
     }
 }
 
+/// Look up the schema loader registered for `tag`, returning a cloned `Py` reference.
+fn lookup_loader(
+    py: Python<'_>,
+    schema: Option<&Bound<'_, Schema>>,
+    tag: Option<&str>,
+) -> Option<Py<PyAny>> {
+    let schema_bound = schema?;
+    let t = tag?;
+    let sr = schema_bound.borrow();
+    sr.loaders.get(t).map(|f| f.clone_ref(py))
+}
+
+/// Invoke a schema loader with `arg`, wrapping any error in `LoaderError`.
+fn call_loader(
+    py: Python<'_>,
+    loader_fn: &Py<PyAny>,
+    tag: &str,
+    arg: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    loader_fn
+        .bind(py)
+        .call1((arg,))
+        .map(pyo3::Bound::unbind)
+        .map_err(|e| LoaderError::new_err(format!("Schema loader for tag '{tag}' raised: {e}")))
+}
+
 /// Convert a `YamlScalar` to Python, applying tag-specific conversions first.
 ///
 /// - Schema loader for the tag (if any) fires first.
@@ -326,24 +352,10 @@ pub(crate) fn scalar_to_py_with_tag(
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
     // Schema loader takes priority over all built-in tag handlers.
-    if let Some(schema_bound) = schema {
-        let loader = {
-            let sr = schema_bound.borrow();
-            s.tag
-                .as_deref()
-                .and_then(|t| sr.loaders.get(t).map(|f| f.clone_ref(py)))
-        };
-        if let Some(loader_fn) = loader {
-            let tag_name = s.tag.as_deref().unwrap_or("?");
-            let default_val = scalar_to_py(py, &s.value)?;
-            return loader_fn
-                .bind(py)
-                .call1((default_val,))
-                .map(pyo3::Bound::unbind)
-                .map_err(|e| {
-                    LoaderError::new_err(format!("Schema loader for tag '{tag_name}' raised: {e}"))
-                });
-        }
+    if let Some(loader_fn) = lookup_loader(py, schema, s.tag.as_deref()) {
+        let tag_name = s.tag.as_deref().unwrap_or("?");
+        let default_val = scalar_to_py(py, &s.value)?;
+        return call_loader(py, &loader_fn, tag_name, default_val);
     }
     match s.tag.as_deref() {
         Some("!!binary" | "tag:yaml.org,2002:binary") => {
@@ -420,6 +432,27 @@ pub(crate) fn plain_entry(value: YamlNode) -> YamlEntry {
     }
 }
 
+/// Carry inline/before-comment and `blank_lines_before` from the previous slot
+/// onto a freshly-converted node, but only when the new node didn't bring its
+/// own value for that field. Used by the `__setitem__` paths in `PyYamlMapping`
+/// and `PyYamlSequence` to preserve metadata across in-place value swaps.
+pub(crate) fn carry_metadata(
+    node: &mut YamlNode,
+    old_inline: Option<String>,
+    old_before: Option<String>,
+    old_blanks: u8,
+) {
+    if node.comment_inline().is_none() {
+        node.set_comment_inline(old_inline);
+    }
+    if node.comment_before().is_none() {
+        node.set_comment_before(old_before);
+    }
+    if node.blank_lines_before() == 0 {
+        node.set_blank_lines_before(old_blanks);
+    }
+}
+
 /// Resolve a Python sequence index (supports negative indices).
 /// Returns an error if the index is out of range.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // see py_sequence::__setitem__
@@ -467,20 +500,8 @@ pub(crate) fn apply_loader(
     tag: Option<&str>,
     py_obj: Py<PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    if let (Some(schema_bound), Some(t)) = (schema, tag) {
-        let loader = {
-            let sr = schema_bound.borrow();
-            sr.loaders.get(t).map(|f| f.clone_ref(py))
-        };
-        if let Some(loader_fn) = loader {
-            return loader_fn
-                .bind(py)
-                .call1((py_obj,))
-                .map(pyo3::Bound::unbind)
-                .map_err(|e| {
-                    LoaderError::new_err(format!("Schema loader for tag '{t}' raised: {e}"))
-                });
-        }
+    if let Some(loader_fn) = lookup_loader(py, schema, tag) {
+        return call_loader(py, &loader_fn, tag.unwrap_or("?"), py_obj);
     }
     Ok(py_obj)
 }

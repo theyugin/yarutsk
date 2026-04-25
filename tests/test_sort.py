@@ -1,6 +1,5 @@
 """Tests for key sorting functionality in yarutsk."""
 
-import io
 from textwrap import dedent
 
 import pytest
@@ -10,14 +9,13 @@ import yarutsk
 
 class TestKeySorting:
     def test_sort_keys_default(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             z: 1
             a: 2
             m: 3
         """)
         )
-        doc = yarutsk.load(content)
 
         assert list(doc.keys()) == ["z", "a", "m"]
 
@@ -25,53 +23,49 @@ class TestKeySorting:
         assert list(doc.keys()) == ["a", "m", "z"]
 
     def test_sort_keys_custom_function(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             banana: 1
             apple: 2
             cherry: 3
         """)
         )
-        doc = yarutsk.load(content)
 
         doc.sort_keys(key=lambda k: len(k))
         assert list(doc.keys()) == ["apple", "banana", "cherry"]
 
     def test_sort_keys_reverse(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             a: 1
             b: 2
             c: 3
         """)
         )
-        doc = yarutsk.load(content)
 
         doc.sort_keys(reverse=True)
         assert list(doc.keys()) == ["c", "b", "a"]
 
     def test_sort_keys_recursive(self):
-        content = io.StringIO("""
+        doc = yarutsk.loads("""
 z: 1
 a:
   m: 1
   b: 2
 m: 3
 """)
-        doc = yarutsk.load(content)
 
         doc.sort_keys(recursive=True)
         assert list(doc.keys()) == ["a", "m", "z"]
         assert list(doc["a"].keys()) == ["b", "m"]
 
     def test_sort_sequence(self):
-        content = io.StringIO("""
+        doc = yarutsk.loads("""
 items:
   - zebra
   - apple
   - mango
 """)
-        doc = yarutsk.load(content)
         items = doc["items"]
 
         items.sort()
@@ -80,13 +74,12 @@ items:
         assert items[2] == "zebra"
 
     def test_sort_sequence_with_key(self):
-        content = io.StringIO("""
+        doc = yarutsk.loads("""
 items:
   - banana
   - apple
   - cherry
 """)
-        doc = yarutsk.load(content)
         items = doc["items"]
 
         items.sort(key=lambda x: len(x))
@@ -97,24 +90,21 @@ items:
 
 class TestSortingEdgeCases:
     def test_sort_empty_mapping(self):
-        content = io.StringIO("{}")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("{}")
         doc.sort_keys()
         assert list(doc.keys()) == []
 
     def test_sort_single_key(self):
-        content = io.StringIO("a: 1")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("a: 1")
         doc.sort_keys()
         assert list(doc.keys()) == ["a"]
 
     def test_sort_preserves_comments(self):
-        content = io.StringIO("""
+        doc = yarutsk.loads("""
 z: 1  # z comment
 a: 2  # a comment
 m: 3  # m comment
 """)
-        doc = yarutsk.load(content)
 
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "m", "z"]
@@ -123,39 +113,36 @@ m: 3  # m comment
         assert doc.node("z").comment_inline == "z comment"
 
     def test_sort_keys_reverse_custom(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             banana: 1
             apple: 2
             cherry: 3
         """)
         )
-        doc = yarutsk.load(content)
         doc.sort_keys(key=lambda k: len(k), reverse=True)
         assert list(doc.keys()) == ["cherry", "banana", "apple"]
 
     def test_sort_sequence_reverse(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             - a
             - c
             - b
         """)
         )
-        doc = yarutsk.load(content)
         doc.sort(reverse=True)
         assert doc[0] == "c"
         assert doc[1] == "b"
         assert doc[2] == "a"
 
     def test_sort_sequence_empty(self):
-        content = io.StringIO("[]")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("[]")
         doc.sort()
         assert len(doc) == 0
 
     def test_sort_not_recursive_by_default(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             z: 1
             a:
@@ -163,20 +150,18 @@ m: 3  # m comment
               b: 2
         """)
         )
-        doc = yarutsk.load(content)
         doc.sort_keys()
         assert list(doc.keys()) == ["a", "z"]
         assert list(doc["a"].keys()) == ["m", "b"]
 
     def test_sort_then_insert(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             z: 1
             a: 2
             m: 3
         """)
         )
-        doc = yarutsk.load(content)
         doc.sort_keys()
         doc["b"] = 4
         assert list(doc.keys()) == ["a", "m", "z", "b"]

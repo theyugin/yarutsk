@@ -23,76 +23,82 @@ pub enum YamlNode {
     },
 }
 
+/// Generate paired getter/setter on `YamlNode` that delegate to the named field on
+/// `Mapping`/`Sequence`/`Scalar`/`Alias` variants. `Null` returns the default and
+/// silently drops setters. The two arms differ only by reference vs. copy semantics.
+macro_rules! node_accessor {
+    // Option<String> field: getter returns Option<&str>, setter takes Option<String>.
+    ($field:ident, $get:ident, $set:ident, $doc:literal, optstr) => {
+        #[doc = $doc]
+        #[must_use]
+        pub fn $get(&self) -> Option<&str> {
+            match self {
+                YamlNode::Mapping(m) => m.$field.as_deref(),
+                YamlNode::Sequence(s) => s.$field.as_deref(),
+                YamlNode::Scalar(s) => s.$field.as_deref(),
+                YamlNode::Alias { $field, .. } => $field.as_deref(),
+                YamlNode::Null => None,
+            }
+        }
+
+        pub fn $set(&mut self, value: Option<String>) {
+            match self {
+                YamlNode::Mapping(m) => m.$field = value,
+                YamlNode::Sequence(s) => s.$field = value,
+                YamlNode::Scalar(s) => s.$field = value,
+                YamlNode::Alias { $field, .. } => *$field = value,
+                YamlNode::Null => {}
+            }
+        }
+    };
+    // Copy field: getter returns the value, setter takes the value.
+    ($field:ident, $get:ident, $set:ident, $doc:literal, copy $ty:ty) => {
+        #[doc = $doc]
+        #[must_use]
+        pub fn $get(&self) -> $ty {
+            match self {
+                YamlNode::Mapping(m) => m.$field,
+                YamlNode::Sequence(s) => s.$field,
+                YamlNode::Scalar(s) => s.$field,
+                YamlNode::Alias { $field, .. } => *$field,
+                YamlNode::Null => <$ty>::default(),
+            }
+        }
+
+        pub fn $set(&mut self, value: $ty) {
+            match self {
+                YamlNode::Mapping(m) => m.$field = value,
+                YamlNode::Sequence(s) => s.$field = value,
+                YamlNode::Scalar(s) => s.$field = value,
+                YamlNode::Alias { $field, .. } => *$field = value,
+                YamlNode::Null => {}
+            }
+        }
+    };
+}
+
 impl YamlNode {
-    /// Read the trailing inline comment on this node, if any.
-    #[must_use]
-    pub fn comment_inline(&self) -> Option<&str> {
-        match self {
-            YamlNode::Mapping(m) => m.comment_inline.as_deref(),
-            YamlNode::Sequence(s) => s.comment_inline.as_deref(),
-            YamlNode::Scalar(s) => s.comment_inline.as_deref(),
-            YamlNode::Alias { comment_inline, .. } => comment_inline.as_deref(),
-            YamlNode::Null => None,
-        }
-    }
-
-    /// Read the block comment rendered above this node, if any.
-    #[must_use]
-    pub fn comment_before(&self) -> Option<&str> {
-        match self {
-            YamlNode::Mapping(m) => m.comment_before.as_deref(),
-            YamlNode::Sequence(s) => s.comment_before.as_deref(),
-            YamlNode::Scalar(s) => s.comment_before.as_deref(),
-            YamlNode::Alias { comment_before, .. } => comment_before.as_deref(),
-            YamlNode::Null => None,
-        }
-    }
-
-    pub fn set_comment_inline(&mut self, c: Option<String>) {
-        match self {
-            YamlNode::Mapping(m) => m.comment_inline = c,
-            YamlNode::Sequence(s) => s.comment_inline = c,
-            YamlNode::Scalar(s) => s.comment_inline = c,
-            YamlNode::Alias { comment_inline, .. } => *comment_inline = c,
-            YamlNode::Null => {}
-        }
-    }
-
-    pub fn set_comment_before(&mut self, c: Option<String>) {
-        match self {
-            YamlNode::Mapping(m) => m.comment_before = c,
-            YamlNode::Sequence(s) => s.comment_before = c,
-            YamlNode::Scalar(s) => s.comment_before = c,
-            YamlNode::Alias { comment_before, .. } => *comment_before = c,
-            YamlNode::Null => {}
-        }
-    }
-
-    /// Read the number of blank lines preceding this node in its parent, if any.
-    #[must_use]
-    pub fn blank_lines_before(&self) -> u8 {
-        match self {
-            YamlNode::Mapping(m) => m.blank_lines_before,
-            YamlNode::Sequence(s) => s.blank_lines_before,
-            YamlNode::Scalar(s) => s.blank_lines_before,
-            YamlNode::Alias {
-                blank_lines_before, ..
-            } => *blank_lines_before,
-            YamlNode::Null => 0,
-        }
-    }
-
-    pub fn set_blank_lines_before(&mut self, n: u8) {
-        match self {
-            YamlNode::Mapping(m) => m.blank_lines_before = n,
-            YamlNode::Sequence(s) => s.blank_lines_before = n,
-            YamlNode::Scalar(s) => s.blank_lines_before = n,
-            YamlNode::Alias {
-                blank_lines_before, ..
-            } => *blank_lines_before = n,
-            YamlNode::Null => {}
-        }
-    }
+    node_accessor!(
+        comment_inline,
+        comment_inline,
+        set_comment_inline,
+        "Read the trailing inline comment on this node, if any.",
+        optstr
+    );
+    node_accessor!(
+        comment_before,
+        comment_before,
+        set_comment_before,
+        "Read the block comment rendered above this node, if any.",
+        optstr
+    );
+    node_accessor!(
+        blank_lines_before,
+        blank_lines_before,
+        set_blank_lines_before,
+        "Read the number of blank lines preceding this node in its parent.",
+        copy u8
+    );
 }
 
 /// How a scalar value was written in the source.

@@ -4,9 +4,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    DocMeta, node_to_py, parse_container_style, parse_yaml_version, py_compare, py_to_node,
-    py_to_node_with_fallback, resolve_seq_idx, seq_child_node, sequence_repr, sequence_to_py_obj,
-    sequence_to_python,
+    DocMeta, carry_metadata, node_to_py, parse_container_style, parse_yaml_version, py_compare,
+    py_to_node, py_to_node_with_fallback, resolve_seq_idx, seq_child_node, sequence_repr,
+    sequence_to_py_obj, sequence_to_python,
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
@@ -122,15 +122,7 @@ impl PyYamlSequence {
             // preserved in the parent list so the dumper can see them.
             let (node, py_val) = match py_to_node(value, None) {
                 Ok(mut n) => {
-                    if n.comment_inline().is_none() {
-                        n.set_comment_inline(old_inline);
-                    }
-                    if n.comment_before().is_none() {
-                        n.set_comment_before(old_before);
-                    }
-                    if n.blank_lines_before() == 0 {
-                        n.set_blank_lines_before(old_blanks);
-                    }
+                    carry_metadata(&mut n, old_inline, old_before, old_blanks);
                     // Build py_val AFTER metadata is carried over so the live
                     // child reflects it for later reads via seq.node(i).
                     let pv = node_to_py(py, &n, None)?;

@@ -101,20 +101,27 @@ impl PendingKey {
         self.key.is_some() || self.key_node.is_some()
     }
 
+    /// Move pending `comment_before` / `comment_inline` / `blank_lines` onto `value`,
+    /// resetting `blank_lines` afterwards.
+    fn attach_metadata(&mut self, value: &mut YamlNode) {
+        if let Some(cb) = self.comment_before.take() {
+            value.set_comment_before(Some(cb));
+        }
+        if let Some(ci) = self.comment_inline.take() {
+            value.set_comment_inline(Some(ci));
+        }
+        if self.blank_lines > 0 {
+            value.set_blank_lines_before(self.blank_lines);
+        }
+        self.blank_lines = 0;
+    }
+
     /// Consume the pending key and insert a new entry into `mapping`.
     /// Returns `None` on success.  If no key is pending (i.e. this node IS
     /// the complex key), returns `Some(value)` so the caller can store it.
     fn insert_entry(&mut self, mapping: &mut YamlMapping, mut value: YamlNode) -> Option<YamlNode> {
         if let Some(key) = self.key.take() {
-            if let Some(cb) = self.comment_before.take() {
-                value.set_comment_before(Some(cb));
-            }
-            if let Some(ci) = self.comment_inline.take() {
-                value.set_comment_inline(Some(ci));
-            }
-            if self.blank_lines > 0 {
-                value.set_blank_lines_before(self.blank_lines);
-            }
+            self.attach_metadata(&mut value);
             let entry = YamlEntry {
                 value,
                 key_style: self.key_style,
@@ -123,21 +130,12 @@ impl PendingKey {
                 key_tag: self.key_tag.take(),
                 key_node: self.key_node.take().map(Box::new),
             };
-            self.blank_lines = 0;
             mapping.entries.insert(key, entry);
             None
         } else if self.key_node.is_some() {
             // Complex key already saved; this node is the VALUE.
             let key = format!("\x00{}", mapping.entries.len());
-            if let Some(cb) = self.comment_before.take() {
-                value.set_comment_before(Some(cb));
-            }
-            if let Some(ci) = self.comment_inline.take() {
-                value.set_comment_inline(Some(ci));
-            }
-            if self.blank_lines > 0 {
-                value.set_blank_lines_before(self.blank_lines);
-            }
+            self.attach_metadata(&mut value);
             let entry = YamlEntry {
                 value,
                 key_style: ScalarStyle::Plain,
@@ -146,7 +144,6 @@ impl PendingKey {
                 key_tag: None,
                 key_node: self.key_node.take().map(Box::new),
             };
-            self.blank_lines = 0;
             mapping.entries.insert(key, entry);
             None
         } else {

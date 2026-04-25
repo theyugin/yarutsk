@@ -129,61 +129,55 @@ class TestStringAPI:
 
 class TestToPython:
     def test_to_python_simple(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             name: John
             age: 30
         """)
         )
-        doc = yarutsk.load(content)
         d = doc.to_python()
         assert d == {"name": "John", "age": 30}
 
     def test_to_python_nested(self):
-        content = io.StringIO("""
+        doc = yarutsk.loads("""
 person:
   name: John
   age: 30
 """)
-        doc = yarutsk.load(content)
         d = doc.to_python()
         assert d == {"person": {"name": "John", "age": 30}}
 
 
 class TestRepr:
     def test_repr_mapping(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             a: 1
             b: 2
         """)
         )
-        doc = yarutsk.load(content)
         r = repr(doc)
         assert "mapping" in r.lower() or "YAML" in r
 
     def test_repr_sequence(self):
-        content = io.StringIO("[a, b, c]")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("[a, b, c]")
         r = repr(doc)
         assert "sequence" in r.lower() or "YAML" in r
 
 
 class TestContains:
     def test_contains_existing_key(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             name: John
             age: 30
         """)
         )
-        doc = yarutsk.load(content)
         assert "name" in doc
         assert "age" in doc
 
     def test_contains_missing_key(self):
-        content = io.StringIO("name: John")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("name: John")
         assert "missing" not in doc
 
 

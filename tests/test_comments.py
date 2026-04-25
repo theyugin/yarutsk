@@ -1,6 +1,5 @@
 """Tests for comment preservation, edge cases, and mutations."""
 
-import io
 from textwrap import dedent
 
 import pytest
@@ -10,102 +9,84 @@ import yarutsk
 
 class TestCommentPreservation:
     def test_inline_comment_preserved(self):
-        content = io.StringIO("name: John  # inline comment")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("name: John  # inline comment")
         assert doc.node("name").comment_inline == "inline comment"
 
     def test_leading_comment_preserved(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             # Leading comment
             name: John
         """)
         )
-        doc = yarutsk.load(content)
         assert doc.node("name").comment_before == "Leading comment"
 
     def test_multiple_leading_comments(self):
-        content = io.StringIO(
+        doc = yarutsk.loads(
             dedent("""\
             # Line 1
             # Line 2
             name: John
         """)
         )
-        doc = yarutsk.load(content)
         before = doc.node("name").comment_before
         assert "Line 1" in before
         assert "Line 2" in before
 
     def test_comment_in_serialized_output(self):
-        content = io.StringIO("name: John  # inline comment")
-        doc = yarutsk.load(content)
-        output = io.StringIO()
-        yarutsk.dump(doc, output)
-        assert "# inline comment" in output.getvalue()
+        doc = yarutsk.loads("name: John  # inline comment")
+        assert "# inline comment" in yarutsk.dumps(doc)
 
     def test_comment_inline_set(self):
-        content = io.StringIO("name: John")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("name: John")
         doc.node("name").comment_inline = "new comment"
-        output = io.StringIO()
-        yarutsk.dump(doc, output)
-        assert "# new comment" in output.getvalue()
+        assert "# new comment" in yarutsk.dumps(doc)
 
     def test_comment_before_set(self):
-        content = io.StringIO("name: John")
-        doc = yarutsk.load(content)
+        doc = yarutsk.loads("name: John")
         doc.node("name").comment_before = "Header comment"
-        output = io.StringIO()
-        yarutsk.dump(doc, output)
-        assert "# Header comment" in output.getvalue()
+        assert "# Header comment" in yarutsk.dumps(doc)
 
 
 class TestCommentEdgeCases:
     """Tests for unusual comment placement and whitespace in comments."""
 
     def test_inline_no_space_after_hash(self):
-        doc = yarutsk.load(io.StringIO("key: val  #nospace"))
+        doc = yarutsk.loads("key: val  #nospace")
         assert doc.node("key").comment_inline == "nospace"
 
     def test_inline_leading_spaces_inside_comment(self):
         """Spaces after the # are part of the comment text."""
-        doc = yarutsk.load(io.StringIO("key: val  #   padded"))
+        doc = yarutsk.loads("key: val  #   padded")
         assert doc.node("key").comment_inline == "  padded"
 
     def test_inline_on_null_value(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             key:  # empty
             other: x
         """)
-            )
         )
         assert doc.node("key").comment_inline == "empty"
         assert doc.node("other").comment_before is None
 
     def test_inline_only_on_last_key_in_block(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             a: 1
             b: 2  # last
         """)
-            )
         )
         assert doc.node("a").comment_inline is None
         assert doc.node("b").comment_inline == "last"
 
     def test_multiple_keys_each_has_own_inline(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             a: 1  # c1
             b: 2  # c2
             c: 3  # c3
         """)
-            )
         )
         assert doc.node("a").comment_inline == "c1"
         assert doc.node("b").comment_inline == "c2"
@@ -113,26 +94,22 @@ class TestCommentEdgeCases:
 
     def test_inline_does_not_bleed_to_next_key(self):
         """An inline comment on key N is not treated as before-comment for key N+1."""
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             a: 1  # only-a
             b: 2
         """)
-            )
         )
         assert doc.node("a").comment_inline == "only-a"
         assert doc.node("b").comment_before is None
 
     def test_before_comment_on_second_key(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             a: 1
             # before b
             b: 2
         """)
-            )
         )
         assert doc.node("a").comment_before is None
         assert doc.node("b").comment_before == "before b"
@@ -146,74 +123,64 @@ class TestCommentEdgeCases:
             # c-c
             c: 3
         """)
-        doc = yarutsk.load(io.StringIO(yaml))
+        doc = yarutsk.loads(yaml)
         assert doc.node("a").comment_before == "c-a"
         assert doc.node("b").comment_before == "c-b"
         assert doc.node("c").comment_before == "c-c"
 
     def test_before_comment_blank_line_between_comment_and_key(self):
         """A blank line between the comment and the key still associates them."""
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             # header
 
             key: val
         """)
-            )
         )
         assert doc.node("key").comment_before == "header"
 
     def test_multiple_blank_lines_dont_lose_comment(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             # note
 
 
             key: val
         """)
-            )
         )
         assert doc.node("key").comment_before == "note"
 
     def test_multi_line_before_comment_joined(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             # L1
             # L2
             # L3
             key: val
         """)
-            )
         )
         before = doc.node("key").comment_before
         assert before == "L1\nL2\nL3"
 
     def test_inline_on_nested_key_not_outer(self):
         """An inline comment on a nested value is on the inner key, not the outer."""
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             outer:
               inner: val  # deep
         """)
-            )
         )
         assert doc["outer"].node("inner").comment_inline == "deep"
         assert doc.node("outer").comment_inline is None
 
     def test_before_comment_on_nested_key(self):
         """A comment before an indented key belongs to that key."""
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             outer:
               # before inner
               inner: val
         """)
-            )
         )
         assert doc["outer"].node("inner").comment_before == "before inner"
 
@@ -223,7 +190,7 @@ class TestCommentEdgeCases:
               l2:
                 l3: v  # deep inline
         """)
-        doc = yarutsk.load(io.StringIO(yaml))
+        doc = yarutsk.loads(yaml)
         assert doc["l1"]["l2"].node("l3").comment_inline == "deep inline"
 
     def test_before_comment_on_sequence_item_round_trips(self):
@@ -233,11 +200,9 @@ class TestCommentEdgeCases:
               - foo
               - bar
         """)
-        doc = yarutsk.load(io.StringIO(yaml))
-        out = io.StringIO()
-        yarutsk.dump(doc, out)
-        doc2 = yarutsk.load(io.StringIO(out.getvalue()))
-        result = out.getvalue()
+        doc = yarutsk.loads(yaml)
+        result = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(result)
         assert "# first item" in result
         assert doc2["items"][0] == "foo"
 
@@ -279,46 +244,36 @@ class TestCommentEdgeCases:
 
     def test_inline_on_sequence_item_does_not_attach_to_parent_key(self):
         """Inline comment on a sequence item is NOT on the mapping key above."""
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             items:
               - foo  # item comment
         """)
-            )
         )
         assert doc.node("items").comment_inline is None
 
     def test_comment_text_trailing_spaces_preserved_by_emitter(self):
-        doc = yarutsk.load(io.StringIO("key: val"))
+        doc = yarutsk.loads("key: val")
         doc.node("key").comment_inline = "text with spaces  "
-        out = io.StringIO()
-        yarutsk.dump(doc, out)
-        assert "# text with spaces  " in out.getvalue()
+        assert "# text with spaces  " in yarutsk.dumps(doc)
 
     def test_multiline_before_comment_round_trips(self):
-        doc = yarutsk.load(
-            io.StringIO(
-                dedent("""\
+        doc = yarutsk.loads(
+            dedent("""\
             # line one
             # line two
             key: val
         """)
-            )
         )
-        out = io.StringIO()
-        yarutsk.dump(doc, out)
-        doc2 = yarutsk.load(io.StringIO(out.getvalue()))
+        doc2 = yarutsk.loads(yarutsk.dumps(doc))
         before = doc2.node("key").comment_before
         assert "line one" in before
         assert "line two" in before
 
     def test_set_multiline_before_comment_emits_multiple_hash_lines(self):
-        doc = yarutsk.load(io.StringIO("key: val"))
+        doc = yarutsk.loads("key: val")
         doc.node("key").comment_before = "first line\nsecond line"
-        out = io.StringIO()
-        yarutsk.dump(doc, out)
-        result = out.getvalue()
+        result = yarutsk.dumps(doc)
         assert "# first line" in result
         assert "# second line" in result
 
