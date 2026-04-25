@@ -39,6 +39,77 @@ _ScalarInit = _Scalar | bytearray
 # bytes, or scalar primitive.
 type _Dumpable = YamlNode | _Mapping[str, Any] | Iterable[Any] | bytearray | _Scalar
 
+class _NodeBase:
+    """Shared metadata interface for ``YamlScalar``, ``YamlMapping``, and
+    ``YamlSequence`` stubs. Not exported and not inherited at runtime — this
+    class exists only so that the public node types share one type signature
+    for fields that exist on all of them.
+    """
+
+    @property
+    def explicit_start(self) -> bool:
+        """Whether the source document had an explicit ``---`` marker."""
+        ...
+
+    @explicit_start.setter
+    def explicit_start(self, value: bool) -> None: ...
+    @property
+    def explicit_end(self) -> bool:
+        """Whether the source document had an explicit ``...`` marker."""
+        ...
+
+    @explicit_end.setter
+    def explicit_end(self, value: bool) -> None: ...
+    @property
+    def tag(self) -> str | None:
+        """The YAML tag on this node (e.g. ``"!!str"``, ``"!!map"``, ``"!!seq"``), or ``None``."""
+        ...
+
+    @tag.setter
+    def tag(self, value: str | None) -> None: ...
+    @property
+    def anchor(self) -> str | None:
+        """The anchor name declared on this node (``&name``), or ``None``."""
+        ...
+
+    @anchor.setter
+    def anchor(self, value: str | None) -> None: ...
+    @property
+    def yaml_version(self) -> str | None:
+        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
+        ...
+
+    @yaml_version.setter
+    def yaml_version(self, value: str | None) -> None: ...
+    @property
+    def tag_directives(self) -> list[tuple[str, str]]:
+        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
+        ...
+
+    @tag_directives.setter
+    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
+    @property
+    def blank_lines_before(self) -> int:
+        """Number of blank lines emitted before this node (0-255)."""
+        ...
+
+    @blank_lines_before.setter
+    def blank_lines_before(self, value: int) -> None: ...
+    @property
+    def comment_inline(self) -> str | None:
+        """The inline comment on this node (text after ``#``, no leading ``#``), or ``None``. Assign ``None`` to clear."""
+        ...
+
+    @comment_inline.setter
+    def comment_inline(self, value: str | None) -> None: ...
+    @property
+    def comment_before(self) -> str | None:
+        """The block comment preceding this node, lines joined with ``\\n``, or ``None`` if unset. Assign ``None`` to clear."""
+        ...
+
+    @comment_before.setter
+    def comment_before(self, value: str | None) -> None: ...
+
 class YarutskError(Exception):
     """Base exception for all yarutsk errors."""
 
@@ -71,7 +142,7 @@ class DumperError(YarutskError):
 
     ...
 
-class YamlScalar:
+class YamlScalar(_NodeBase):
     """A YAML scalar document node.
 
     Can be constructed directly to create a styled scalar for assignment or
@@ -122,55 +193,6 @@ class YamlScalar:
 
     @style.setter
     def style(self, value: ScalarStyle) -> None: ...
-    @property
-    def explicit_start(self) -> bool:
-        """Whether the source document had an explicit ``---`` marker."""
-        ...
-
-    @explicit_start.setter
-    def explicit_start(self, value: bool) -> None: ...
-    @property
-    def explicit_end(self) -> bool:
-        """Whether the source document had an explicit ``...`` marker."""
-        ...
-
-    @explicit_end.setter
-    def explicit_end(self, value: bool) -> None: ...
-    @property
-    def tag(self) -> str | None:
-        """The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``."""
-        ...
-
-    @tag.setter
-    def tag(self, value: str | None) -> None: ...
-    @property
-    def anchor(self) -> str | None:
-        """The anchor name declared on this scalar (``&name``), or ``None``."""
-        ...
-
-    @anchor.setter
-    def anchor(self, value: str | None) -> None: ...
-    @property
-    def yaml_version(self) -> str | None:
-        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
-        ...
-
-    @yaml_version.setter
-    def yaml_version(self, value: str | None) -> None: ...
-    @property
-    def tag_directives(self) -> list[tuple[str, str]]:
-        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    @tag_directives.setter
-    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
-    @property
-    def blank_lines_before(self) -> int:
-        """Number of blank lines emitted before this scalar (0-255)."""
-        ...
-
-    @blank_lines_before.setter
-    def blank_lines_before(self, value: int) -> None: ...
     def format(self, *, styles: bool = True, comments: bool = True) -> None:
         """Strip cosmetic scalar formatting, resetting to clean YAML defaults.
 
@@ -182,20 +204,6 @@ class YamlScalar:
         """
         ...
 
-    @property
-    def comment_inline(self) -> str | None:
-        """The inline comment on this scalar (text after ``#``, no leading ``#``), or ``None``. Assign ``None`` to clear."""
-        ...
-
-    @comment_inline.setter
-    def comment_inline(self, value: str | None) -> None: ...
-    @property
-    def comment_before(self) -> str | None:
-        """The block comment preceding this scalar, or ``None``. Assign ``None`` to clear."""
-        ...
-
-    @comment_before.setter
-    def comment_before(self, value: str | None) -> None: ...
     def to_python(self) -> _Scalar:
         """Return the Python primitive value."""
         ...
@@ -203,7 +211,7 @@ class YamlScalar:
     def __eq__(self, other: object) -> bool: ...
     def __repr__(self) -> str: ...
 
-class YamlMapping(dict[str, Any]):
+class YamlMapping(_NodeBase, dict[str, Any]):
     """A YAML mapping node. Subclass of dict — all standard dict operations work.
 
     In addition to the full dict interface, provides:
@@ -240,48 +248,6 @@ class YamlMapping(dict[str, Any]):
         ...
 
     @property
-    def explicit_start(self) -> bool:
-        """Whether the source document had an explicit ``---`` marker."""
-        ...
-
-    @explicit_start.setter
-    def explicit_start(self, value: bool) -> None: ...
-    @property
-    def explicit_end(self) -> bool:
-        """Whether the source document had an explicit ``...`` marker."""
-        ...
-
-    @explicit_end.setter
-    def explicit_end(self, value: bool) -> None: ...
-    @property
-    def tag(self) -> str | None:
-        """The YAML tag on this mapping (e.g. ``"!!map"``), or ``None``."""
-        ...
-
-    @tag.setter
-    def tag(self, value: str | None) -> None: ...
-    @property
-    def anchor(self) -> str | None:
-        """The anchor name declared on this mapping (``&name``), or ``None``."""
-        ...
-
-    @anchor.setter
-    def anchor(self, value: str | None) -> None: ...
-    @property
-    def yaml_version(self) -> str | None:
-        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
-        ...
-
-    @yaml_version.setter
-    def yaml_version(self, value: str | None) -> None: ...
-    @property
-    def tag_directives(self) -> list[tuple[str, str]]:
-        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    @tag_directives.setter
-    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
-    @property
     def style(self) -> Literal["block", "flow"]:
         """The container style: ``"block"`` (default) or ``"flow"`` (inline ``{…}``)."""
         ...
@@ -295,13 +261,6 @@ class YamlMapping(dict[str, Any]):
 
     @trailing_blank_lines.setter
     def trailing_blank_lines(self, value: int) -> None: ...
-    @property
-    def blank_lines_before(self) -> int:
-        """Number of blank lines emitted before this mapping (0-255)."""
-        ...
-
-    @blank_lines_before.setter
-    def blank_lines_before(self, value: int) -> None: ...
     def node(self, key: str) -> YamlNode:
         """Return the underlying YAML node for *key*, preserving style/tag metadata.
         Raises ``KeyError`` if *key* is absent.
@@ -332,20 +291,6 @@ class YamlMapping(dict[str, Any]):
         """Recursively convert to a plain Python ``dict`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    @property
-    def comment_inline(self) -> str | None:
-        """The inline comment on this mapping (text after ``#``, no leading ``#``), or ``None``. Assign ``None`` to clear."""
-        ...
-
-    @comment_inline.setter
-    def comment_inline(self, value: str | None) -> None: ...
-    @property
-    def comment_before(self) -> str | None:
-        """The block comment preceding this mapping, lines joined with ``\\n``, or ``None`` if unset. Assign ``None`` to clear."""
-        ...
-
-    @comment_before.setter
-    def comment_before(self, value: str | None) -> None: ...
     def get_alias(self, key: str) -> str | None:
         """Return the anchor name if the value at *key* is a YAML alias node, else ``None``.
 
@@ -394,7 +339,7 @@ class YamlMapping(dict[str, Any]):
     def __copy__(self) -> YamlMapping: ...
     def __deepcopy__(self, memo: dict[int, Any]) -> YamlMapping: ...
 
-class YamlSequence(list[Any]):
+class YamlSequence(_NodeBase, list[Any]):
     """A YAML sequence node. Subclass of list — all standard list operations work.
 
     In addition to the full list interface, provides:
@@ -429,48 +374,6 @@ class YamlSequence(list[Any]):
         ...
 
     @property
-    def explicit_start(self) -> bool:
-        """Whether the source document had an explicit ``---`` marker."""
-        ...
-
-    @explicit_start.setter
-    def explicit_start(self, value: bool) -> None: ...
-    @property
-    def explicit_end(self) -> bool:
-        """Whether the source document had an explicit ``...`` marker."""
-        ...
-
-    @explicit_end.setter
-    def explicit_end(self, value: bool) -> None: ...
-    @property
-    def tag(self) -> str | None:
-        """The YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``."""
-        ...
-
-    @tag.setter
-    def tag(self, value: str | None) -> None: ...
-    @property
-    def anchor(self) -> str | None:
-        """The anchor name declared on this sequence (``&name``), or ``None``."""
-        ...
-
-    @anchor.setter
-    def anchor(self, value: str | None) -> None: ...
-    @property
-    def yaml_version(self) -> str | None:
-        """The ``%YAML`` version directive for this document (e.g. ``"1.2"``), or ``None``."""
-        ...
-
-    @yaml_version.setter
-    def yaml_version(self, value: str | None) -> None: ...
-    @property
-    def tag_directives(self) -> list[tuple[str, str]]:
-        """The ``%TAG`` directives for this document as a list of ``(handle, prefix)`` pairs."""
-        ...
-
-    @tag_directives.setter
-    def tag_directives(self, value: list[tuple[str, str]]) -> None: ...
-    @property
     def style(self) -> Literal["block", "flow"]:
         """The container style: ``"block"`` (default) or ``"flow"`` (inline ``[…]``)."""
         ...
@@ -500,13 +403,6 @@ class YamlSequence(list[Any]):
         """
         ...
 
-    @property
-    def blank_lines_before(self) -> int:
-        """Number of blank lines emitted before this sequence (0-255)."""
-        ...
-
-    @blank_lines_before.setter
-    def blank_lines_before(self, value: int) -> None: ...
     def clear(self) -> None:
         """Remove all items from this sequence."""
         ...
@@ -535,20 +431,6 @@ class YamlSequence(list[Any]):
         """Recursively convert to a plain Python ``list`` (no YamlMapping/YamlSequence nodes)."""
         ...
 
-    @property
-    def comment_inline(self) -> str | None:
-        """The inline comment on this sequence (text after ``#``, no leading ``#``), or ``None``. Assign ``None`` to clear."""
-        ...
-
-    @comment_inline.setter
-    def comment_inline(self, value: str | None) -> None: ...
-    @property
-    def comment_before(self) -> str | None:
-        """The block comment preceding this sequence, lines joined with ``\\n``, or ``None`` if unset. Assign ``None`` to clear."""
-        ...
-
-    @comment_before.setter
-    def comment_before(self, value: str | None) -> None: ...
     def get_alias(self, idx: int) -> str | None:
         """Return the anchor name if the item at *idx* is a YAML alias node, else ``None``.
 

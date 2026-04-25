@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-04-26
+
+### Changed
+- Internal refactor only; no public API changes.
+
 ## [0.7.6] - 2026-04-24
 
 ### Fixed
@@ -226,7 +231,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/theyugin/yarutsk/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/theyugin/yarutsk/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/theyugin/yarutsk/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/theyugin/yarutsk/compare/v0.7.3...v0.7.4

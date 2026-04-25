@@ -5,9 +5,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::convert::{
-    DocMeta, map_child_node, mapping_repr, mapping_to_py_obj, mapping_to_python, node_to_py,
-    parse_container_style, parse_yaml_version, plain_entry, py_to_node, py_to_node_with_fallback,
-    sort_mapping,
+    DocMeta, carry_metadata, map_child_node, mapping_repr, mapping_to_py_obj, mapping_to_python,
+    node_to_py, parse_container_style, parse_yaml_version, plain_entry, py_to_node,
+    py_to_node_with_fallback, sort_mapping,
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
@@ -120,15 +120,7 @@ impl PyYamlMapping {
         // in the parent dict so the dumper can see them at emit time.
         let (mut node, py_val) = match py_to_node(value, None) {
             Ok(mut n) => {
-                if n.comment_inline().is_none() {
-                    n.set_comment_inline(old_inline);
-                }
-                if n.comment_before().is_none() {
-                    n.set_comment_before(old_before);
-                }
-                if n.blank_lines_before() == 0 {
-                    n.set_blank_lines_before(old_blanks);
-                }
+                carry_metadata(&mut n, old_inline, old_before, old_blanks);
                 // Build py_val AFTER metadata is carried over so the live
                 // child reflects it for later reads via m.node(k).
                 let pv = node_to_py(py, &n, None)?;

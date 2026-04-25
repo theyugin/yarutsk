@@ -36,37 +36,37 @@ fn doc_meta(meta: &[builder::DocMetadata], i: usize) -> DocMeta {
     }
 }
 
-/// Extract a doc-level field from any of the three document types.
-macro_rules! doc_field {
-    ($name:ident -> $ret:ty : $field:ident, $default:expr) => {
-        fn $name(obj: &Bound<'_, PyAny>) -> $ret {
-            if let Ok(m) = obj.cast::<PyYamlMapping>() {
-                return m.borrow().$field.clone();
-            }
-            if let Ok(s) = obj.cast::<PyYamlSequence>() {
-                return s.borrow().$field.clone();
-            }
-            if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-                return sc.$field.clone();
-            }
-            $default
-        }
-    };
-}
-
-doc_field!(get_explicit_start_flag -> bool : explicit_start, false);
-doc_field!(get_explicit_end_flag   -> bool : explicit_end,   false);
-doc_field!(get_yaml_version_flag   -> Option<(u8, u8)> : yaml_version, None);
-doc_field!(get_tag_directives_flag -> Vec<(String, String)> : tag_directives, vec![]);
-
-/// Build a single-doc `DocMetadata` from a Python doc object's flags.
+/// Build a single-doc `DocMetadata` from a Python doc object's flags. Probes
+/// each of the three doc-carrying classes once; falls back to defaults if the
+/// object isn't one of them.
 fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> builder::DocMetadata {
-    builder::DocMetadata {
-        explicit_start: get_explicit_start_flag(doc),
-        explicit_end: get_explicit_end_flag(doc),
-        yaml_version: get_yaml_version_flag(doc),
-        tag_directives: get_tag_directives_flag(doc),
+    if let Ok(m) = doc.cast::<PyYamlMapping>() {
+        let m = m.borrow();
+        return builder::DocMetadata {
+            explicit_start: m.explicit_start,
+            explicit_end: m.explicit_end,
+            yaml_version: m.yaml_version,
+            tag_directives: m.tag_directives.clone(),
+        };
     }
+    if let Ok(s) = doc.cast::<PyYamlSequence>() {
+        let s = s.borrow();
+        return builder::DocMetadata {
+            explicit_start: s.explicit_start,
+            explicit_end: s.explicit_end,
+            yaml_version: s.yaml_version,
+            tag_directives: s.tag_directives.clone(),
+        };
+    }
+    if let Ok(sc) = doc.extract::<PyYamlScalar>() {
+        return builder::DocMetadata {
+            explicit_start: sc.explicit_start,
+            explicit_end: sc.explicit_end,
+            yaml_version: sc.yaml_version,
+            tag_directives: sc.tag_directives,
+        };
+    }
+    builder::DocMetadata::default()
 }
 
 /// Extract a `YamlNode` plus its per-doc metadata from a Python doc object.
@@ -132,6 +132,34 @@ fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 
 // ─── Module-level functions ───────────────────────────────────────────────────
 
+/// Convert the first parsed doc (or `None`) to a Python doc object.
+fn convert_first_doc(
+    py: Python<'_>,
+    mut out: builder::ParseOutput,
+    sb: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
+    if out.docs.is_empty() {
+        return Ok(py.None());
+    }
+    let meta = doc_meta(&out.docs_meta, 0);
+    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
+}
+
+/// Convert all parsed docs to a Python list of doc objects.
+fn convert_all_docs(
+    py: Python<'_>,
+    out: builder::ParseOutput,
+    sb: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
+    let builder::ParseOutput { docs, docs_meta } = out;
+    let pydocs: Vec<Py<PyAny>> = docs
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
+        .collect::<PyResult<_>>()?;
+    Ok(PyList::new(py, pydocs)?.into_any().unbind())
+}
+
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
@@ -142,12 +170,8 @@ fn load(
 ) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let mut out = parse_stream(stream, sb_borrow.as_deref())?;
-    if out.docs.is_empty() {
-        return Ok(py.None());
-    }
-    let meta = doc_meta(&out.docs_meta, 0);
-    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
+    let out = parse_stream(stream, sb_borrow.as_deref())?;
+    convert_first_doc(py, out, sb)
 }
 
 #[pyfunction]
@@ -161,12 +185,8 @@ fn loads(
     let text = coerce_text(text)?;
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let mut out = parse_text(&text, sb_borrow.as_deref())?;
-    if out.docs.is_empty() {
-        return Ok(py.None());
-    }
-    let meta = doc_meta(&out.docs_meta, 0);
-    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
+    let out = parse_text(&text, sb_borrow.as_deref())?;
+    convert_first_doc(py, out, sb)
 }
 
 #[pyfunction]
@@ -179,13 +199,8 @@ fn load_all(
 ) -> PyResult<Py<PyAny>> {
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let builder::ParseOutput { docs, docs_meta } = parse_stream(stream, sb_borrow.as_deref())?;
-    let pydocs: Vec<Py<PyAny>> = docs
-        .into_iter()
-        .enumerate()
-        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
-        .collect::<PyResult<_>>()?;
-    Ok(PyList::new(py, pydocs)?.into_any().unbind())
+    let out = parse_stream(stream, sb_borrow.as_deref())?;
+    convert_all_docs(py, out, sb)
 }
 
 #[pyfunction]
@@ -199,13 +214,8 @@ fn loads_all(
     let text = coerce_text(text)?;
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let builder::ParseOutput { docs, docs_meta } = parse_text(&text, sb_borrow.as_deref())?;
-    let pydocs: Vec<Py<PyAny>> = docs
-        .into_iter()
-        .enumerate()
-        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
-        .collect::<PyResult<_>>()?;
-    Ok(PyList::new(py, pydocs)?.into_any().unbind())
+    let out = parse_text(&text, sb_borrow.as_deref())?;
+    convert_all_docs(py, out, sb)
 }
 
 #[pyfunction]

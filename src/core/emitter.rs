@@ -138,6 +138,21 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         Ok(())
     }
 
+    /// Append the inline comment (if any) followed by the line-terminating newline.
+    /// Used after emitting a value that completes a line.
+    fn finish_inline_line(&mut self, comment: Option<&str>) -> fmt::Result {
+        self.push_inline_comment(comment)?;
+        self.out.write_char('\n')
+    }
+
+    /// Emit `n` consecutive newlines.
+    fn write_blank_lines(&mut self, n: u8) -> fmt::Result {
+        for _ in 0..n {
+            self.out.write_char('\n')?;
+        }
+        Ok(())
+    }
+
     /// Emit a block comment (lines prefixed with `# `) at the given indentation.
     fn emit_comment_before(&mut self, comment: Option<&str>, indent: usize) -> fmt::Result {
         if let Some(cb) = comment {
@@ -252,8 +267,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 // Flow mapping value: emit inline on same line as key.
                 self.out.write_char(' ')?;
                 self.emit_mapping_flow(nested)?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
             }
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 // Block mapping value: anchor + tag (if any) + inline comment, then content below.
@@ -261,8 +275,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     nested.anchor.as_deref(),
                     nested.tag.as_deref(),
                 )?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
                 self.emit_mapping(nested, indent + self.step)?;
             }
             YamlNode::Sequence(nested)
@@ -271,8 +284,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 // Flow sequence value: emit inline on same line as key.
                 self.out.write_char(' ')?;
                 self.emit_sequence_flow(nested)?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
             }
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 // Block sequence value: anchor + tag (if any) + inline comment, then content below.
@@ -280,8 +292,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     nested.anchor.as_deref(),
                     nested.tag.as_deref(),
                 )?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
                 self.emit_sequence(nested, indent + self.step)?;
             }
             YamlNode::Mapping(_) => {
@@ -303,14 +314,12 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             YamlNode::Scalar(s) => {
                 self.out.write_char(' ')?;
                 self.emit_scalar(s, false)?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
             }
             node => {
                 self.out.write_char(' ')?;
                 self.emit_node_inline(node, indent + self.step, false)?;
-                self.push_inline_comment(inline)?;
-                self.out.write_char('\n')?;
+                self.finish_inline_line(inline)?;
             }
         }
         Ok(())
@@ -334,17 +343,13 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             return self.out.write_str("{}\n");
         }
         for (key, entry) in &m.entries {
-            for _ in 0..entry.value.blank_lines_before() {
-                self.out.write_char('\n')?;
-            }
+            self.write_blank_lines(entry.value.blank_lines_before())?;
             self.emit_comment_before(entry.value.comment_before(), indent)?;
             self.out.write_str(&indent_str(indent))?;
             self.emit_mapping_key(key, entry, indent)?;
             self.emit_mapping_value(entry, indent)?;
         }
-        for _ in 0..m.trailing_blank_lines {
-            self.out.write_char('\n')?;
-        }
+        self.write_blank_lines(m.trailing_blank_lines)?;
         Ok(())
     }
 
@@ -442,9 +447,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             return self.out.write_str("[]\n");
         }
         for item in &s.items {
-            for _ in 0..item.blank_lines_before() {
-                self.out.write_char('\n')?;
-            }
+            self.write_blank_lines(item.blank_lines_before())?;
             self.emit_comment_before(item.comment_before(), indent)?;
             self.out.write_str(&indent_str(indent))?;
             self.out.write_str("- ")?;
@@ -455,8 +458,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 {
                     // Flow mapping in sequence: emit inline
                     self.emit_mapping_flow(nested)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                     self.emit_nested_in_seq(
@@ -472,8 +474,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 {
                     // Flow sequence in sequence: emit inline
                     self.emit_sequence_flow(nested)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                     self.emit_nested_in_seq(
@@ -490,19 +491,15 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 }
                 YamlNode::Scalar(scalar) => {
                     self.emit_scalar(scalar, false)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 node => {
                     self.emit_node_inline(node, indent + self.step, false)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
             }
         }
-        for _ in 0..s.trailing_blank_lines {
-            self.out.write_char('\n')?;
-        }
+        self.write_blank_lines(s.trailing_blank_lines)?;
         Ok(())
     }
 
@@ -535,9 +532,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         let mut first = true;
         for item in &s.items {
             if !first {
-                for _ in 0..item.blank_lines_before() {
-                    self.out.write_char('\n')?;
-                }
+                self.write_blank_lines(item.blank_lines_before())?;
             }
             let before = item.comment_before();
             let inline = item.comment_inline();
@@ -557,8 +552,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     if !nested.entries.is_empty() && nested.style == ContainerStyle::Flow =>
                 {
                     self.emit_mapping_flow(nested)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                     if let Some(ci) = inline {
@@ -574,8 +568,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     if !nested.items.is_empty() && nested.style == ContainerStyle::Flow =>
                 {
                     self.emit_sequence_flow(nested)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                     if let Some(ci) = inline {
@@ -592,13 +585,11 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 }
                 YamlNode::Scalar(scalar) => {
                     self.emit_scalar(scalar, false)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
                 node => {
                     self.emit_node_inline(node, indent + self.step, false)?;
-                    self.push_inline_comment(inline)?;
-                    self.out.write_char('\n')?;
+                    self.finish_inline_line(inline)?;
                 }
             }
             first = false;
@@ -745,8 +736,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 .write_char(char::from_digit(digit, 10).unwrap_or('1'))?;
         }
         self.out.write_str(chomping)?;
-        self.push_inline_comment(inline_comment)?;
-        self.out.write_char('\n')?;
+        self.finish_inline_line(inline_comment)?;
         let prefix = indent_str(content_indent);
         if indicator == '>' {
             // Folded: emit a blank paragraph-separator line after a base-level content
@@ -1317,9 +1307,7 @@ pub fn emit_docs_to<W: FmtWrite>(
                 // comment_before, so surface them here. Container roots have no
                 // header line for comment_inline, so that is only handled for
                 // scalar roots below.
-                for _ in 0..doc.blank_lines_before() {
-                    emitter.out.write_char('\n')?;
-                }
+                emitter.write_blank_lines(doc.blank_lines_before())?;
                 emitter.emit_comment_before(doc.comment_before(), 0)?;
                 if let YamlNode::Scalar(s) = doc {
                     if is_block_scalar(s) {
