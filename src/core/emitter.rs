@@ -8,8 +8,8 @@ use super::char_traits::{is_tag_char, is_uri_char};
 #[cfg(test)]
 use super::types::MapKey;
 use super::types::{
-    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
-    YamlScalar, YamlSequence,
+    Chomping, ContainerStyle, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry,
+    YamlMapping, YamlNode, YamlScalar, YamlSequence,
 };
 
 // ─── LastCharTracker ─────────────────────────────────────────────────────────
@@ -236,9 +236,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         } else if matches!(entry.key_style, ScalarStyle::Literal | ScalarStyle::Folded) {
             // Block-scalar key: `? |\n  content\n: `
             let key_scalar = YamlScalar {
-                value: ScalarValue::Str(key.to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str(key.to_owned())),
                 style: entry.key_style,
-                original: None,
                 chomping: None,
                 meta: NodeMeta {
                     tag: entry.key_tag.clone(),
@@ -648,7 +647,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         } else {
             '>'
         };
-        let content = match &s.value {
+        let content = match &s.value() {
             ScalarValue::Str(text) => text.as_str(),
             _ => "",
         };
@@ -804,11 +803,11 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         // Use preserved source text when available (e.g. float exponent form `1.5e10`,
         // non-canonical null/bool/int forms, tagged plain scalars).
-        if let Some(orig) = &s.original {
+        if let Some(orig) = s.original() {
             return self.out.write_str(orig);
         }
         self.out.write_str(&emit_scalar_value_with_style(
-            &s.value,
+            s.value(),
             s.style,
             flow_context,
         ))
@@ -1261,7 +1260,7 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
     if !matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded) {
         return false;
     }
-    if let ScalarValue::Str(text) = &s.value {
+    if let ScalarValue::Str(text) = &s.value() {
         if text
             .bytes()
             .any(|b| b == b'\r' || b == 0x7F || (b < 0x20 && b != b'\t' && b != b'\n'))
@@ -1354,9 +1353,8 @@ mod tests {
 
     fn plain_str(s: &str) -> YamlNode {
         YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Str(s.to_owned()),
+            repr: ScalarRepr::Canonical(ScalarValue::Str(s.to_owned())),
             style: ScalarStyle::Plain,
-            original: None,
             chomping: None,
             meta: NodeMeta::default(),
         })
@@ -1364,9 +1362,8 @@ mod tests {
 
     fn plain_int(n: i64) -> YamlNode {
         YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Int(n),
+            repr: ScalarRepr::Canonical(ScalarValue::Int(n)),
             style: ScalarStyle::Plain,
-            original: None,
             chomping: None,
             meta: NodeMeta::default(),
         })
@@ -1396,9 +1393,14 @@ mod tests {
         anchor: Option<&str>,
     ) -> YamlScalar {
         YamlScalar {
-            value,
+            repr: match original {
+                Some(s) => ScalarRepr::Preserved {
+                    value,
+                    source: s.to_owned(),
+                },
+                None => ScalarRepr::Canonical(value),
+            },
             style,
-            original: original.map(std::borrow::ToOwned::to_owned),
             chomping: None,
             meta: NodeMeta {
                 tag: tag.map(std::borrow::ToOwned::to_owned),
@@ -1921,9 +1923,8 @@ mod tests {
         key_seq.style = ContainerStyle::Flow;
         let mut mapping = YamlMapping::new();
         let mut entry = make_entry(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Str("value".to_owned()),
+            repr: ScalarRepr::Canonical(ScalarValue::Str("value".to_owned())),
             style: ScalarStyle::Plain,
-            original: None,
             chomping: None,
             meta: NodeMeta::default(),
         }));
@@ -1952,9 +1953,8 @@ mod tests {
         let m = make_mapping(&[(
             "text",
             YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str("hello\nworld\n".to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str("hello\nworld\n".to_owned())),
                 style: ScalarStyle::Literal,
-                original: None,
                 chomping: None,
                 meta: NodeMeta::default(),
             }),
@@ -1976,9 +1976,8 @@ mod tests {
         let m = make_mapping(&[(
             "text",
             YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str("hello world\n".to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str("hello world\n".to_owned())),
                 style: ScalarStyle::Folded,
-                original: None,
                 chomping: None,
                 meta: NodeMeta::default(),
             }),
@@ -1998,9 +1997,8 @@ mod tests {
         // document's `---` marker gets folded into the scalar's content.
         for style in [ScalarStyle::Folded, ScalarStyle::Literal] {
             let doc = YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str("#\n".to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str("#\n".to_owned())),
                 style,
-                original: None,
                 chomping: None,
                 meta: NodeMeta::default(),
             });
@@ -2031,9 +2029,8 @@ mod tests {
             let m = make_mapping(&[(
                 "text",
                 YamlNode::Scalar(YamlScalar {
-                    value: ScalarValue::Str((*content).to_owned()),
+                    repr: ScalarRepr::Canonical(ScalarValue::Str((*content).to_owned())),
                     style: ScalarStyle::Folded,
-                    original: None,
                     chomping: None,
                     meta: NodeMeta::default(),
                 }),
@@ -2045,8 +2042,8 @@ mod tests {
             if let YamlNode::Mapping(m2) = &re_docs[0] {
                 if let YamlNode::Scalar(s) = &m2.entries[&MapKey::scalar("text")].value {
                     assert_eq!(
-                        s.value,
-                        ScalarValue::Str((*expected_value).to_owned()),
+                        s.value(),
+                        &ScalarValue::Str((*expected_value).to_owned()),
                         "value mismatch for content={content:?}\nemitted:\n{out}"
                     );
                 }
@@ -2060,9 +2057,8 @@ mod tests {
         let m = make_mapping(&[(
             "text",
             YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str("no trailing newline".to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str("no trailing newline".to_owned())),
                 style: ScalarStyle::Literal,
-                original: None,
                 chomping: None,
                 meta: NodeMeta::default(),
             }),
@@ -2081,9 +2077,8 @@ mod tests {
         let m = make_mapping(&[(
             "text",
             YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str("two newlines\n\n".to_owned()),
+                repr: ScalarRepr::Canonical(ScalarValue::Str("two newlines\n\n".to_owned())),
                 style: ScalarStyle::Literal,
-                original: None,
                 chomping: None,
                 meta: NodeMeta::default(),
             }),
