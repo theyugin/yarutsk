@@ -1131,7 +1131,7 @@ class TestContainerStyle:
         doc = yarutsk.loads("a: 1\n")
         assert doc is not None
         with pytest.raises(ValueError):
-            doc.style = "invalid"  # type: ignore[assignment]
+            doc.style = "invalid"
 
     def test_sequence_block_style_default(self) -> None:
         doc = yarutsk.loads(
@@ -1165,7 +1165,7 @@ class TestContainerStyle:
         doc = yarutsk.loads("- 1\n")
         assert doc is not None
         with pytest.raises(ValueError):
-            doc.style = "bad"  # type: ignore[assignment]
+            doc.style = "bad"
 
 
 class TestContainerStyleSetter:
@@ -1211,7 +1211,7 @@ class TestContainerStyleSetter:
         doc = yarutsk.loads("k: [a, b]\n")
         assert isinstance(doc, yarutsk.YamlMapping)
         with pytest.raises(ValueError):
-            doc.node("k").style = "bad"  # type: ignore[assignment]
+            doc.node("k").style = "bad"
 
     def test_mapping_nested_mapping_set_to_flow(self) -> None:
         doc = yarutsk.loads(
@@ -1272,7 +1272,7 @@ class TestContainerStyleSetter:
         doc = yarutsk.loads("- [a, b]\n")
         assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(ValueError):
-            doc.node(0).style = "bad"  # type: ignore[assignment]
+            doc.node(0).style = "bad"
 
 
 class TestStreamRoundTrip:

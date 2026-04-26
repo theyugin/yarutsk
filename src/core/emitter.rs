@@ -1,5 +1,17 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+//! Hand-written YAML serialiser for the `YamlNode` data model.
+//!
+//! Unlike the vendored scanner/parser, this is yarutsk-original. It walks a
+//! `YamlNode` and emits text, preserving everything the round-trip cares about:
+//! per-scalar `ScalarStyle` (plain/single/double/literal/folded) and `Chomping`,
+//! per-container `ContainerStyle` (block vs. flow), comments, blank lines, tags,
+//! and anchor/alias spellings.
+//!
+//! Quoting decisions are content- and context-sensitive (e.g. a plain scalar
+//! that would re-parse as a number gets quoted), so most of this file is the
+//! `Emitter` impl and its scalar-formatting helpers.
+
 use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
@@ -123,13 +135,13 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 self.out.write_char('*')?;
                 self.out.write_str(name)?;
             }
-            // Opaque values must be resolved by `extract_yaml_node` (which
-            // calls `py_to_node` with the active schema) before reaching the
-            // emitter. Hitting this arm means a Python-only object made it
-            // here unmaterialised — a programmer error in the bridge layer.
-            YamlNode::Opaque(_) => {
+            // `Container` and `OpaquePy` must be resolved by `extract_yaml_node`
+            // (which calls `py_to_node` with the active schema) before reaching
+            // the emitter. Hitting these arms means a Python-only object made
+            // it here unmaterialised — a programmer error in the bridge layer.
+            YamlNode::Container(_) | YamlNode::OpaquePy(_) => {
                 unreachable!(
-                    "YamlNode::Opaque survived to the emitter; \
+                    "YamlNode::Container/OpaquePy survived to the emitter; \
                      extract_yaml_node must materialise it via the schema dumper first"
                 );
             }
@@ -952,7 +964,6 @@ fn needs_double_quote(s: &str) -> bool {
 /// plain form would be mis-interpreted as another type gets quoted. Mirrors
 /// `ScalarValue::from_str`, but works on `&str` without allocating.
 fn would_parse_as_non_string(s: &str) -> bool {
-    #[allow(clippy::match_same_arms)]
     match s {
         "null" | "Null" | "NULL" | "~" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES"
         | "on" | "On" | "ON" | "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off"

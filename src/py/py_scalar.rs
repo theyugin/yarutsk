@@ -3,31 +3,19 @@
 use pyo3::prelude::*;
 
 use super::convert::{
-    DocMetaSource, NodeParent, date_type, datetime_type, parse_scalar_style, parse_yaml_version,
-    py_primitive_to_scalar, scalar_to_py_with_tag,
+    NodeParent, date_type, datetime_type, py_primitive_to_scalar, scalar_to_py_with_tag,
 };
-use crate::core::builder::DocMetadata;
+use super::py_node::PyYamlNode;
+use super::style_parse::parse_scalar_style;
 use crate::core::types::{
     FormatOptions, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlNode, YamlScalar,
 };
 
 /// A YAML scalar document node (int, float, bool, str, or null).
-#[pyclass(name = "YamlScalar", from_py_object)]
+#[pyclass(name = "YamlScalar", extends = PyYamlNode, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlScalar {
     pub(crate) inner: YamlNode, // YamlNode::Scalar or YamlNode::Null
-    /// True when the document this node belongs to had an explicit `---` marker.
-    #[pyo3(get, set)]
-    pub explicit_start: bool,
-    /// True when the document this node belongs to had an explicit `...` marker.
-    #[pyo3(get, set)]
-    pub explicit_end: bool,
-    /// `%YAML major.minor` directive for this document, if any.
-    /// Exposed to Python as a `"major.minor"` string via manual getter/setter.
-    pub yaml_version: Option<(u8, u8)>,
-    /// `%TAG handle prefix` pairs for this document.
-    #[pyo3(get, set)]
-    pub tag_directives: Vec<(String, String)>,
     /// Back-reference to the containing mapping/sequence when this scalar was
     /// obtained via `YamlMapping.node(key)` / `YamlSequence.node(idx)`. All
     /// setters propagate mutations through this reference so that mutations
@@ -45,7 +33,11 @@ impl PyYamlScalar {
     /// *tag* is an optional YAML tag string (e.g. ``"!mytag"``).
     #[new]
     #[pyo3(signature = (value, *, style = "plain", tag = None))]
-    fn new(value: &Bound<'_, PyAny>, style: &str, tag: Option<&str>) -> PyResult<Self> {
+    fn new(
+        value: &Bound<'_, PyAny>,
+        style: &str,
+        tag: Option<&str>,
+    ) -> PyResult<(Self, PyYamlNode)> {
         let scalar_style = parse_scalar_style(style)?;
         // Try plain primitives first.
         let inner = if let Some(node) = py_primitive_to_scalar(value) {
@@ -91,14 +83,13 @@ impl PyYamlScalar {
                 ));
             }
         };
-        Ok(PyYamlScalar {
-            inner,
-            explicit_start: false,
-            explicit_end: false,
-            yaml_version: None,
-            tag_directives: vec![],
-            parent: NodeParent::None,
-        })
+        Ok((
+            PyYamlScalar {
+                inner,
+                parent: NodeParent::None,
+            },
+            PyYamlNode::default(),
+        ))
     }
 
     /// The Python value of this scalar.
@@ -139,9 +130,13 @@ impl PyYamlScalar {
     /// plain (literal for multi-line strings) and ``original`` is cleared so
     /// non-canonical forms emit canonically. When *comments* is ``True``
     /// (the default), any inline or before-key comments attached to this
-    /// scalar are cleared. Tags and anchors are preserved.
-    #[pyo3(signature = (*, styles=true, comments=true))]
-    fn format(&mut self, py: Python<'_>, styles: bool, comments: bool) {
+    /// scalar are cleared. ``blank_lines`` is accepted for signature parity
+    /// with the container `format()` methods but has no effect on scalars
+    /// (scalars carry no trailing-blank-line state of their own). Tags and
+    /// anchors are preserved.
+    #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
+    fn format(&mut self, py: Python<'_>, styles: bool, comments: bool, blank_lines: bool) {
+        let _ = blank_lines; // accepted for LSP-clean override of `YamlNode.format`
         let opts = FormatOptions {
             styles,
             comments,
@@ -251,18 +246,6 @@ impl PyYamlScalar {
         });
     }
 
-    /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
-    #[getter]
-    fn get_yaml_version(&self) -> Option<String> {
-        self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
-    }
-
-    #[setter]
-    fn set_yaml_version(&mut self, version: Option<&str>) -> PyResult<()> {
-        self.yaml_version = parse_yaml_version(version)?;
-        Ok(())
-    }
-
     /// The number of blank lines emitted before this scalar (0–255).
     #[getter]
     fn get_blank_lines_before(&self) -> u8 {
@@ -286,16 +269,5 @@ impl PyYamlScalar {
     {
         f(&mut self.inner);
         self.parent.with_node_mut(py, f);
-    }
-}
-
-impl DocMetaSource for PyYamlScalar {
-    fn doc_metadata(&self) -> DocMetadata {
-        DocMetadata {
-            explicit_start: self.explicit_start,
-            explicit_end: self.explicit_end,
-            yaml_version: self.yaml_version,
-            tag_directives: self.tag_directives.clone(),
-        }
     }
 }

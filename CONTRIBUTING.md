@@ -1,7 +1,8 @@
 # Contributing to yarutsk
 
 Thanks for taking the time to contribute. This document covers the gotchas
-that aren't obvious from the code.
+that aren't obvious from the code. For an architectural orientation (call
+lifecycle and the `NodeParent` write-through invariant), see [INTERNALS.md](INTERNALS.md).
 
 ## Setup
 

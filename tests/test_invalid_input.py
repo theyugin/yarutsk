@@ -335,7 +335,7 @@ class TestBadCommentAndStyleArgs:
         doc = yarutsk.loads("key: value\n")
         assert isinstance(doc, yarutsk.YamlMapping)
         with pytest.raises(ValueError):
-            doc.node("key").style = "invalid_style"  # type: ignore[assignment]
+            doc.node("key").style = "invalid_style"
 
     def test_scalar_style_missing_key_raises(self) -> None:
         doc = yarutsk.loads("key: value\n")

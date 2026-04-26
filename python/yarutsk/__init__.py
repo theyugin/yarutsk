@@ -5,6 +5,7 @@ from ._yarutsk import (
     Schema,
     YamlIter,
     YamlMapping,
+    YamlNode,
     YamlScalar,
     YamlSequence,
     YarutskError,
@@ -21,6 +22,7 @@ from ._yarutsk import (
 )
 
 for _cls in (
+    YamlNode,
     YamlMapping,
     YamlSequence,
     YamlScalar,
@@ -41,6 +43,7 @@ __all__ = [
     "Schema",
     "YamlIter",
     "YamlMapping",
+    "YamlNode",
     "YamlScalar",
     "YamlSequence",
     "YarutskError",

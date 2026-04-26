@@ -5,6 +5,24 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use pyo3::{Py, PyAny, Python};
 
+/// Document-level metadata for one YAML document.
+///
+/// Lives on every node (held inside `PyYamlNode`); only the document root's
+/// values are honoured at emit time. Produced by the builder per parsed
+/// document and consumed by the emitter to render the right directives /
+/// markers.
+#[derive(Debug, Default, Clone)]
+pub struct DocMetadata {
+    /// Whether the doc had an explicit `---` marker.
+    pub explicit_start: bool,
+    /// Whether the doc had an explicit `...` end marker.
+    pub explicit_end: bool,
+    /// `%YAML major.minor` directive, if present.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs (empty if none).
+    pub tag_directives: Vec<(String, String)>,
+}
+
 /// Key into [`YamlMapping::entries`]. Scalar keys hold their string form;
 /// complex (non-scalar) keys carry only a positional id — the actual key
 /// node lives on [`YamlEntry::key_node`].
@@ -101,13 +119,23 @@ pub enum YamlNode {
         materialised: Option<Py<PyAny>>,
         meta: NodeMeta,
     },
-    /// Opaque Python object: a value the user assigned that has no native
-    /// `YamlNode` representation (no schema dumper at assignment time, no
-    /// recognised primitive/container shape). The emitter calls
-    /// `py_to_node` again at dump time *with* the schema, so the
-    /// "set first, register schema later, then dump" workflow keeps working
-    /// without storing the value in a parallel parent-dict alongside `inner`.
-    Opaque(Py<PyAny>),
+    /// A typed container child held as a live `Py` handle. The wrapped `Py`
+    /// is **always** a `PyYamlMapping` or `PyYamlSequence` — never an
+    /// arbitrary Python value. Storing children this way lets `m['child']`
+    /// return the same Python object every time (identity preserved via
+    /// `Py` reference counting) so mutations propagate without copy-back.
+    /// Match this variant when you want to walk into typed children
+    /// (sorting, format-recursion, identity checks, alias materialisation).
+    Container(Py<PyAny>),
+    /// An arbitrary Python value with no native `YamlNode` representation —
+    /// the user assigned a custom object (no schema dumper at assignment
+    /// time, no recognised primitive/container shape) or a schema loader
+    /// returned a non-pyclass result. The emitter calls `py_to_node` again
+    /// at dump time *with* the schema, so the "set first, register schema
+    /// later, then dump" workflow keeps working without storing the value in
+    /// a parallel parent-dict alongside `inner`. Match this variant when you
+    /// need to defer conversion to dump time.
+    OpaquePy(Py<PyAny>),
 }
 
 impl Clone for YamlNode {
@@ -133,7 +161,8 @@ impl Clone for YamlNode {
             // `Py::clone_ref` requires the GIL — acquire it explicitly so the
             // public `Clone` impl works in any context the rest of the model is
             // cloned from (e.g. anchor table snapshots, alias resolved storage).
-            YamlNode::Opaque(p) => YamlNode::Opaque(Python::attach(|py| p.clone_ref(py))),
+            YamlNode::Container(p) => YamlNode::Container(Python::attach(|py| p.clone_ref(py))),
+            YamlNode::OpaquePy(p) => YamlNode::OpaquePy(Python::attach(|py| p.clone_ref(py))),
         }
     }
 }
@@ -152,7 +181,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field.as_deref(),
                 YamlNode::Scalar(s) => s.meta.$field.as_deref(),
                 YamlNode::Alias { meta, .. } => meta.$field.as_deref(),
-                YamlNode::Null | YamlNode::Opaque(_) => None,
+                YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => None,
             }
         }
 
@@ -162,7 +191,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null | YamlNode::Opaque(_) => {}
+                YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => {}
             }
         }
     };
@@ -176,7 +205,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field,
                 YamlNode::Scalar(s) => s.meta.$field,
                 YamlNode::Alias { meta, .. } => meta.$field,
-                YamlNode::Null | YamlNode::Opaque(_) => <$ty>::default(),
+                YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => <$ty>::default(),
             }
         }
 
@@ -186,7 +215,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null | YamlNode::Opaque(_) => {}
+                YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => {}
             }
         }
     };
@@ -587,7 +616,7 @@ impl YamlNode {
             YamlNode::Sequence(s) => s.format_with(opts),
             YamlNode::Scalar(s) => s.format_with(opts),
             YamlNode::Alias { meta, .. } => meta_format_with(meta, opts),
-            YamlNode::Null | YamlNode::Opaque(_) => {}
+            YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => {}
         }
     }
 }

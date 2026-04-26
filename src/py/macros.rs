@@ -12,8 +12,10 @@
 /// getter/setter pairs shared by `PyYamlMapping` and `PyYamlSequence`.
 ///
 /// Requires the `multiple-pymethods` `pyo3` feature (so this block coexists
-/// with the per-class primary one) and `parse_container_style` /
-/// `parse_yaml_version` to be in scope at the call site.
+/// with the per-class primary one) and `parse_container_style` (from
+/// `super::style_parse`) to be in scope at the call site. The
+/// `yaml_version`/`explicit_start`/`explicit_end`/`tag_directives` accessors
+/// live on the abstract `PyYamlNode` base and are inherited by the subclass.
 ///
 /// Usage:
 /// ```ignore
@@ -70,18 +72,6 @@ macro_rules! container_metadata_pymethods {
             #[setter]
             fn set_trailing_blank_lines(&mut self, n: u8) {
                 self.inner.trailing_blank_lines = n;
-            }
-
-            /// The `%YAML` version directive for this document (e.g. ``"1.2"``), or ``None``.
-            #[getter]
-            fn get_yaml_version(&self) -> Option<String> {
-                self.yaml_version.map(|(maj, min)| format!("{maj}.{min}"))
-            }
-
-            #[setter]
-            fn set_yaml_version(&mut self, version: Option<&str>) -> pyo3::PyResult<()> {
-                self.yaml_version = parse_yaml_version(version)?;
-                Ok(())
             }
 
             /// The number of blank lines emitted before this node (0–255).

@@ -1,5 +1,16 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+//! Char-source adapters and the `PyStreamWriter` sink.
+//!
+//! The scanner consumes `Iterator<Item = char>`, but Python callers pass IO
+//! objects or `str`s. `PyIoCharsIter` reads any text-or-binary Python stream in
+//! 8 KB chunks (preserving partial UTF-8 sequences across chunk boundaries) and
+//! `StringCharsIter` adapts an in-memory `String`; both implement the common
+//! `CharsSource` trait so `iter_load_all*` can stream input lazily.
+//!
+//! `PyStreamWriter` is the symmetric output side — a `fmt::Write` that forwards
+//! into a Python `write()` callable for `dump_to`.
+
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyRuntimeError;

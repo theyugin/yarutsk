@@ -1,5 +1,23 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+//! Python ↔ `YamlNode` boundary.
+//!
+//! Two halves:
+//! - **Load** (Rust → Python): `parse_text`/`parse_stream` drive the builder,
+//!   then `node_to_doc` / `materialise_node` wrap each `YamlNode` in the
+//!   matching pyclass (`PyYamlMapping`/`PyYamlSequence`/`PyYamlScalar`),
+//!   running schema loaders against tagged scalars.
+//! - **Dump** (Python → Rust): `extract_yaml_node` walks Python objects,
+//!   running schema dumpers, tracking anchor identity, and materialising a
+//!   `YamlNode` ready for the emitter.
+//!
+//! Invariant — `NodeParent` write-through: when `mapping.node(k)` /
+//! `sequence.node(i)` returns a *scalar*, that `PyYamlScalar` carries a
+//! `NodeParent` back-reference so setters reach into the parent's `inner`.
+//! Without it, mutations would land on a clone and disappear at emit time.
+//! Container children don't need the back-ref because the live child is
+//! already the object stored in the parent collection.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -16,8 +34,8 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{DocMetadata, ParseOutput, parse_iter, parse_str};
 use crate::core::types::{
-    ContainerStyle, MapKey, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
-    YamlNode, YamlScalar, YamlSequence,
+    MapKey, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
 
@@ -27,7 +45,7 @@ use crate::{DumperError, LoaderError, ParseError};
 // container so that setters propagate into the parent's `inner` — otherwise
 // mutations would land in a clone and disappear on emission.
 //
-// Container children return the live `Opaque` child Py directly (mutations
+// Container children return the live `Container` child Py directly (mutations
 // propagate without a back-reference).
 
 #[derive(Default)]
@@ -230,7 +248,7 @@ fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
         *ref_count.entry(ptr).or_insert(0) = 1;
         let m = m_bound.borrow();
         for entry in m.inner.entries.values() {
-            if let YamlNode::Opaque(p) = &entry.value {
+            if let YamlNode::Container(p) | YamlNode::OpaquePy(p) = &entry.value {
                 prepass(p.bind(py), ref_count);
             }
         }
@@ -244,7 +262,7 @@ fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
         *ref_count.entry(ptr).or_insert(0) = 1;
         let s = s_bound.borrow();
         for item in &s.inner.items {
-            if let YamlNode::Opaque(p) = item {
+            if let YamlNode::Container(p) | YamlNode::OpaquePy(p) = item {
                 prepass(p.bind(py), ref_count);
             }
         }
@@ -434,11 +452,12 @@ fn with_opaque_meta_mut(py: Python<'_>, p: &Py<PyAny>, f: impl FnOnce(&mut NodeM
 }
 
 /// Read `(comment_inline, comment_before, blank_lines_before)` off a value
-/// that lives in `inner.entries` / `inner.items`. For `Opaque(Py<…>)` the
+/// that lives in `inner.entries` / `inner.items`. For `Container(Py<…>)` the
 /// real metadata is on the wrapped Py's `inner.meta`, not on the node
-/// accessor (which the `node_accessor!` macro defines as no-op for Opaque).
+/// accessor (which `node_accessor!` defines as no-op for `Container`/
+/// `OpaquePy`). `OpaquePy` carries no metadata of its own.
 pub(crate) fn read_metadata(node: &YamlNode) -> (Option<String>, Option<String>, u8) {
-    if let YamlNode::Opaque(p) = node {
+    if let YamlNode::Container(p) = node {
         return Python::attach(|py| {
             with_opaque_meta(
                 py,
@@ -471,7 +490,7 @@ pub(crate) fn carry_metadata(
     old_before: Option<String>,
     old_blanks: u8,
 ) {
-    if let YamlNode::Opaque(p) = node {
+    if let YamlNode::Container(p) = node {
         Python::attach(|py| {
             with_opaque_meta_mut(py, p, |meta| {
                 if meta.comment_inline.is_none() {
@@ -514,10 +533,10 @@ pub(crate) fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
 
 /// Convert a Python value into the `YamlNode` form used inside `inner.entries`
 /// / `inner.items`. Container values are materialised into
-/// `Opaque(Py<PyYamlMapping|PyYamlSequence>)` so subsequent reads return the
-/// same Py and mutations propagate. Anything `py_to_node` can't convert lands
-/// as `Opaque(value)` — the schema dumper, if any, fires at dump time via
-/// `extract_yaml_node`.
+/// `Container(Py<PyYamlMapping|PyYamlSequence>)` so subsequent reads return
+/// the same Py and mutations propagate. Anything `py_to_node` can't convert
+/// lands as `OpaquePy(value)` — the schema dumper, if any, fires at dump time
+/// via `extract_yaml_node`.
 ///
 /// Note: assigning an existing `PyYamlMapping`/`PyYamlSequence` *snapshots*
 /// it (deep-clones via `py_to_node` then materialises into a fresh Py), so
@@ -530,7 +549,7 @@ pub(crate) fn py_to_stored_node(
 ) -> PyResult<YamlNode> {
     // Custom objects with no native form: store verbatim, defer to schema at dump.
     let Ok(mut node) = py_to_node(value, schema) else {
-        return Ok(YamlNode::Opaque(value.clone().unbind()));
+        return Ok(YamlNode::OpaquePy(value.clone().unbind()));
     };
     let mut ctx = LoadCtx::default();
     materialise_node(py, &mut node, schema, &mut ctx)?;
@@ -603,10 +622,11 @@ pub(crate) fn node_to_py_inner(
             // Last resort — convert the resolved subtree as a fresh Py.
             node_to_py_inner(py, resolved, schema, ctx)
         }
-        // Opaque values (Python objects with no native YamlNode form) round-
-        // trip back to Python verbatim — the schema dumper, if any, only
-        // fires at dump time via `extract_yaml_node`.
-        YamlNode::Opaque(p) => Ok(p.clone_ref(py)),
+        // Container holds a typed `PyYamlMapping`/`PyYamlSequence`; OpaquePy
+        // holds an arbitrary Python value. Either round-trips back to Python
+        // verbatim — the schema dumper, if any, only fires at dump time via
+        // `extract_yaml_node`.
+        YamlNode::Container(p) | YamlNode::OpaquePy(p) => Ok(p.clone_ref(py)),
     }
 }
 
@@ -860,21 +880,15 @@ fn synthetic_alias(name: String) -> YamlNode {
     }
 }
 
-/// Implemented by the three doc-carrying pyclasses (`PyYamlMapping`,
-/// `PyYamlSequence`, `PyYamlScalar`) so callers can extract the document-level
-/// metadata uniformly.
-pub(crate) trait DocMetaSource {
-    fn doc_metadata(&self) -> DocMetadata;
-}
-
-/// Visit every `Opaque(Py<…>)` container child in *children*, casting each
-/// to its concrete pyclass and invoking *visit*. Non-`Opaque` variants
-/// (`Scalar`/`Alias`/etc.) are skipped — recursive descent in `format` /
-/// `sort_keys` / `sort` only follows live container `Py`s.
+/// Visit every `Container(Py<…>)` child in *children*, casting each to its
+/// concrete pyclass and invoking *visit*. Non-`Container` variants
+/// (`Scalar`/`Alias`/`OpaquePy`/etc.) are skipped — recursive descent in
+/// `format` / `sort_keys` / `sort` only follows live container `Py`s.
 ///
 /// *children* must be collected up-front (e.g. via
-/// `collect_opaque_children_*`) so the parent's borrow can be released before
-/// recursion: nested calls re-enter `borrow_mut` on the parent's own children.
+/// `collect_container_children_*`) so the parent's borrow can be released
+/// before recursion: nested calls re-enter `borrow_mut` on the parent's own
+/// children.
 pub(crate) fn for_each_opaque_child<F>(
     py: Python<'_>,
     children: Vec<Py<PyAny>>,
@@ -900,8 +914,10 @@ pub(crate) enum ChildContainer<'py, 'a> {
     Sequence(&'a Bound<'py, PyYamlSequence>),
 }
 
-/// Snapshot of every `Opaque(Py<…>)` value in *m* — used by recursive descent
-/// (sort/format) to release the parent borrow before recursing into children.
+/// Snapshot of every `Container(Py<…>)` value in *m* — used by recursive
+/// descent (sort/format) to release the parent borrow before recursing into
+/// children. `OpaquePy` slots are intentionally skipped: they hold arbitrary
+/// Python values, not typed pyclass children to recurse into.
 pub(crate) fn collect_opaque_children_from_mapping(
     m: &YamlMapping,
     py: Python<'_>,
@@ -909,13 +925,13 @@ pub(crate) fn collect_opaque_children_from_mapping(
     m.entries
         .values()
         .filter_map(|e| match &e.value {
-            YamlNode::Opaque(p) => Some(p.clone_ref(py)),
+            YamlNode::Container(p) => Some(p.clone_ref(py)),
             _ => None,
         })
         .collect()
 }
 
-/// Snapshot of every `Opaque(Py<…>)` item in *s* — see
+/// Snapshot of every `Container(Py<…>)` item in *s* — see
 /// `collect_opaque_children_from_mapping`.
 pub(crate) fn collect_opaque_children_from_sequence(
     s: &YamlSequence,
@@ -924,7 +940,7 @@ pub(crate) fn collect_opaque_children_from_sequence(
     s.items
         .iter()
         .filter_map(|item| match item {
-            YamlNode::Opaque(p) => Some(p.clone_ref(py)),
+            YamlNode::Container(p) => Some(p.clone_ref(py)),
             _ => None,
         })
         .collect()
@@ -932,7 +948,7 @@ pub(crate) fn collect_opaque_children_from_sequence(
 
 /// Return the child at *key* of a mapping as a typed node object.
 ///
-/// Container children return the live `Opaque` Py so mutations propagate.
+/// Container children return the live `Container` Py so mutations propagate.
 /// Scalar children return a fresh `PyYamlScalar` whose setters write through
 /// via a `NodeParent` back-reference.
 pub(crate) fn map_child_node(slf: &Bound<'_, PyYamlMapping>, key: &str) -> PyResult<Py<PyAny>> {
@@ -949,9 +965,9 @@ pub(crate) fn map_child_node(slf: &Bound<'_, PyYamlMapping>, key: &str) -> PyRes
         ChildKind::Container => {
             let borrow = slf.borrow();
             match borrow.inner.entries.get(&mk).map(|e| &e.value) {
-                Some(YamlNode::Opaque(p)) => Ok(p.clone_ref(py)),
-                // Container kind without an Opaque slot shouldn't happen post-
-                // materialisation, but fall back to converting the node fresh.
+                Some(YamlNode::Container(p) | YamlNode::OpaquePy(p)) => Ok(p.clone_ref(py)),
+                // Container kind without a typed/opaque slot shouldn't happen
+                // post-materialisation; fall back to converting the node fresh.
                 Some(other) => node_to_py(py, other, None),
                 None => Err(PyKeyError::new_err(key.to_owned())),
             }
@@ -961,20 +977,14 @@ pub(crate) fn map_child_node(slf: &Bound<'_, PyYamlMapping>, key: &str) -> PyRes
             let Some(node) = node else {
                 return Err(PyKeyError::new_err(key.to_owned()));
             };
-            Ok(PyYamlScalar {
+            let scalar = PyYamlScalar {
                 inner: node,
-                explicit_start: false,
-                explicit_end: false,
-                yaml_version: None,
-                tag_directives: vec![],
                 parent: NodeParent::Map {
                     parent: slf.clone().unbind(),
                     key: key.to_owned(),
                 },
-            }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
+            };
+            Ok(Py::new(py, (scalar, crate::py::py_node::PyYamlNode::default()))?.into_any())
         }
     }
 }
@@ -991,26 +1001,20 @@ pub(crate) fn seq_child_node(slf: &Bound<'_, PyYamlSequence>, idx: usize) -> PyR
         ChildKind::Container => {
             let borrow = slf.borrow();
             match &borrow.inner.items[idx] {
-                YamlNode::Opaque(p) => Ok(p.clone_ref(py)),
+                YamlNode::Container(p) | YamlNode::OpaquePy(p) => Ok(p.clone_ref(py)),
                 other => node_to_py(py, other, None),
             }
         }
         ChildKind::Scalar => {
             let node = slf.borrow().inner.items[idx].clone();
-            Ok(PyYamlScalar {
+            let scalar = PyYamlScalar {
                 inner: node,
-                explicit_start: false,
-                explicit_end: false,
-                yaml_version: None,
-                tag_directives: vec![],
                 parent: NodeParent::Seq {
                     parent: slf.clone().unbind(),
                     idx,
                 },
-            }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
+            };
+            Ok(Py::new(py, (scalar, crate::py::py_node::PyYamlNode::default()))?.into_any())
         }
     }
 }
@@ -1023,14 +1027,18 @@ enum ChildKind {
 impl ChildKind {
     fn from_node(n: &YamlNode) -> Self {
         match n {
-            // After materialisation, container children live as `Opaque(Py)`;
-            // pre-materialisation `Mapping`/`Sequence` is treated as a container
-            // for safety.
-            YamlNode::Mapping(_) | YamlNode::Sequence(_) | YamlNode::Opaque(_) => {
-                ChildKind::Container
-            }
+            // After materialisation, container children live as `Container(Py)`;
+            // an `OpaquePy` slot holds an arbitrary Python value (loader output
+            // or user-assigned custom type) — surfacing that to the caller as a
+            // "container" matches the live-Py contract of `m[k]` returning the
+            // stored value identity-stable. Pre-materialisation `Mapping`/
+            // `Sequence` are treated as containers for safety.
+            YamlNode::Mapping(_)
+            | YamlNode::Sequence(_)
+            | YamlNode::Container(_)
+            | YamlNode::OpaquePy(_) => ChildKind::Container,
             // Aliases follow the resolved node's kind (runtime `set_alias()`
-            // case — load-time aliases became `Opaque` during materialisation).
+            // case — load-time aliases became `Container` during materialisation).
             YamlNode::Alias { resolved, .. } => Self::from_node(resolved),
             YamlNode::Scalar(_) | YamlNode::Null => ChildKind::Scalar,
         }
@@ -1067,17 +1075,14 @@ pub(crate) fn node_to_doc(
             }
             Ok(py_obj)
         }
-        other => Ok(PyYamlScalar {
-            inner: other,
-            explicit_start: meta.explicit_start,
-            explicit_end: meta.explicit_end,
-            yaml_version: meta.yaml_version,
-            tag_directives: meta.tag_directives,
-            parent: NodeParent::None,
+        other => {
+            let scalar = PyYamlScalar {
+                inner: other,
+                parent: NodeParent::None,
+            };
+            let base = crate::py::py_node::PyYamlNode { meta };
+            Ok(Py::new(py, (scalar, base))?.into_any())
         }
-        .into_pyobject(py)?
-        .into_any()
-        .unbind()),
     }
 }
 
@@ -1196,7 +1201,7 @@ pub(crate) fn extract_yaml_node_inner(
 }
 
 /// Extract the `YamlMapping` for a `PyYamlMapping` by walking `inner.entries`.
-/// Container children live as `Opaque(Py)` post-materialisation; recurse into
+/// Container children live as `Container(Py)` post-materialisation; recurse into
 /// their Pys via `extract_yaml_node_inner` so anchor/alias detection (B1) and
 /// the per-Py cycle guard apply uniformly.
 fn extract_mapping_inner(
@@ -1274,7 +1279,9 @@ fn extract_entry_value(
 ) -> PyResult<YamlNode> {
     match value {
         // Materialised containers / opaque user values: walk via the live Py.
-        YamlNode::Opaque(p) => extract_yaml_node_inner(p.bind(py), schema, ctx),
+        YamlNode::Container(p) | YamlNode::OpaquePy(p) => {
+            extract_yaml_node_inner(p.bind(py), schema, ctx)
+        }
         // Native variants (incl. Mapping/Sequence if the user built a YamlNode
         // tree by hand and never went through materialisation) pass through.
         _ => Ok(value.clone()),
@@ -1303,8 +1310,9 @@ pub(crate) fn mapping_to_py_obj_inner(
     schema: Option<&Bound<'_, Schema>>,
     ctx: &mut LoadCtx,
 ) -> PyResult<Py<PyAny>> {
-    // Materialise children in-place: containers become `Opaque(Py<…>)`,
-    // aliases become `Opaque` reusing the anchor's Py via `LoadCtx`. Scalars
+    // Materialise children in-place: containers become `Container(Py<…>)`
+    // (or `OpaquePy(...)` if a schema loader transformed them); aliases reuse
+    // the anchor's Py via `LoadCtx`. Scalars
     // and Null are left as typed values.
     for entry in m.entries.values_mut() {
         materialise_node(py, &mut entry.value, schema, ctx)?;
@@ -1312,27 +1320,26 @@ pub(crate) fn mapping_to_py_obj_inner(
 
     let obj: Py<PyYamlMapping> = Py::new(
         py,
-        PyYamlMapping {
-            inner: m,
-            explicit_start: meta.explicit_start,
-            explicit_end: meta.explicit_end,
-            yaml_version: meta.yaml_version,
-            tag_directives: meta.tag_directives,
-        },
+        (
+            PyYamlMapping { inner: m },
+            crate::py::py_node::PyYamlNode { meta },
+        ),
     )?;
 
     Ok(obj.into_any())
 }
 
-/// Walk `node`; for any `Opaque(Py<PyYamlMapping|PyYamlSequence>)` slot,
+/// Walk `node`; for any `Container(Py<PyYamlMapping|PyYamlSequence>)` slot,
 /// replace the wrapped Py with a freshly deep-copied one. Used by both
 /// `PyYamlMapping::__deepcopy__` and `PyYamlSequence::__deepcopy__` so each
 /// nested container becomes an independent Py with its own `inner`.
 ///
-/// Plain user-opaque objects (no PyYamlMapping/Sequence cast) are left as-is
-/// — `copy.deepcopy` is the user's responsibility for arbitrary types.
+/// `OpaquePy` slots (arbitrary Python values) are left as-is — `copy.deepcopy`
+/// is the user's responsibility for arbitrary types. Only `Container` slots
+/// are deep-cloned, since they're known to hold typed `PyYamlMapping`/
+/// `PyYamlSequence` instances with a defined deep-copy semantics.
 pub(crate) fn deep_clone_opaque(py: Python<'_>, node: &mut YamlNode) -> PyResult<()> {
-    let YamlNode::Opaque(p) = node else {
+    let YamlNode::Container(p) = node else {
         return Ok(());
     };
     let bound = p.bind(py);
@@ -1344,11 +1351,28 @@ pub(crate) fn deep_clone_opaque(py: Python<'_>, node: &mut YamlNode) -> PyResult
     Ok(())
 }
 
-/// Replace `*node` in-place with its materialised form: containers become
-/// `Opaque(Py<PyYamlMapping|PyYamlSequence>)`, aliases become `Opaque(<cached
-/// Py>)`, scalars whose tag matches a schema loader become `Opaque(<loaded
-/// Py>)`. Untagged or schema-less scalars are left as `Scalar(YamlScalar)` so
-/// their original style/source/metadata round-trips losslessly.
+/// Wrap a materialised Python object into the right `YamlNode` variant.
+///
+/// `Container` for `PyYamlMapping`/`PyYamlSequence` (the no-loader case, plus
+/// schema dumpers that intentionally returned a typed yarutsk container);
+/// `OpaquePy` for everything else — loader-transformed values, custom user
+/// classes, etc. Reads of these slots later use `extract_yaml_node` to
+/// dump-time-convert `OpaquePy` while `Container` round-trips directly.
+fn wrap_materialised(py: Python<'_>, obj: Py<PyAny>) -> YamlNode {
+    let bound = obj.bind(py);
+    if bound.cast::<PyYamlMapping>().is_ok() || bound.cast::<PyYamlSequence>().is_ok() {
+        YamlNode::Container(obj)
+    } else {
+        YamlNode::OpaquePy(obj)
+    }
+}
+
+/// Replace `*node` in-place with its materialised form: untagged
+/// mappings/sequences become `Container(Py<PyYamlMapping|PyYamlSequence>)`;
+/// loader-transformed mappings/sequences and loader-transformed scalars
+/// become `OpaquePy(<loaded Py>)`. Untagged or schema-less scalars are left
+/// as `Scalar(YamlScalar)` so their original style/source/metadata round-
+/// trips losslessly.
 pub(crate) fn materialise_node(
     py: Python<'_>,
     node: &mut YamlNode,
@@ -1365,7 +1389,7 @@ pub(crate) fn materialise_node(
             if let Some(name) = anchor {
                 ctx.register(name, &final_obj, py);
             }
-            *node = YamlNode::Opaque(final_obj);
+            *node = wrap_materialised(py, final_obj);
         }
         YamlNode::Sequence(s) => {
             let s_owned = std::mem::take(s);
@@ -1377,10 +1401,10 @@ pub(crate) fn materialise_node(
             if let Some(name) = anchor {
                 ctx.register(name, &final_obj, py);
             }
-            *node = YamlNode::Opaque(final_obj);
+            *node = wrap_materialised(py, final_obj);
         }
         YamlNode::Scalar(s) => {
-            // Custom-tagged scalars: collapse to `Opaque(loaded_py)` so
+            // Custom-tagged scalars: collapse to `OpaquePy(loaded_py)` so
             // `doc[k]` returns the loader's value. Built-in tags
             // (`!!binary`, `!!timestamp`) and untagged scalars stay as
             // `Scalar` and re-resolve on each access — they don't need
@@ -1392,7 +1416,7 @@ pub(crate) fn materialise_node(
                 if let Some(name) = s.meta.anchor.clone() {
                     ctx.register(name, &py_obj, py);
                 }
-                *node = YamlNode::Opaque(py_obj);
+                *node = YamlNode::OpaquePy(py_obj);
             }
         }
         YamlNode::Alias {
@@ -1415,7 +1439,7 @@ pub(crate) fn materialise_node(
                 *materialised = Some(py_obj);
             }
         }
-        YamlNode::Null | YamlNode::Opaque(_) => {}
+        YamlNode::Null | YamlNode::Container(_) | YamlNode::OpaquePy(_) => {}
     }
     Ok(())
 }
@@ -1450,13 +1474,10 @@ pub(crate) fn sequence_to_py_obj_inner(
 
     let obj: Py<PyYamlSequence> = Py::new(
         py,
-        PyYamlSequence {
-            inner: s,
-            explicit_start: meta.explicit_start,
-            explicit_end: meta.explicit_end,
-            yaml_version: meta.yaml_version,
-            tag_directives: meta.tag_directives,
-        },
+        (
+            PyYamlSequence { inner: s },
+            crate::py::py_node::PyYamlNode { meta },
+        ),
     )?;
 
     Ok(obj.into_any())
@@ -1475,7 +1496,7 @@ pub(crate) fn node_repr(py: Python<'_>, node: &YamlNode) -> String {
         },
         YamlNode::Null => "None".to_string(),
         YamlNode::Alias { resolved, .. } => node_repr(py, resolved),
-        YamlNode::Opaque(p) => p
+        YamlNode::Container(p) | YamlNode::OpaquePy(p) => p
             .bind(py)
             .repr()
             .map_or_else(|_| "<opaque>".to_string(), |s| s.to_string()),
@@ -1503,9 +1524,11 @@ pub(crate) fn node_to_python(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyA
         YamlNode::Mapping(m) => mapping_to_python(py, m),
         YamlNode::Sequence(s) => sequence_to_python(py, s),
         YamlNode::Alias { resolved, .. } => node_to_python(py, resolved),
-        // Opaque container Pys recurse so `to_python()` yields a fully-plain
-        // tree. User opaque values (not a YamlMapping/Sequence) pass through.
-        YamlNode::Opaque(p) => {
+        // `Container` slots hold a typed `PyYamlMapping`/`PyYamlSequence` —
+        // recurse so `to_python()` yields a fully-plain tree. `OpaquePy`
+        // values (loader output / unrecognised user objects) pass through
+        // unchanged.
+        YamlNode::Container(p) => {
             let bound = p.bind(py);
             if let Ok(child_m) = bound.cast::<PyYamlMapping>() {
                 return mapping_to_python(py, &child_m.borrow().inner);
@@ -1515,6 +1538,7 @@ pub(crate) fn node_to_python(py: Python<'_>, node: &YamlNode) -> PyResult<Py<PyA
             }
             Ok(p.clone_ref(py))
         }
+        YamlNode::OpaquePy(p) => Ok(p.clone_ref(py)),
     }
 }
 
@@ -1561,140 +1585,4 @@ pub(crate) fn parse_stream(
         return Err(err);
     }
     result.map_err(ParseError::new_err)
-}
-
-/// Compare two Python values using `a < b`.
-///
-/// Only the `Lt` rich-compare is dispatched; `!Less` is treated as `Greater` rather than
-/// disambiguating Equal vs Greater with a second call. This is safe for stable-sort
-/// call sites (Rust's `sort_by` only branches on `Less` vs `!Less`), and halves the
-/// Python dispatch cost on the non-Less branch.
-pub(crate) fn py_compare<'py>(
-    a: &Bound<'py, PyAny>,
-    b: &Bound<'py, PyAny>,
-    err: &mut Option<PyErr>,
-) -> std::cmp::Ordering {
-    match a.lt(b) {
-        Ok(true) => std::cmp::Ordering::Less,
-        Ok(false) => std::cmp::Ordering::Greater,
-        Err(e) => {
-            *err = Some(e);
-            std::cmp::Ordering::Equal
-        }
-    }
-}
-
-/// Walk a node tree applying `sort_mapping` to every mapping found.
-///
-/// Sequence items are visited (so mappings nested inside lists are sorted) but
-/// the sequence itself is never reordered — `sort_keys` is a mapping-key
-/// operation, not an item-order operation.
-fn descend_sort_keys(
-    py: Python<'_>,
-    node: &mut YamlNode,
-    key: Option<&Py<PyAny>>,
-    reverse: bool,
-) -> PyResult<()> {
-    match node {
-        YamlNode::Mapping(nested) => sort_mapping(py, nested, key, reverse, true),
-        YamlNode::Sequence(seq) => {
-            for item in &mut seq.items {
-                descend_sort_keys(py, item, key, reverse)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-pub(crate) fn sort_mapping(
-    py: Python<'_>,
-    m: &mut YamlMapping,
-    key: Option<&Py<PyAny>>,
-    reverse: bool,
-    recursive: bool,
-) -> PyResult<()> {
-    if recursive {
-        for (_, entry) in &mut m.entries {
-            descend_sort_keys(py, &mut entry.value, key, reverse)?;
-        }
-    }
-
-    let mut entries: Vec<(MapKey, YamlEntry)> = m.entries.drain(..).collect();
-
-    if let Some(key_fn) = key {
-        let computed: Vec<Py<PyAny>> = entries
-            .iter()
-            .map(|(k, _)| {
-                key_fn
-                    .bind(py)
-                    .call1((k.python_key(),))
-                    .map(pyo3::Bound::unbind)
-            })
-            .collect::<PyResult<_>>()?;
-
-        let mut zipped: Vec<(Py<PyAny>, (MapKey, YamlEntry))> =
-            computed.into_iter().zip(entries).collect();
-
-        let mut err: Option<PyErr> = None;
-        zipped.sort_by(|(ka, _), (kb, _)| {
-            if err.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
-            py_compare(ka.bind(py), kb.bind(py), &mut err)
-        });
-        if let Some(e) = err {
-            return Err(e);
-        }
-        entries = zipped.into_iter().map(|(_, e)| e).collect();
-    } else {
-        entries.sort_by_key(|(k1, _)| k1.python_key());
-    }
-
-    if reverse {
-        entries.reverse();
-    }
-    for (k, v) in entries {
-        m.entries.insert(k, v);
-    }
-    Ok(())
-}
-
-pub(crate) fn parse_scalar_style(style: &str) -> PyResult<ScalarStyle> {
-    match style {
-        "plain" => Ok(ScalarStyle::Plain),
-        "single" => Ok(ScalarStyle::SingleQuoted),
-        "double" => Ok(ScalarStyle::DoubleQuoted),
-        "literal" => Ok(ScalarStyle::Literal),
-        "folded" => Ok(ScalarStyle::Folded),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown style {other:?}; expected plain/single/double/literal/folded"
-        ))),
-    }
-}
-
-pub(crate) fn parse_container_style(style: &str) -> PyResult<ContainerStyle> {
-    match style {
-        "block" => Ok(ContainerStyle::Block),
-        "flow" => Ok(ContainerStyle::Flow),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown style {other:?}; expected \"block\" or \"flow\""
-        ))),
-    }
-}
-
-/// Parse a YAML version string like `"1.2"` into `(major, minor)`.
-pub(crate) fn parse_yaml_version(s: Option<&str>) -> PyResult<Option<(u8, u8)>> {
-    match s {
-        None => Ok(None),
-        Some(v) => v
-            .split_once('.')
-            .and_then(|(maj, min)| Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?)))
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "invalid YAML version {v:?}; expected \"major.minor\" (e.g. \"1.2\")"
-                ))
-            })
-            .map(Some),
-    }
 }

@@ -97,6 +97,17 @@ Dumping Python `bytes` / `datetime` auto-applies the appropriate tag.
 
 `Schema` lets you register loaders (tag → Python object, fired on load) and dumpers (Python type → tag + data, fired on dump). Pass it as a keyword argument to any load or dump function.
 
+Schemas can be populated either via the constructor kwargs:
+
+```python
+schema = yarutsk.Schema(
+    loaders={"!point": lambda d: Point(d["x"], d["y"])},
+    dumpers=[(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))],
+)
+```
+
+…or imperatively via `add_loader` / `add_dumper`. Once a schema is bound to a load/dump call, it is **frozen**: subsequent `add_loader`/`add_dumper` calls raise `RuntimeError`. Construct a fresh schema (or pass everything through the constructor) for new registrations.
+
 ### Mapping types
 
 Loader receives a `YamlMapping`; dumper returns a `(tag, dict)` tuple:
@@ -144,6 +155,12 @@ doc["x"]                               # 255
 Multiple dumpers for the same type are checked in registration order; the first `isinstance` match wins.
 
 Worked examples for plugging yarutsk into pydantic / msgspec / cattrs live on the [Library integrations](integrations.md) page.
+
+## YamlNode — abstract base
+
+`YamlNode` is the abstract base class shared by `YamlMapping`, `YamlSequence`, and `YamlScalar`. `isinstance(x, yarutsk.YamlNode)` is `True` for any document node returned by `load`/`loads` or constructed directly. Constructing `YamlNode` itself raises `TypeError`; instantiate one of the concrete subclasses.
+
+The base owns the metadata fields common to every node — document-level (`explicit_start`, `explicit_end`, `yaml_version`, `tag_directives`) and per-node (`tag`, `anchor`, `blank_lines_before`, `comment_inline`, `comment_before`). Subclass-specific surface (`style`, `format()`, `to_python()`, `node(...)`, container/scalar value accessors) lives on the concrete classes below.
 
 ## YamlScalar
 

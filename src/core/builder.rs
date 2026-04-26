@@ -1,5 +1,14 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+//! Builds `YamlNode` trees from the parser's event stream.
+//!
+//! Beyond plain tree construction, this layer is also responsible for the
+//! round-trip metadata that the vendored parser doesn't model: associating
+//! comments and blank lines with the right node, resolving anchors/aliases
+//! into `YamlNode::Alias { name, resolved }` (so emission can re-emit `*name`),
+//! and honouring `TagPolicy` so schema-registered tags bypass `ScalarValue`
+//! coercion and reach Python loaders as raw strings.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -28,18 +37,7 @@ pub struct TagPolicy {
     pub raw_tags: HashSet<String>,
 }
 
-/// Document-level metadata for one parsed YAML document.
-#[derive(Debug, Default, Clone)]
-pub struct DocMetadata {
-    /// Whether the doc had an explicit `---` marker.
-    pub explicit_start: bool,
-    /// Whether the doc had an explicit `...` end marker.
-    pub explicit_end: bool,
-    /// `%YAML major.minor` directive, if present.
-    pub yaml_version: Option<(u8, u8)>,
-    /// `%TAG handle prefix` pairs (empty if none).
-    pub tag_directives: Vec<(String, String)>,
-}
+pub use super::types::DocMetadata;
 
 pub struct Builder {
     stack: Vec<Frame>,
@@ -855,7 +853,7 @@ mod tests {
         let node = parse_one("~\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Null));
-            assert_eq!(s.original().as_deref(), Some("~"));
+            assert_eq!(s.original(), Some("~"));
         } else {
             panic!("expected Scalar");
         }
@@ -879,7 +877,7 @@ mod tests {
         let node = parse_one("yes\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Bool(true)));
-            assert_eq!(s.original().as_deref(), Some("yes"));
+            assert_eq!(s.original(), Some("yes"));
         } else {
             panic!("expected Scalar");
         }
@@ -890,7 +888,7 @@ mod tests {
         let node = parse_one("on\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Bool(true)));
-            assert_eq!(s.original().as_deref(), Some("on"));
+            assert_eq!(s.original(), Some("on"));
         } else {
             panic!("expected Scalar");
         }
@@ -914,7 +912,7 @@ mod tests {
         let node = parse_one("0xFF\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Int(255)));
-            assert_eq!(s.original().as_deref(), Some("0xFF"));
+            assert_eq!(s.original(), Some("0xFF"));
         } else {
             panic!("expected Scalar");
         }
@@ -925,7 +923,7 @@ mod tests {
         let node = parse_one("0o77\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Int(63)));
-            assert_eq!(s.original().as_deref(), Some("0o77"));
+            assert_eq!(s.original(), Some("0o77"));
         } else {
             panic!("expected Scalar");
         }
@@ -949,7 +947,7 @@ mod tests {
         let node = parse_one("1.5e10\n");
         if let YamlNode::Scalar(s) = node {
             assert!(matches!(s.value(), ScalarValue::Float(_)));
-            assert_eq!(s.original().as_deref(), Some("1.5e10"));
+            assert_eq!(s.original(), Some("1.5e10"));
         } else {
             panic!("expected Scalar");
         }
@@ -1413,9 +1411,8 @@ mod tests {
         for src in &["a: >+\n  hi\n", "a: |+\n  hi\n"] {
             let node = parse_one(src);
             if let YamlNode::Mapping(m) = node {
-                let scalar = match &m.entries[&MapKey::scalar("a")].value {
-                    YamlNode::Scalar(s) => s,
-                    _ => panic!("expected scalar"),
+                let YamlNode::Scalar(scalar) = &m.entries[&MapKey::scalar("a")].value else {
+                    panic!("expected scalar")
                 };
                 assert_eq!(scalar.chomping, Some(Chomping::Keep), "for {src:?}");
             } else {

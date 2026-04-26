@@ -7,41 +7,31 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    ChildContainer, DocMetaSource, LoadCtx, carry_metadata, collect_opaque_children_from_sequence,
+    ChildContainer, LoadCtx, carry_metadata, collect_opaque_children_from_sequence,
     deep_clone_opaque, extract_yaml_node, for_each_opaque_child, materialise_node, node_to_py,
-    parse_container_style, parse_yaml_version, py_compare, py_to_stored_node, read_metadata,
-    resolve_seq_idx, seq_child_node, sequence_repr, sequence_to_py_obj, sequence_to_python,
+    py_to_stored_node, read_metadata, resolve_seq_idx, seq_child_node, sequence_repr,
+    sequence_to_py_obj, sequence_to_python,
 };
 use super::macros::container_metadata_pymethods;
 use super::py_mapping::PyYamlMapping;
+use super::py_node::PyYamlNode;
 use super::schema::Schema;
-use crate::core::builder::DocMetadata;
+use super::sort::py_compare;
+use super::style_parse::parse_container_style;
 use crate::core::types::{FormatOptions, NodeMeta, YamlNode, YamlSequence};
 
 /// A YAML sequence node. Standalone pyclass implementing the list protocol
 /// (`__getitem__`/`__setitem__`/`__iter__`/...).
 ///
-/// Container items are stored as `YamlNode::Opaque(Py<PyYamlMapping|PyYamlSequence>)`,
+/// Container items are stored as `YamlNode::Container(Py<PyYamlMapping|PyYamlSequence>)`,
 /// so `s[i]` returns the same Py every time and mutations propagate.
 ///
 /// **Note**: this class does NOT extend `list`. `isinstance(s, list)` is False.
 /// Use `s.to_python()` for a plain `list` (recursively).
-#[pyclass(name = "YamlSequence", from_py_object)]
+#[pyclass(name = "YamlSequence", extends = PyYamlNode, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlSequence {
     pub(crate) inner: YamlSequence,
-    /// True when the document this sequence belongs to had an explicit `---` marker.
-    #[pyo3(get, set)]
-    pub explicit_start: bool,
-    /// True when the document this sequence belongs to had an explicit `...` marker.
-    #[pyo3(get, set)]
-    pub explicit_end: bool,
-    /// `%YAML major.minor` directive for this document, if any.
-    /// Exposed to Python as a `"major.minor"` string via manual getter/setter.
-    pub yaml_version: Option<(u8, u8)>,
-    /// `%TAG handle prefix` pairs for this document.
-    #[pyo3(get, set)]
-    pub tag_directives: Vec<(String, String)>,
 }
 
 #[pymethods]
@@ -53,18 +43,12 @@ impl PyYamlSequence {
         style: &str,
         tag: Option<&str>,
         schema: Option<Py<Schema>>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<(Self, PyYamlNode)> {
         let _ = (iterable, schema); // populated in __init__
         let mut inner = YamlSequence::new();
         inner.style = parse_container_style(style)?;
         inner.meta.tag = tag.map(str::to_owned);
-        Ok(PyYamlSequence {
-            inner,
-            explicit_start: false,
-            explicit_end: false,
-            yaml_version: None,
-            tag_directives: vec![],
-        })
+        Ok((PyYamlSequence { inner }, PyYamlNode::default()))
     }
 
     #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]
@@ -79,6 +63,7 @@ impl PyYamlSequence {
         let _ = (style, tag); // already applied in __new__
         if let Some(it) = iterable {
             let py = slf.py();
+            crate::py::schema::freeze_schema(py, schema.as_ref());
             let sb = schema.as_ref().map(|s| s.bind(py));
             // `extract_yaml_node` (not `py_to_node`) so self-referential
             // lists round-trip via auto-anchor instead of erroring on the
@@ -152,7 +137,7 @@ impl PyYamlSequence {
         if let Ok(idx) = key.extract::<isize>() {
             let real = resolve_seq_idx(idx, slf.borrow().inner.items.len())?;
             let mut node = py_to_stored_node(py, value, None)?;
-            // Read old metadata before taking the mut borrow (for Opaque
+            // Read old metadata before taking the mut borrow (for Container
             // containers `read_metadata` briefly borrows the wrapped Py).
             let (oi, ob, obl) = read_metadata(&slf.borrow().inner.items[real]);
             let mut borrow = slf.borrow_mut();
@@ -474,18 +459,26 @@ impl PyYamlSequence {
         Ok(())
     }
 
-    fn copy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.__copy__(py)
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
+    fn copy(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Self::__copy__(slf, py)
     }
 
     /// Shallow copy: container children share Py identity with the original
     /// (matches `list.copy()`).
-    fn __copy__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        sequence_to_py_obj(py, self.inner.clone(), self.doc_metadata(), None)
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
+    fn __copy__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let meta = slf.as_super().doc_metadata().clone();
+        sequence_to_py_obj(py, slf.inner.clone(), meta, None)
     }
 
-    fn __deepcopy__(&self, py: Python<'_>, _memo: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        deep_copy_sequence(self, py)
+    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
+    fn __deepcopy__(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        _memo: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        deep_copy_sequence(&slf, py)
     }
 
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -563,23 +556,16 @@ impl PyYamlSequence {
 
 container_metadata_pymethods!(PyYamlSequence);
 
-impl DocMetaSource for PyYamlSequence {
-    fn doc_metadata(&self) -> DocMetadata {
-        DocMetadata {
-            explicit_start: self.explicit_start,
-            explicit_end: self.explicit_end,
-            yaml_version: self.yaml_version,
-            tag_directives: self.tag_directives.clone(),
-        }
-    }
-}
-
 /// Deep-copy a sequence. Free-function variant of `__deepcopy__` so it's
 /// callable from Rust code (pymethods are not).
-pub(crate) fn deep_copy_sequence(slf: &PyYamlSequence, py: Python<'_>) -> PyResult<Py<PyAny>> {
+pub(crate) fn deep_copy_sequence(
+    slf: &PyRef<'_, PyYamlSequence>,
+    py: Python<'_>,
+) -> PyResult<Py<PyAny>> {
     let mut cloned = slf.inner.clone();
     for item in &mut cloned.items {
         deep_clone_opaque(py, item)?;
     }
-    sequence_to_py_obj(py, cloned, slf.doc_metadata(), None)
+    let meta = slf.as_super().doc_metadata().clone();
+    sequence_to_py_obj(py, cloned, meta, None)
 }

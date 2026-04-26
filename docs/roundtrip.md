@@ -31,4 +31,4 @@ assert yarutsk.dumps(yarutsk.loads(src)) == src
 
 The cases where output diverges from input are documented on the [Limitations](limitations.md) page — primarily around 64-bit integer range, underscore-separated numeric literals, and the 255-blank-line cap.
 
-The test suite in [`tests/test_roundtrip.py`](https://github.com/theyugin/yarutsk/blob/main/tests/test_roundtrip.py) exercises the end-to-end load → dump path across all preserved features, including stream-based IO.
+The test suite in [`tests/test_roundtrip_styles.py`](https://github.com/theyugin/yarutsk/blob/main/tests/test_roundtrip_styles.py) exercises the end-to-end load → dump path across all preserved features, including stream-based IO.

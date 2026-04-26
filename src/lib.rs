@@ -1,5 +1,19 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+//! `PyO3` module entry point for the `yarutsk` Rust extension.
+//!
+//! Layout:
+//! - `core` — pure-Rust pipeline (vendored scanner/parser → builder → `YamlNode` → emitter).
+//! - `py`   — `PyO3` adapters: `PyYamlMapping`/`PyYamlSequence`/`PyYamlScalar`,
+//!   `Schema`, streaming I/O, and the Python ↔ `YamlNode` bridge in `py::convert`.
+//!
+//! This file wires the two halves: it declares the exception hierarchy
+//! (`YarutskError` → `ParseError` / `LoaderError` / `DumperError`), exposes the
+//! Python-facing `load*`/`dump*`/`iter_load_all*` entry points, and dispatches
+//! each call through `parse_text`/`parse_stream` (load) or `extract_yaml_node`
+//! plus `emit_docs(_to)` (dump). The `doc_field!` macro at the bottom of this
+//! file generates the per-doc metadata getters/setters reused by all three pyclasses.
+
 #[doc(hidden)]
 pub mod core;
 mod py;
@@ -9,12 +23,13 @@ use std::sync::{Arc, Mutex};
 use core::builder::{self, DocMetadata};
 use core::emitter::{emit_docs, emit_docs_to};
 use core::types::YamlNode;
-use py::convert::{DocMetaSource, extract_yaml_node, node_to_doc, parse_stream, parse_text};
+use py::convert::{extract_yaml_node, node_to_doc, parse_stream, parse_text};
 use py::py_iter::{PyYamlIter, YamlIterInner};
 use py::py_mapping::PyYamlMapping;
+use py::py_node::PyYamlNode;
 use py::py_scalar::PyYamlScalar;
 use py::py_sequence::PyYamlSequence;
-use py::schema::Schema;
+use py::schema::{Schema, freeze_schema};
 use py::streaming::PyStreamWriter;
 use py::streaming::{CharsSource, PyIoCharsIter, StringCharsIter};
 use pyo3::prelude::*;
@@ -32,16 +47,10 @@ fn doc_meta(meta: &[DocMetadata], i: usize) -> DocMetadata {
 }
 
 /// Probe a Python doc object for its doc-level metadata, falling back to
-/// defaults if it isn't one of the three doc-carrying pyclasses.
+/// defaults if it isn't a `PyYamlNode` subclass instance.
 fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> DocMetadata {
-    if let Ok(m) = doc.cast::<PyYamlMapping>() {
-        return m.borrow().doc_metadata();
-    }
-    if let Ok(s) = doc.cast::<PyYamlSequence>() {
-        return s.borrow().doc_metadata();
-    }
-    if let Ok(sc) = doc.extract::<PyYamlScalar>() {
-        return sc.doc_metadata();
+    if let Ok(node) = doc.cast::<PyYamlNode>() {
+        return node.borrow().doc_metadata().clone();
     }
     DocMetadata::default()
 }
@@ -95,6 +104,7 @@ fn do_load(
     schema: Option<Py<Schema>>,
     all: bool,
 ) -> PyResult<Py<PyAny>> {
+    freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
     let out = match src {
@@ -129,6 +139,7 @@ fn make_iter(
     use core::builder::Builder;
     use core::parser::Parser;
 
+    freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
     let policy = sb_borrow.as_deref().and_then(Schema::tag_policy);
@@ -293,6 +304,7 @@ fn dump(
     schema: Option<Py<Schema>>,
     indent: usize,
 ) -> PyResult<()> {
+    freeze_schema(doc.py(), schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
     do_dump(doc, EmitSink::Stream(stream.clone()), sb, indent)?;
     Ok(())
@@ -302,6 +314,7 @@ fn dump(
 #[pyo3(signature = (doc, *, schema=None, indent=2))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> PyResult<String> {
+    freeze_schema(doc.py(), schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
     Ok(do_dump(doc, EmitSink::String, sb, indent)?.unwrap_or_default())
 }
@@ -316,6 +329,7 @@ fn dump_all(
     schema: Option<Py<Schema>>,
     indent: usize,
 ) -> PyResult<()> {
+    freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
     do_dump_all(docs, EmitSink::Stream(stream.clone()), sb, indent)?;
     Ok(())
@@ -330,6 +344,7 @@ fn dumps_all(
     schema: Option<Py<Schema>>,
     indent: usize,
 ) -> PyResult<String> {
+    freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
     Ok(do_dump_all(docs, EmitSink::String, sb, indent)?.unwrap_or_default())
 }
@@ -342,6 +357,7 @@ fn _yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LoaderError", m.py().get_type::<LoaderError>())?;
     m.add("DumperError", m.py().get_type::<DumperError>())?;
     m.add_class::<Schema>()?;
+    m.add_class::<PyYamlNode>()?;
     m.add_class::<PyYamlScalar>()?;
     m.add_class::<PyYamlMapping>()?;
     m.add_class::<PyYamlSequence>()?;
