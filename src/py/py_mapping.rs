@@ -1,5 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+use std::sync::Arc;
+
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -403,7 +405,7 @@ impl PyYamlMapping {
             .entries
             .get_mut(&MapKey::scalar(key))
             .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))?;
-        let resolved = Box::new(entry.value.clone());
+        let resolved = Arc::new(entry.value.clone());
         entry.value = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,

@@ -1,5 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
 
 /// Key into [`YamlMapping::entries`]. Scalar keys hold their string form;
@@ -86,12 +88,15 @@ pub enum YamlNode {
     Sequence(YamlSequence),
     Scalar(YamlScalar),
     Null,
-    /// An alias node (`*name`).  `resolved` holds the expanded value so the
-    /// Python-visible layer can return a normal value; `name` is preserved for
-    /// round-trip emission as `*name`.
+    /// An alias node (`*name`). `resolved` is a shared reference to the
+    /// anchor's value — multiple aliases for the same anchor share storage.
+    /// On the Python side this also drives identity sharing: `*foo` and the
+    /// `&foo`-anchored container surface as the same Python object, so
+    /// mutations through one alias are visible through the others (the same
+    /// model as Python dicts/lists shared by reference).
     Alias {
         name: String,
-        resolved: Box<YamlNode>,
+        resolved: Arc<YamlNode>,
         meta: NodeMeta,
     },
 }
