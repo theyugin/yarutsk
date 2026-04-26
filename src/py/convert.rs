@@ -16,7 +16,7 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{ParseOutput, parse_iter, parse_str};
 use crate::core::types::{
-    ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    ContainerStyle, MapKey, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
     YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
@@ -73,7 +73,7 @@ impl NodeParent {
             NodeParent::None => {}
             NodeParent::Map { parent, key } => {
                 let mut borrow = parent.borrow_mut(py);
-                if let Some(entry) = borrow.inner.entries.get_mut(key) {
+                if let Some(entry) = borrow.inner.entries.get_mut(&MapKey::scalar(key.as_str())) {
                     f(&mut entry.value);
                 }
             }
@@ -661,7 +661,7 @@ pub(crate) fn py_to_node(
             let key: String = k.extract()?;
             mapping
                 .entries
-                .insert(key, plain_entry(py_to_node(&v, schema)?));
+                .insert(MapKey::Scalar(key), plain_entry(py_to_node(&v, schema)?));
         }
         return Ok(YamlNode::Mapping(mapping));
     }
@@ -680,7 +680,7 @@ pub(crate) fn py_to_node(
                 let val = pair.get_item(1)?;
                 mapping
                     .entries
-                    .insert(key, plain_entry(py_to_node(&val, schema)?));
+                    .insert(MapKey::Scalar(key), plain_entry(py_to_node(&val, schema)?));
             }
             return Ok(YamlNode::Mapping(mapping));
         }
@@ -757,9 +757,10 @@ impl DocMeta {
 /// `inner`.
 pub(crate) fn map_child_node(slf: &Bound<'_, PyYamlMapping>, key: &str) -> PyResult<Py<PyAny>> {
     let py = slf.py();
+    let mk = MapKey::scalar(key);
     let kind = {
         let borrow = slf.borrow();
-        match borrow.inner.entries.get(key) {
+        match borrow.inner.entries.get(&mk) {
             Some(entry) => ChildKind::from_node(&entry.value),
             None => return Err(PyKeyError::new_err(key.to_owned())),
         }
@@ -771,7 +772,7 @@ pub(crate) fn map_child_node(slf: &Bound<'_, PyYamlMapping>, key: &str) -> PyRes
             .map(pyo3::Bound::unbind)
             .ok_or_else(|| PyKeyError::new_err(key.to_owned())),
         ChildKind::Scalar => {
-            let node = slf.borrow().inner.entries.get(key).map(|e| e.value.clone());
+            let node = slf.borrow().inner.entries.get(&mk).map(|e| e.value.clone());
             let Some(node) = node else {
                 return Err(PyKeyError::new_err(key.to_owned()));
             };
@@ -902,7 +903,7 @@ pub(crate) fn extract_yaml_node(
             let value = match &e.value {
                 YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => e.value.clone(),
                 _ => {
-                    let Some(py_val) = dict_part.get_item(k)? else {
+                    let Some(py_val) = dict_part.get_item(k.python_key())? else {
                         continue; // key was removed; skip
                     };
                     extract_yaml_node(&py_val, schema)?
@@ -983,9 +984,10 @@ pub(crate) fn extract_yaml_node(
         }
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
-            mapping
-                .entries
-                .insert(key, plain_entry(extract_yaml_node(&v, schema)?));
+            mapping.entries.insert(
+                MapKey::Scalar(key),
+                plain_entry(extract_yaml_node(&v, schema)?),
+            );
         }
         return Ok(YamlNode::Mapping(mapping));
     }
@@ -1048,7 +1050,7 @@ pub(crate) fn mapping_to_py_obj(
         .iter()
         .map(|(k, e)| {
             let v = node_to_py(py, &e.value, schema)?;
-            Ok((k.clone(), v))
+            Ok((k.python_key(), v))
         })
         .collect::<PyResult<_>>()?;
 
@@ -1161,7 +1163,7 @@ pub(crate) fn mapping_to_python(py: Python<'_>, m: &YamlMapping) -> PyResult<Py<
     let d = PyDict::new(py);
     for (k, e) in &m.entries {
         let v = node_to_python(py, &e.value)?;
-        d.set_item(k, v)?;
+        d.set_item(k.python_key(), v)?;
     }
     Ok(d.into_any().unbind())
 }
@@ -1263,7 +1265,7 @@ pub(crate) fn sort_mapping(
         }
     }
 
-    let mut entries: Vec<(String, YamlEntry)> = m.entries.drain(..).collect();
+    let mut entries: Vec<(MapKey, YamlEntry)> = m.entries.drain(..).collect();
 
     if let Some(key_fn) = key {
         let computed: Vec<Py<PyAny>> = entries
@@ -1271,12 +1273,12 @@ pub(crate) fn sort_mapping(
             .map(|(k, _)| {
                 key_fn
                     .bind(py)
-                    .call1((k.as_str(),))
+                    .call1((k.python_key(),))
                     .map(pyo3::Bound::unbind)
             })
             .collect::<PyResult<_>>()?;
 
-        let mut zipped: Vec<(Py<PyAny>, (String, YamlEntry))> =
+        let mut zipped: Vec<(Py<PyAny>, (MapKey, YamlEntry))> =
             computed.into_iter().zip(entries).collect();
 
         let mut err: Option<PyErr> = None;
@@ -1291,7 +1293,7 @@ pub(crate) fn sort_mapping(
         }
         entries = zipped.into_iter().map(|(_, e)| e).collect();
     } else {
-        entries.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+        entries.sort_by_key(|(k1, _)| k1.python_key());
     }
 
     if reverse {

@@ -2,6 +2,64 @@
 
 use indexmap::IndexMap;
 
+/// Key into [`YamlMapping::entries`]. Scalar keys hold their string form;
+/// complex (non-scalar) keys carry only a positional id — the actual key
+/// node lives on [`YamlEntry::key_node`]. Splitting the variants makes
+/// "is this a real key?" a type question instead of a string-prefix check
+/// (the old design synthesised `"\x00<idx>"` placeholders that could collide
+/// with legitimate scalar keys).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MapKey {
+    Scalar(String),
+    Complex(usize),
+}
+
+impl MapKey {
+    /// Construct a scalar key from any string-like value.
+    pub fn scalar<S: Into<String>>(s: S) -> Self {
+        MapKey::Scalar(s.into())
+    }
+
+    /// Borrowed access to the scalar key's string. `None` for complex keys.
+    #[must_use]
+    pub fn as_scalar(&self) -> Option<&str> {
+        match self {
+            MapKey::Scalar(s) => Some(s),
+            MapKey::Complex(_) => None,
+        }
+    }
+
+    /// `true` iff this is a complex (non-scalar) key.
+    #[must_use]
+    pub fn is_complex(&self) -> bool {
+        matches!(self, MapKey::Complex(_))
+    }
+
+    /// String surfaced to the Python `dict` view. Scalar keys map to their
+    /// own string; complex keys get a synthetic `\x00<n>` placeholder so the
+    /// dict has a unique key for each entry. The placeholder is *only* a
+    /// Python-side artifact — internal lookups use the typed enum.
+    #[must_use]
+    pub fn python_key(&self) -> String {
+        match self {
+            MapKey::Scalar(s) => s.clone(),
+            MapKey::Complex(n) => format!("\x00{n}"),
+        }
+    }
+}
+
+impl From<String> for MapKey {
+    fn from(s: String) -> Self {
+        MapKey::Scalar(s)
+    }
+}
+
+impl From<&str> for MapKey {
+    fn from(s: &str) -> Self {
+        MapKey::Scalar(s.to_owned())
+    }
+}
+
 /// Metadata shared by every concrete node variant: cosmetic comments/blank-lines
 /// plus semantic tag/anchor. Lives in one place so adding a field touches one
 /// struct, not four.
@@ -245,7 +303,7 @@ impl ScalarValue {
 
 #[derive(Debug, Clone)]
 pub struct YamlMapping {
-    pub entries: IndexMap<String, YamlEntry>,
+    pub entries: IndexMap<MapKey, YamlEntry>,
     /// Block (`key: value`) or flow (`{key: value}`) style.
     pub style: ContainerStyle,
     /// Blank lines at the end of this mapping before the closing context (capped at 255).
