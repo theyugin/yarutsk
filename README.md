@@ -58,7 +58,6 @@ Python 3.12+ required. Pre-built wheels for Linux / macOS / Windows on x86_64 an
 | Blank lines preserved | Yes | Partial | No |
 | Tags preserved | Yes | Yes | No |
 | Anchors/aliases preserved | Yes | Yes | No |
-| `dict` / `list` subclasses | Yes | No | No |
 | Rust speed | Yes | No | No |
 
 yarutsk focuses on **round-trip fidelity**: edit a config file and emit it back without touching the formatting. ruamel.yaml offers similar fidelity in pure Python. PyYAML is faster for load-only workloads where output formatting doesn't matter.
