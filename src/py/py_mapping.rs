@@ -11,7 +11,7 @@ use super::convert::{
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
-use crate::core::types::{ContainerStyle, FormatOptions, NodeMeta, YamlMapping, YamlNode};
+use crate::core::types::{ContainerStyle, FormatOptions, MapKey, NodeMeta, YamlMapping, YamlNode};
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
 
@@ -92,7 +92,7 @@ impl PyYamlMapping {
                     let borrow = slf.borrow();
                     for (k, e) in &borrow.inner.entries {
                         let py_val = node_to_py(py, &e.value, Some(sb))?;
-                        dict_part.set_item(k, py_val.bind(py))?;
+                        dict_part.set_item(k.python_key(), py_val.bind(py))?;
                     }
                 } else {
                     return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -132,15 +132,13 @@ impl PyYamlMapping {
             ),
         };
         let _ = &mut node;
+        let mk = MapKey::scalar(key);
         {
             let mut borrow = slf.borrow_mut();
-            if let Some(entry) = borrow.inner.entries.get_mut(key) {
+            if let Some(entry) = borrow.inner.entries.get_mut(&mk) {
                 entry.value = node;
             } else {
-                borrow
-                    .inner
-                    .entries
-                    .insert(key.to_owned(), plain_entry(node));
+                borrow.inner.entries.insert(mk, plain_entry(node));
             }
         }
         slf.as_super().set_item(key, py_val.bind(py))?;
@@ -150,7 +148,11 @@ impl PyYamlMapping {
     fn __delitem__(slf: &Bound<'_, Self>, key: &str) -> PyResult<()> {
         let removed = {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.entries.shift_remove(key).is_some()
+            borrow
+                .inner
+                .entries
+                .shift_remove(&MapKey::scalar(key))
+                .is_some()
         };
         if !removed {
             return Err(pyo3::exceptions::PyKeyError::new_err(key.to_owned()));
@@ -168,7 +170,7 @@ impl PyYamlMapping {
     ) -> PyResult<Py<PyAny>> {
         let entry = {
             let mut borrow = slf.borrow_mut();
-            borrow.inner.entries.shift_remove(key)
+            borrow.inner.entries.shift_remove(&MapKey::scalar(key))
         };
         match entry {
             Some(e) => {
@@ -189,7 +191,12 @@ impl PyYamlMapping {
     }
 
     fn popitem(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<(String, Py<PyAny>)> {
-        let key = slf.borrow().inner.entries.last().map(|(k, _)| k.clone());
+        let key = slf
+            .borrow()
+            .inner
+            .entries
+            .last()
+            .map(|(k, _)| k.python_key());
         match key {
             None => Err(PyKeyError::new_err("dictionary is empty")),
             Some(k) => {
@@ -225,8 +232,9 @@ impl PyYamlMapping {
                 }
             }
             for k in m.inner.entries.keys() {
-                if let Some(py_val) = other_dict.get_item(k)? {
-                    dict_part.set_item(k, &py_val)?;
+                let pk = k.python_key();
+                if let Some(py_val) = other_dict.get_item(&pk)? {
+                    dict_part.set_item(&pk, &py_val)?;
                 }
             }
             return Ok(());
@@ -243,7 +251,10 @@ impl PyYamlMapping {
                     YamlNode::Mapping(YamlMapping::new())
                 })?;
                 dict_part.set_item(k.as_str(), py_val.bind(py))?;
-                slf.borrow_mut().inner.entries.insert(k, plain_entry(node));
+                slf.borrow_mut()
+                    .inner
+                    .entries
+                    .insert(MapKey::Scalar(k), plain_entry(node));
             }
             return Ok(());
         }
@@ -253,7 +264,10 @@ impl PyYamlMapping {
             let (node, py_val) =
                 py_to_node_with_fallback(py, &val, None, || YamlNode::Mapping(YamlMapping::new()))?;
             dict_part.set_item(k.as_str(), py_val.bind(py))?;
-            slf.borrow_mut().inner.entries.insert(k, plain_entry(node));
+            slf.borrow_mut()
+                .inner
+                .entries
+                .insert(MapKey::Scalar(k), plain_entry(node));
         }
         Ok(())
     }
@@ -265,16 +279,14 @@ impl PyYamlMapping {
         key: &str,
         default: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let contains = slf.borrow().inner.entries.contains_key(key);
+        let mk = MapKey::scalar(key);
+        let contains = slf.borrow().inner.entries.contains_key(&mk);
         if !contains {
             let default_val = default.unwrap_or_else(|| py.None());
             let dv = default_val.bind(py);
             let (node, py_val) =
                 py_to_node_with_fallback(py, dv, None, || YamlNode::Mapping(YamlMapping::new()))?;
-            slf.borrow_mut()
-                .inner
-                .entries
-                .insert(key.to_owned(), plain_entry(node));
+            slf.borrow_mut().inner.entries.insert(mk, plain_entry(node));
             slf.as_super().set_item(key, py_val.bind(py))?;
         }
         // Return the real Python value from the parent dict (not node_to_py, which
@@ -314,7 +326,13 @@ impl PyYamlMapping {
             // Python dict is synced to their already-sorted inner. For nested
             // PyYamlSequence values, descend (without reordering items) to find
             // any further mappings whose Python dict needs syncing.
-            let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+            let sorted_keys: Vec<String> = slf
+                .borrow()
+                .inner
+                .entries
+                .keys()
+                .map(MapKey::python_key)
+                .collect();
             let py_vals: Vec<Py<PyAny>> = sorted_keys
                 .iter()
                 .filter_map(|k| dict_part.get_item(k).ok()?.map(pyo3::Bound::unbind))
@@ -339,7 +357,13 @@ impl PyYamlMapping {
             // Non-recursive: only key order changed; Python objects are unchanged.
             // Read them back from parent dict in the new sorted order and reinsert —
             // no node_to_py calls needed.
-            let sorted_keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+            let sorted_keys: Vec<String> = slf
+                .borrow()
+                .inner
+                .entries
+                .keys()
+                .map(MapKey::python_key)
+                .collect();
             let py_vals: Vec<Py<PyAny>> = sorted_keys
                 .iter()
                 .filter_map(|k| dict_part.get_item(k).ok()?.map(pyo3::Bound::unbind))
@@ -361,7 +385,7 @@ impl PyYamlMapping {
     /// Return the YAML alias name if the value at *key* is an alias (``*name``), else ``None``.
     /// Raises ``KeyError`` if *key* is absent.
     fn get_alias(&self, key: &str) -> PyResult<Option<&str>> {
-        match self.inner.entries.get(key) {
+        match self.inner.entries.get(&MapKey::scalar(key)) {
             Some(entry) => Ok(match &entry.value {
                 YamlNode::Alias { name, .. } => Some(name.as_str()),
                 _ => None,
@@ -377,7 +401,7 @@ impl PyYamlMapping {
         let entry = self
             .inner
             .entries
-            .get_mut(key)
+            .get_mut(&MapKey::scalar(key))
             .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))?;
         let resolved = Box::new(entry.value.clone());
         entry.value = YamlNode::Alias {
@@ -539,7 +563,13 @@ impl PyYamlMapping {
     /// preserving style/tag metadata. Mutations on the returned nodes propagate
     /// back into this mapping — same semantics as ``node(key)``.
     fn nodes(slf: &Bound<'_, Self>) -> PyResult<Vec<(String, Py<PyAny>)>> {
-        let keys: Vec<String> = slf.borrow().inner.entries.keys().cloned().collect();
+        let keys: Vec<String> = slf
+            .borrow()
+            .inner
+            .entries
+            .keys()
+            .map(MapKey::python_key)
+            .collect();
         keys.into_iter()
             .map(|k| {
                 let node = map_child_node(slf, &k)?;
@@ -606,7 +636,7 @@ fn read_old_metadata_map(
 ) -> PyResult<(Option<String>, Option<String>, u8)> {
     let (is_container, fallback) = {
         let borrow = slf.borrow();
-        match borrow.inner.entries.get(key) {
+        match borrow.inner.entries.get(&MapKey::scalar(key)) {
             Some(entry) => (
                 matches!(entry.value, YamlNode::Mapping(_) | YamlNode::Sequence(_)),
                 (

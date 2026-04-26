@@ -5,6 +5,8 @@ use std::fmt::{self, Write as FmtWrite};
 
 use super::builder::DocMetadata;
 use super::char_traits::{is_tag_char, is_uri_char};
+#[cfg(test)]
+use super::types::MapKey;
 use super::types::{
     Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
     YamlScalar, YamlSequence,
@@ -346,7 +348,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             self.write_blank_lines(entry.value.blank_lines_before())?;
             self.emit_comment_before(entry.value.comment_before(), indent)?;
             self.out.write_str(&indent_str(indent))?;
-            self.emit_mapping_key(key, entry, indent)?;
+            self.emit_mapping_key(key.as_scalar().unwrap_or(""), entry, indent)?;
             self.emit_mapping_value(entry, indent)?;
         }
         self.write_blank_lines(m.trailing_blank_lines)?;
@@ -377,7 +379,11 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                     entry.key_anchor.as_deref(),
                     entry.key_tag.as_deref(),
                 )?;
-                self.out.write_str(&emit_key(key, entry.key_style, true))?;
+                self.out.write_str(&emit_key(
+                    key.as_scalar().unwrap_or(""),
+                    entry.key_style,
+                    true,
+                ))?;
             }
             self.out.write_str(": ")?;
             self.emit_node_inline(&entry.value, 0, true)?;
@@ -613,7 +619,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 self.out.write_str(&indent_str(indent))?;
             }
             // For the first entry the cursor is already positioned after `- ` by the caller.
-            self.emit_mapping_key(key, entry, indent)?;
+            self.emit_mapping_key(key.as_scalar().unwrap_or(""), entry, indent)?;
             self.emit_mapping_value(entry, indent)?;
             first = false;
         }
@@ -1416,7 +1422,8 @@ mod tests {
     fn make_mapping(pairs: &[(&str, YamlNode)]) -> YamlMapping {
         let mut m = YamlMapping::new();
         for (k, v) in pairs {
-            m.entries.insert(k.to_string(), make_entry(v.clone()));
+            m.entries
+                .insert(MapKey::Scalar(k.to_string()), make_entry(v.clone()));
         }
         m
     }
@@ -1828,7 +1835,8 @@ mod tests {
         let mut m = YamlMapping::new();
         let mut value = plain_int(1);
         value.set_comment_inline(Some("a comment".to_owned()));
-        m.entries.insert("key".to_owned(), make_entry(value));
+        m.entries
+            .insert(MapKey::Scalar("key".to_owned()), make_entry(value));
         let mut out = String::new();
         let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Mapping(m), 0, false);
         assert_eq!(out, "key: 1  # a comment\n");
@@ -1839,7 +1847,8 @@ mod tests {
         let mut m = YamlMapping::new();
         let mut value = plain_int(1);
         value.set_comment_before(Some("header".to_owned()));
-        m.entries.insert("key".to_owned(), make_entry(value));
+        m.entries
+            .insert(MapKey::Scalar("key".to_owned()), make_entry(value));
         let mut out = String::new();
         let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Mapping(m), 0, false);
         assert_eq!(out, "# header\nkey: 1\n");
@@ -1849,7 +1858,7 @@ mod tests {
     fn emit_mapping_with_blank_line_before_entry() {
         let mut m = make_mapping(&[("a", plain_int(1)), ("b", plain_int(2))]);
         m.entries
-            .get_mut("b")
+            .get_mut(&MapKey::scalar("b"))
             .unwrap()
             .value
             .set_blank_lines_before(1);
@@ -1919,7 +1928,7 @@ mod tests {
             meta: NodeMeta::default(),
         }));
         entry.key_node = Some(Box::new(YamlNode::Sequence(key_seq)));
-        mapping.entries.insert(String::new(), entry);
+        mapping.entries.insert(MapKey::Scalar(String::new()), entry);
         let mut out = String::new();
         let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Mapping(mapping), 0, false);
         assert_eq!(out, "? [1, 2]\n: value\n");
@@ -2034,7 +2043,7 @@ mod tests {
             let re_parsed = crate::core::builder::parse_str(&out, None).expect("re-parse failed");
             let re_docs = re_parsed.docs;
             if let YamlNode::Mapping(m2) = &re_docs[0] {
-                if let YamlNode::Scalar(s) = &m2.entries["text"].value {
+                if let YamlNode::Scalar(s) = &m2.entries[&MapKey::scalar("text")].value {
                     assert_eq!(
                         s.value,
                         ScalarValue::Str((*expected_value).to_owned()),

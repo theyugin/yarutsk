@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
 use super::types::{
-    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
-    YamlScalar, YamlSequence,
+    Chomping, ContainerStyle, MapKey, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
+    YamlNode, YamlScalar, YamlSequence,
 };
 
 /// Translate the scanner's `Chomping` enum to the data-model enum stored on
@@ -130,11 +130,12 @@ impl PendingKey {
                 key_tag: self.key_tag.take(),
                 key_node: self.key_node.take().map(Box::new),
             };
-            mapping.entries.insert(key, entry);
+            mapping.entries.insert(MapKey::Scalar(key), entry);
             None
         } else if self.key_node.is_some() {
-            // Complex key already saved; this node is the VALUE.
-            let key = format!("\x00{}", mapping.entries.len());
+            // Complex key already saved; this node is the VALUE. Synthesise a
+            // positional id — the actual key lives on `entry.key_node`.
+            let key = MapKey::Complex(mapping.entries.len());
             self.attach_metadata(&mut value);
             let entry = YamlEntry {
                 value,
@@ -1065,7 +1066,11 @@ mod tests {
     fn simple_mapping_order_preserved() {
         let node = parse_one("z: 1\na: 2\nm: 3\n");
         if let YamlNode::Mapping(m) = node {
-            let keys: Vec<&str> = m.entries.keys().map(std::string::String::as_str).collect();
+            let keys: Vec<&str> = m
+                .entries
+                .keys()
+                .map(|k| k.as_scalar().unwrap_or(""))
+                .collect();
             assert_eq!(keys, ["z", "a", "m"]);
         } else {
             panic!("expected Mapping");
@@ -1076,7 +1081,7 @@ mod tests {
     fn nested_mapping_parsed() {
         let node = parse_one("outer:\n  inner: 42\n");
         if let YamlNode::Mapping(m) = node {
-            let inner = &m.entries["outer"].value;
+            let inner = &m.entries[&MapKey::scalar("outer")].value;
             assert!(matches!(inner, YamlNode::Mapping(_)));
         } else {
             panic!("expected Mapping");
@@ -1133,7 +1138,7 @@ mod tests {
         let src = "base: &val 10\nref: *val\n";
         let node = parse_one(src);
         if let YamlNode::Mapping(m) = node {
-            let alias_entry = &m.entries["ref"].value;
+            let alias_entry = &m.entries[&MapKey::scalar("ref")].value;
             if let YamlNode::Alias { name, resolved, .. } = alias_entry {
                 assert_eq!(name, "val");
                 assert!(matches!(
@@ -1184,7 +1189,7 @@ mod tests {
     fn inline_comment_attached() {
         let node = parse_one("a: 1  # comment\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            let YamlNode::Scalar(s) = &m.entries["a"].value else {
+            let YamlNode::Scalar(s) = &m.entries[&MapKey::scalar("a")].value else {
                 panic!("expected Scalar");
             };
             assert_eq!(s.meta.comment_inline.as_deref(), Some("comment"));
@@ -1197,7 +1202,7 @@ mod tests {
     fn before_comment_attached() {
         let node = parse_one("a: 1\n# before b\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            let YamlNode::Scalar(s) = &m.entries["b"].value else {
+            let YamlNode::Scalar(s) = &m.entries[&MapKey::scalar("b")].value else {
                 panic!("expected Scalar");
             };
             assert_eq!(s.meta.comment_before.as_deref(), Some("before b"));
@@ -1212,7 +1217,10 @@ mod tests {
     fn blank_lines_before_entry_counted() {
         let node = parse_one("a: 1\n\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["b"].value.blank_lines_before(), 1);
+            assert_eq!(
+                m.entries[&MapKey::scalar("b")].value.blank_lines_before(),
+                1
+            );
         } else {
             panic!("expected Mapping");
         }
@@ -1222,7 +1230,10 @@ mod tests {
     fn two_blank_lines_before_entry() {
         let node = parse_one("a: 1\n\n\nb: 2\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.entries["b"].value.blank_lines_before(), 2);
+            assert_eq!(
+                m.entries[&MapKey::scalar("b")].value.blank_lines_before(),
+                2
+            );
         } else {
             panic!("expected Mapping");
         }
@@ -1293,7 +1304,7 @@ mod tests {
     fn literal_block_style_parsed() {
         let node = parse_one("text: |\n  hello\n  world\n");
         if let YamlNode::Mapping(m) = node {
-            if let YamlNode::Scalar(s) = &m.entries["text"].value {
+            if let YamlNode::Scalar(s) = &m.entries[&MapKey::scalar("text")].value {
                 assert_eq!(s.style, ScalarStyle::Literal);
                 assert!(matches!(&s.value, ScalarValue::Str(v) if v.contains("hello")));
             } else {
@@ -1308,7 +1319,7 @@ mod tests {
     fn folded_block_style_parsed() {
         let node = parse_one("text: >\n  hello world\n");
         if let YamlNode::Mapping(m) = node {
-            if let YamlNode::Scalar(s) = &m.entries["text"].value {
+            if let YamlNode::Scalar(s) = &m.entries[&MapKey::scalar("text")].value {
                 assert_eq!(s.style, ScalarStyle::Folded);
             } else {
                 panic!("expected Scalar");
@@ -1432,7 +1443,7 @@ mod tests {
         for src in &["a: >+\n  hi\n", "a: |+\n  hi\n"] {
             let node = parse_one(src);
             if let YamlNode::Mapping(m) = node {
-                let scalar = match &m.entries["a"].value {
+                let scalar = match &m.entries[&MapKey::scalar("a")].value {
                     YamlNode::Scalar(s) => s,
                     _ => panic!("expected scalar"),
                 };
