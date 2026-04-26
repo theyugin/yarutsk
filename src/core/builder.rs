@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
 use super::types::{
-    Chomping, ContainerStyle, MapKey, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
-    YamlNode, YamlScalar, YamlSequence,
+    Chomping, ContainerStyle, MapKey, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry,
+    YamlMapping, YamlNode, YamlScalar, YamlSequence,
 };
 
 /// Translate the scanner's `Chomping` enum to the data-model enum stored on
@@ -185,9 +185,11 @@ fn make_scalar(
     chomping: Option<Chomping>,
 ) -> YamlNode {
     YamlNode::Scalar(YamlScalar {
-        value,
+        repr: match original {
+            Some(source) => ScalarRepr::Preserved { value, source },
+            None => ScalarRepr::Canonical(value),
+        },
         style,
-        original,
         chomping,
         meta: NodeMeta {
             tag,
@@ -733,7 +735,7 @@ impl Builder {
                 {
                     // Use the resolved scalar value as the key string (for Python access).
                     mf.pending.key = Some(match &resolved {
-                        YamlNode::Scalar(s) => s.value.to_key_string(),
+                        YamlNode::Scalar(s) => s.value().to_key_string(),
                         _ => String::new(),
                     });
                     // Preserve the alias name so the emitter can emit `*name:`.
@@ -841,21 +843,19 @@ mod tests {
     #[test]
     fn bare_null_parses_as_null() {
         let node = parse_one("null\n");
-        assert!(matches!(
-            node,
-            YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Null,
-                ..
-            })
-        ));
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(s.value(), ScalarValue::Null));
+        } else {
+            panic!("expected Scalar");
+        }
     }
 
     #[test]
     fn tilde_parses_as_null_with_original() {
         let node = parse_one("~\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Null));
-            assert_eq!(s.original.as_deref(), Some("~"));
+            assert!(matches!(s.value(), ScalarValue::Null));
+            assert_eq!(s.original().as_deref(), Some("~"));
         } else {
             panic!("expected Scalar");
         }
@@ -866,22 +866,22 @@ mod tests {
     #[test]
     fn bool_true_canonical() {
         let node = parse_one("true\n");
-        assert!(matches!(
-            node,
-            YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Bool(true),
-                original: None,
-                ..
-            })
-        ));
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(
+                s.repr,
+                ScalarRepr::Canonical(ScalarValue::Bool(true))
+            ));
+        } else {
+            panic!("expected Scalar");
+        }
     }
 
     #[test]
     fn bool_yes_has_original() {
         let node = parse_one("yes\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Bool(true)));
-            assert_eq!(s.original.as_deref(), Some("yes"));
+            assert!(matches!(s.value(), ScalarValue::Bool(true)));
+            assert_eq!(s.original().as_deref(), Some("yes"));
         } else {
             panic!("expected Scalar");
         }
@@ -891,8 +891,8 @@ mod tests {
     fn bool_on_has_original() {
         let node = parse_one("on\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Bool(true)));
-            assert_eq!(s.original.as_deref(), Some("on"));
+            assert!(matches!(s.value(), ScalarValue::Bool(true)));
+            assert_eq!(s.original().as_deref(), Some("on"));
         } else {
             panic!("expected Scalar");
         }
@@ -903,22 +903,22 @@ mod tests {
     #[test]
     fn decimal_int_no_original() {
         let node = parse_one("42\n");
-        assert!(matches!(
-            node,
-            YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Int(42),
-                original: None,
-                ..
-            })
-        ));
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(
+                s.repr,
+                ScalarRepr::Canonical(ScalarValue::Int(42))
+            ));
+        } else {
+            panic!("expected Scalar");
+        }
     }
 
     #[test]
     fn hex_int_has_original() {
         let node = parse_one("0xFF\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Int(255)));
-            assert_eq!(s.original.as_deref(), Some("0xFF"));
+            assert!(matches!(s.value(), ScalarValue::Int(255)));
+            assert_eq!(s.original().as_deref(), Some("0xFF"));
         } else {
             panic!("expected Scalar");
         }
@@ -928,8 +928,8 @@ mod tests {
     fn octal_int_has_original() {
         let node = parse_one("0o77\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Int(63)));
-            assert_eq!(s.original.as_deref(), Some("0o77"));
+            assert!(matches!(s.value(), ScalarValue::Int(63)));
+            assert_eq!(s.original().as_deref(), Some("0o77"));
         } else {
             panic!("expected Scalar");
         }
@@ -940,22 +940,22 @@ mod tests {
     #[test]
     fn float_with_dot_no_original() {
         let node = parse_one("3.14\n");
-        assert!(matches!(
-            node,
-            YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Float(_),
-                original: None,
-                ..
-            })
-        ));
+        if let YamlNode::Scalar(s) = node {
+            assert!(matches!(
+                s.repr,
+                ScalarRepr::Canonical(ScalarValue::Float(_))
+            ));
+        } else {
+            panic!("expected Scalar");
+        }
     }
 
     #[test]
     fn float_exponent_has_original() {
         let node = parse_one("1.5e10\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Float(_)));
-            assert_eq!(s.original.as_deref(), Some("1.5e10"));
+            assert!(matches!(s.value(), ScalarValue::Float(_)));
+            assert_eq!(s.original().as_deref(), Some("1.5e10"));
         } else {
             panic!("expected Scalar");
         }
@@ -966,7 +966,7 @@ mod tests {
         // .inf round-trips via the emitter's canonical path — no `original` needed
         let node = parse_one(".inf\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Float(f) if f.is_infinite() && f > 0.0));
+            assert!(matches!(s.value(), ScalarValue::Float(f) if f.is_infinite() && *f > 0.0));
         } else {
             panic!("expected Scalar");
         }
@@ -977,7 +977,7 @@ mod tests {
         // .nan round-trips via the emitter's canonical path — no `original` needed
         let node = parse_one(".nan\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(s.value, ScalarValue::Float(f) if f.is_nan()));
+            assert!(matches!(s.value(), ScalarValue::Float(f) if f.is_nan()));
         } else {
             panic!("expected Scalar");
         }
@@ -990,7 +990,7 @@ mod tests {
         let node = parse_one("'hello'\n");
         if let YamlNode::Scalar(s) = node {
             assert_eq!(s.style, ScalarStyle::SingleQuoted);
-            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "hello"));
+            assert!(matches!(&s.value(), ScalarValue::Str(v) if v == "hello"));
         } else {
             panic!("expected Scalar");
         }
@@ -1001,7 +1001,7 @@ mod tests {
         let node = parse_one("\"hello\"\n");
         if let YamlNode::Scalar(s) = node {
             assert_eq!(s.style, ScalarStyle::DoubleQuoted);
-            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "hello"));
+            assert!(matches!(&s.value(), ScalarValue::Str(v) if v == "hello"));
         } else {
             panic!("expected Scalar");
         }
@@ -1011,7 +1011,7 @@ mod tests {
     fn quoted_null_string_is_str_not_null() {
         let node = parse_one("'null'\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "null"));
+            assert!(matches!(&s.value(), ScalarValue::Str(v) if v == "null"));
         } else {
             panic!("expected Scalar");
         }
@@ -1021,7 +1021,7 @@ mod tests {
     fn quoted_empty_string_is_str_not_null() {
         let node = parse_one("''\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(&s.value, ScalarValue::Str(v) if v.is_empty()));
+            assert!(matches!(&s.value(), ScalarValue::Str(v) if v.is_empty()));
         } else {
             panic!("expected Scalar");
         }
@@ -1033,7 +1033,7 @@ mod tests {
     fn tag_str_forces_string_value() {
         let node = parse_one("!!str 42\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(&s.value, ScalarValue::Str(v) if v == "42"));
+            assert!(matches!(&s.value(), ScalarValue::Str(v) if v == "42"));
         } else {
             panic!("expected Scalar");
         }
@@ -1127,7 +1127,7 @@ mod tests {
         let node = parse_one("&myval 42\n");
         if let YamlNode::Scalar(s) = node {
             assert_eq!(s.meta.anchor.as_deref(), Some("myval"));
-            assert!(matches!(s.value, ScalarValue::Int(42)));
+            assert!(matches!(s.value(), ScalarValue::Int(42)));
         } else {
             panic!("expected Scalar");
         }
@@ -1141,13 +1141,11 @@ mod tests {
             let alias_entry = &m.entries[&MapKey::scalar("ref")].value;
             if let YamlNode::Alias { name, resolved, .. } = alias_entry {
                 assert_eq!(name, "val");
-                assert!(matches!(
-                    resolved.as_ref(),
-                    YamlNode::Scalar(YamlScalar {
-                        value: ScalarValue::Int(10),
-                        ..
-                    })
-                ));
+                if let YamlNode::Scalar(s) = resolved.as_ref() {
+                    assert!(matches!(s.value(), ScalarValue::Int(10)));
+                } else {
+                    panic!("expected Scalar inside alias, got {resolved:?}");
+                }
             } else {
                 panic!("expected Alias, got {alias_entry:?}");
             }
@@ -1306,7 +1304,7 @@ mod tests {
         if let YamlNode::Mapping(m) = node {
             if let YamlNode::Scalar(s) = &m.entries[&MapKey::scalar("text")].value {
                 assert_eq!(s.style, ScalarStyle::Literal);
-                assert!(matches!(&s.value, ScalarValue::Str(v) if v.contains("hello")));
+                assert!(matches!(&s.value(), ScalarValue::Str(v) if v.contains("hello")));
             } else {
                 panic!("expected Scalar");
             }

@@ -209,14 +209,57 @@ pub enum Chomping {
     Keep,
 }
 
+/// How a scalar's value is represented for emission.
+///
+/// `Canonical` carries only the typed value — the emitter writes it back in
+/// canonical form. `Preserved` additionally carries the original source text,
+/// used when canonical re-emission would lose meaningful formatting (e.g. a
+/// float written `1.5e10` would round-trip as `15000000000` without preservation,
+/// or YAML 1.1 booleans `yes`/`no`/`on`/`off`).
+///
+/// Mutating a scalar's value drops `Preserved` → `Canonical` by construction:
+/// to update the value you call [`YamlScalar::set_value`] which assigns a
+/// fresh `Canonical`. The compiler enforces what convention used to enforce
+/// (the old `Option<String> original` field had to be cleared by hand).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalarRepr {
+    /// Emit by re-formatting `value` canonically.
+    Canonical(ScalarValue),
+    /// Emit `source` verbatim; `value` is the parsed-but-not-canonicalised form.
+    Preserved { value: ScalarValue, source: String },
+}
+
+impl ScalarRepr {
+    /// The typed value, regardless of variant.
+    #[must_use]
+    pub fn value(&self) -> &ScalarValue {
+        match self {
+            ScalarRepr::Canonical(v) | ScalarRepr::Preserved { value: v, .. } => v,
+        }
+    }
+
+    /// The preserved source spelling, if any.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            ScalarRepr::Canonical(_) => None,
+            ScalarRepr::Preserved { source, .. } => Some(source),
+        }
+    }
+}
+
+impl From<ScalarValue> for ScalarRepr {
+    fn from(v: ScalarValue) -> Self {
+        ScalarRepr::Canonical(v)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct YamlScalar {
-    pub value: ScalarValue,
+    /// Value + optional preserved source spelling. See [`ScalarRepr`].
+    pub repr: ScalarRepr,
     /// The quoting style used in the source (or `Plain` for newly constructed scalars).
     pub style: ScalarStyle,
-    /// Original source text preserved for scalars where formatting matters
-    /// (e.g. floats written in exponent form: `1.5e10`).
-    pub original: Option<String>,
     /// Source chomping indicator for block scalars (`|-`/`|`/`|+` and
     /// `>-`/`>`/`>+`). `None` for non-block scalars and new constructions.
     /// When present and consistent with the value's trailing-newline count,
@@ -225,6 +268,27 @@ pub struct YamlScalar {
     /// on any value mutation.
     pub chomping: Option<Chomping>,
     pub meta: NodeMeta,
+}
+
+impl YamlScalar {
+    /// Read the typed value.
+    #[must_use]
+    pub fn value(&self) -> &ScalarValue {
+        self.repr.value()
+    }
+
+    /// Read the preserved source spelling, if any.
+    #[must_use]
+    pub fn original(&self) -> Option<&str> {
+        self.repr.source()
+    }
+
+    /// Replace the value, demoting any preserved source. Also clears
+    /// `chomping` since block-scalar indicators are tied to the source text.
+    pub fn set_value(&mut self, v: ScalarValue) {
+        self.repr = ScalarRepr::Canonical(v);
+        self.chomping = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -424,13 +488,17 @@ impl YamlScalar {
         if opts.styles {
             // Strings with embedded newlines get literal block style so the emitter
             // doesn't fall back to double-quoted with \n escape sequences.
-            let is_multiline = matches!(&self.value, ScalarValue::Str(s) if s.contains('\n'));
+            let is_multiline = matches!(self.value(), ScalarValue::Str(s) if s.contains('\n'));
             self.style = if is_multiline {
                 ScalarStyle::Literal
             } else {
                 ScalarStyle::Plain
             };
-            self.original = None;
+            // Drop any preserved source so non-canonical forms (hex, exponent)
+            // re-emit canonically. Also clears chomping (tied to source).
+            if let ScalarRepr::Preserved { value, .. } = &self.repr {
+                self.repr = ScalarRepr::Canonical(value.clone());
+            }
             self.chomping = None;
         }
         meta_format_with(&mut self.meta, opts);

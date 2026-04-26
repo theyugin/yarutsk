@@ -6,7 +6,9 @@ use super::convert::{
     NodeParent, date_type, datetime_type, parse_scalar_style, parse_yaml_version,
     py_primitive_to_scalar, scalar_to_py_with_tag,
 };
-use crate::core::types::{FormatOptions, NodeMeta, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
+use crate::core::types::{
+    FormatOptions, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlNode, YamlScalar,
+};
 
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
@@ -62,9 +64,8 @@ impl PyYamlScalar {
         {
             use base64::{Engine, engine::general_purpose::STANDARD};
             YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str(STANDARD.encode(&b)),
+                repr: ScalarRepr::Canonical(ScalarValue::Str(STANDARD.encode(&b))),
                 style: scalar_style,
-                original: None,
                 chomping: None,
                 meta: NodeMeta {
                     tag: Some(tag.unwrap_or("!!binary").to_owned()),
@@ -77,9 +78,8 @@ impl PyYamlScalar {
             if value.is_instance(datetime_type(py)?)? || value.is_instance(date_type(py)?)? {
                 let iso: String = value.call_method0("isoformat")?.extract()?;
                 YamlNode::Scalar(YamlScalar {
-                    value: ScalarValue::Str(iso),
+                    repr: ScalarRepr::Canonical(ScalarValue::Str(iso)),
                     style: scalar_style,
-                    original: None,
                     chomping: None,
                     meta: NodeMeta {
                         tag: Some(tag.unwrap_or("!!timestamp").to_owned()),

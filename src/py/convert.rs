@@ -15,8 +15,8 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{ParseOutput, parse_iter, parse_str};
 use crate::core::types::{
-    ContainerStyle, MapKey, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
-    YamlScalar, YamlSequence,
+    ContainerStyle, MapKey, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
+    YamlNode, YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
 
@@ -318,7 +318,7 @@ pub(crate) fn scalar_to_py_with_tag(
     // Schema loader takes priority over all built-in tag handlers.
     if let Some(loader_fn) = lookup_loader(py, schema, s.meta.tag.as_deref()) {
         let tag_name = s.meta.tag.as_deref().unwrap_or("?");
-        let default_val = scalar_to_py(py, &s.value)?;
+        let default_val = scalar_to_py(py, s.value())?;
         return call_loader(py, &loader_fn, tag_name, default_val);
     }
     match s.meta.tag.as_deref() {
@@ -326,9 +326,8 @@ pub(crate) fn scalar_to_py_with_tag(
             use base64::{Engine, engine::general_purpose::STANDARD};
             use pyo3::types::PyBytes;
             let raw = s
-                .original
-                .as_deref()
-                .or(if let ScalarValue::Str(ref st) = s.value {
+                .original()
+                .or(if let ScalarValue::Str(st) = s.value() {
                     Some(st.as_str())
                 } else {
                     None
@@ -342,9 +341,8 @@ pub(crate) fn scalar_to_py_with_tag(
         }
         Some("!!timestamp" | "tag:yaml.org,2002:timestamp") => {
             let raw = s
-                .original
-                .as_deref()
-                .or(if let ScalarValue::Str(ref st) = s.value {
+                .original()
+                .or(if let ScalarValue::Str(st) = s.value() {
                     Some(st.as_str())
                 } else {
                     None
@@ -361,7 +359,7 @@ pub(crate) fn scalar_to_py_with_tag(
                 Ok(dt.into_any().unbind())
             }
         }
-        _ => scalar_to_py(py, &s.value),
+        _ => scalar_to_py(py, s.value()),
     }
 }
 
@@ -371,9 +369,8 @@ pub(crate) fn scalar_to_py_with_tag(
 /// Used when converting Python primitives to YAML nodes during dump.
 pub(crate) fn plain_scalar(value: ScalarValue) -> YamlNode {
     YamlNode::Scalar(YamlScalar {
-        value,
+        repr: ScalarRepr::Canonical(value),
         style: ScalarStyle::Plain,
-        original: None,
         chomping: None,
         meta: NodeMeta::default(),
     })
@@ -604,9 +601,8 @@ pub(crate) fn py_to_node_inner(
         use base64::{Engine, engine::general_purpose::STANDARD};
         let encoded = STANDARD.encode(&b);
         return Ok(YamlNode::Scalar(YamlScalar {
-            value: ScalarValue::Str(encoded),
+            repr: ScalarRepr::Canonical(ScalarValue::Str(encoded)),
             style: ScalarStyle::Plain,
-            original: None,
             chomping: None,
             meta: NodeMeta {
                 tag: Some("!!binary".to_owned()),
@@ -620,9 +616,8 @@ pub(crate) fn py_to_node_inner(
         if obj.is_instance(datetime_type(py)?)? || obj.is_instance(date_type(py)?)? {
             let iso: String = obj.call_method0("isoformat")?.extract()?;
             return Ok(YamlNode::Scalar(YamlScalar {
-                value: ScalarValue::Str(iso),
+                repr: ScalarRepr::Canonical(ScalarValue::Str(iso)),
                 style: ScalarStyle::Plain,
-                original: None,
                 chomping: None,
                 meta: NodeMeta {
                     tag: Some("!!timestamp".to_owned()),
@@ -1153,7 +1148,7 @@ pub(crate) fn node_repr(py: Python<'_>, node: &YamlNode) -> String {
     match node {
         YamlNode::Mapping(m) => mapping_repr(py, m),
         YamlNode::Sequence(s) => sequence_repr(py, s),
-        YamlNode::Scalar(s) => match &s.value {
+        YamlNode::Scalar(s) => match &s.value() {
             ScalarValue::Null => "None".to_string(),
             ScalarValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             ScalarValue::Int(n) => n.to_string(),
