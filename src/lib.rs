@@ -4,6 +4,8 @@
 pub mod core;
 mod py;
 
+use std::sync::{Arc, Mutex};
+
 use core::builder;
 use core::emitter::{emit_docs, emit_docs_to};
 use core::types::YamlNode;
@@ -14,7 +16,7 @@ use py::py_scalar::PyYamlScalar;
 use py::py_sequence::PyYamlSequence;
 use py::schema::Schema;
 use py::streaming::PyStreamWriter;
-use py::streaming::{CharsSource, StringCharsIter};
+use py::streaming::{CharsSource, PyIoCharsIter, StringCharsIter};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -80,31 +82,6 @@ fn extract_doc_and_meta(
     Ok((node, doc_meta_from_py(doc)))
 }
 
-fn emit_doc_to_string(
-    doc: &Bound<'_, PyAny>,
-    schema: Option<&Bound<'_, Schema>>,
-    indent: usize,
-) -> PyResult<String> {
-    let (node, meta) = extract_doc_and_meta(doc, schema)?;
-    Ok(emit_docs(std::slice::from_ref(&node), &[meta], indent))
-}
-
-/// Emit a single document directly to a Python IO stream via [`PyStreamWriter`].
-fn emit_doc_to_stream(
-    doc: &Bound<'_, PyAny>,
-    schema: Option<&Bound<'_, Schema>>,
-    stream: &Bound<'_, PyAny>,
-    indent: usize,
-) -> PyResult<()> {
-    let (node, meta) = extract_doc_and_meta(doc, schema)?;
-    let mut writer = PyStreamWriter::new(stream.clone().unbind());
-    let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
-    if let Some(err) = writer.take_error() {
-        return Err(err);
-    }
-    Ok(())
-}
-
 /// Accept either `str` or `bytes`/`bytearray`; returns an owned `String`.
 /// Bytes input must be UTF-8 — invalid sequences raise `UnicodeDecodeError`.
 fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -130,35 +107,140 @@ fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     ))
 }
 
-// ─── Module-level functions ───────────────────────────────────────────────────
+// ─── Unified load / dump cores ────────────────────────────────────────────────
 
-/// Convert the first parsed doc (or `None`) to a Python doc object.
-fn convert_first_doc(
+/// Source for `do_load` — either a Python stream-like object or owned text.
+enum LoadSource<'py> {
+    Stream(Bound<'py, PyAny>),
+    Text(String),
+}
+
+/// Parse + convert one or all docs. Single place that binds the schema borrow,
+/// dispatches the parser, and runs the Rust→Python conversion.
+#[allow(clippy::needless_pass_by_value)] // matches caller signatures (PyO3 Option<Py<T>>)
+fn do_load(
     py: Python<'_>,
-    mut out: builder::ParseOutput,
-    sb: Option<&Bound<'_, Schema>>,
+    src: LoadSource<'_>,
+    schema: Option<Py<Schema>>,
+    all: bool,
 ) -> PyResult<Py<PyAny>> {
-    if out.docs.is_empty() {
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let out = match src {
+        LoadSource::Stream(s) => parse_stream(&s, sb_borrow.as_deref())?,
+        LoadSource::Text(t) => parse_text(&t, sb_borrow.as_deref())?,
+    };
+    if out.docs.is_empty() && !all {
         return Ok(py.None());
     }
-    let meta = doc_meta(&out.docs_meta, 0);
-    node_to_doc(py, out.docs.swap_remove(0), meta, sb)
+    if all {
+        let builder::ParseOutput { docs, docs_meta } = out;
+        let pydocs: Vec<Py<PyAny>> = docs
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
+            .collect::<PyResult<_>>()?;
+        Ok(PyList::new(py, pydocs)?.into_any().unbind())
+    } else {
+        let mut out = out;
+        let meta = doc_meta(&out.docs_meta, 0);
+        node_to_doc(py, out.docs.swap_remove(0), meta, sb)
+    }
 }
 
-/// Convert all parsed docs to a Python list of doc objects.
-fn convert_all_docs(
+/// Build a streaming iterator from a `CharsSource` and schema.
+fn make_iter(
     py: Python<'_>,
-    out: builder::ParseOutput,
-    sb: Option<&Bound<'_, Schema>>,
-) -> PyResult<Py<PyAny>> {
-    let builder::ParseOutput { docs, docs_meta } = out;
-    let pydocs: Vec<Py<PyAny>> = docs
-        .into_iter()
-        .enumerate()
-        .map(|(i, d)| node_to_doc(py, d, doc_meta(&docs_meta, i), sb))
-        .collect::<PyResult<_>>()?;
-    Ok(PyList::new(py, pydocs)?.into_any().unbind())
+    src: CharsSource,
+    schema: Option<Py<Schema>>,
+    error_slot: Option<Arc<Mutex<Option<PyErr>>>>,
+) -> PyResult<Py<PyYamlIter>> {
+    use core::builder::Builder;
+    use core::parser::Parser;
+
+    let sb = schema.as_ref().map(|s| s.bind(py));
+    let sb_borrow = sb.map(|s| s.borrow());
+    let policy = sb_borrow.as_deref().and_then(Schema::tag_policy);
+    let inner = YamlIterInner {
+        parser: Parser::new(src),
+        builder: Builder::new(),
+        policy,
+        done: false,
+        error_slot,
+    };
+    Py::new(py, PyYamlIter::new(inner, schema))
 }
+
+/// Sink for `do_dump_all` — stream out doc-by-doc, or accumulate into a string.
+enum EmitSink<'py> {
+    Stream(Bound<'py, PyAny>),
+    String,
+}
+
+/// Emit a single doc to either sink. Returns `Some(string)` for `EmitSink::String`,
+/// `None` for stream emission.
+fn do_dump(
+    doc: &Bound<'_, PyAny>,
+    sink: EmitSink<'_>,
+    schema: Option<&Bound<'_, Schema>>,
+    indent: usize,
+) -> PyResult<Option<String>> {
+    let (node, meta) = extract_doc_and_meta(doc, schema)?;
+    match sink {
+        EmitSink::String => Ok(Some(emit_docs(
+            std::slice::from_ref(&node),
+            &[meta],
+            indent,
+        ))),
+        EmitSink::Stream(stream) => {
+            let mut writer = PyStreamWriter::new(stream.unbind());
+            let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
+            if let Some(err) = writer.take_error() {
+                return Err(err);
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Emit a sequence of docs to either sink. For `Stream`, emits doc-by-doc and
+/// synthesises `---` separators. For `String`, batches via `emit_docs`.
+fn do_dump_all(
+    docs: &Bound<'_, PyAny>,
+    sink: EmitSink<'_>,
+    schema: Option<&Bound<'_, Schema>>,
+    indent: usize,
+) -> PyResult<Option<String>> {
+    let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
+    match sink {
+        EmitSink::String => {
+            let (nodes, meta): (Vec<YamlNode>, Vec<builder::DocMetadata>) = items
+                .iter()
+                .map(|i| extract_doc_and_meta(i, schema))
+                .collect::<PyResult<Vec<_>>>()?
+                .into_iter()
+                .unzip();
+            Ok(Some(emit_docs(&nodes, &meta, indent)))
+        }
+        EmitSink::Stream(stream) => {
+            let n = items.len();
+            let mut writer = PyStreamWriter::new(stream.unbind());
+            for (i, item) in items.iter().enumerate() {
+                let (node, mut meta) = extract_doc_and_meta(item, schema)?;
+                // Synthetic explicit_start so multi-doc streams always emit `---`
+                // separators (matches the emit_docs behaviour for batched emit).
+                meta.explicit_start |= (n > 1 && i == 0) || i > 0;
+                let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
+                if let Some(err) = writer.take_error() {
+                    return Err(err);
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
+// ─── Module-level functions ───────────────────────────────────────────────────
 
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]
@@ -168,10 +250,7 @@ fn load(
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyAny>> {
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let out = parse_stream(stream, sb_borrow.as_deref())?;
-    convert_first_doc(py, out, sb)
+    do_load(py, LoadSource::Stream(stream.clone()), schema, false)
 }
 
 #[pyfunction]
@@ -182,11 +261,7 @@ fn loads(
     text: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyAny>> {
-    let text = coerce_text(text)?;
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let out = parse_text(&text, sb_borrow.as_deref())?;
-    convert_first_doc(py, out, sb)
+    do_load(py, LoadSource::Text(coerce_text(text)?), schema, false)
 }
 
 #[pyfunction]
@@ -197,10 +272,7 @@ fn load_all(
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyAny>> {
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let out = parse_stream(stream, sb_borrow.as_deref())?;
-    convert_all_docs(py, out, sb)
+    do_load(py, LoadSource::Stream(stream.clone()), schema, true)
 }
 
 #[pyfunction]
@@ -211,11 +283,7 @@ fn loads_all(
     text: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyAny>> {
-    let text = coerce_text(text)?;
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let out = parse_text(&text, sb_borrow.as_deref())?;
-    convert_all_docs(py, out, sb)
+    do_load(py, LoadSource::Text(coerce_text(text)?), schema, true)
 }
 
 #[pyfunction]
@@ -226,54 +294,25 @@ fn iter_load_all(
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyYamlIter>> {
-    use core::builder::Builder;
-    use core::parser::Parser;
-    use py::streaming::PyIoCharsIter;
-
-    use pyo3::PyErr;
-    use std::sync::{Arc, Mutex};
-
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let policy = sb_borrow.as_deref().and_then(Schema::tag_policy);
     let error_slot: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
     let src = CharsSource::PyIo(PyIoCharsIter::new(
         stream.clone().unbind(),
         error_slot.clone(),
     ));
-    let inner = YamlIterInner {
-        parser: Parser::new(src),
-        builder: Builder::new(),
-        policy,
-        done: false,
-        error_slot: Some(error_slot),
-    };
-    Py::new(py, PyYamlIter::new(inner, schema))
+    make_iter(py, src, schema, Some(error_slot))
 }
 
 #[pyfunction]
 #[pyo3(signature = (text, *, schema=None))]
+#[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn iter_loads_all(
     py: Python<'_>,
     text: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
 ) -> PyResult<Py<PyYamlIter>> {
-    use core::builder::Builder;
-    use core::parser::Parser;
-
     let text = coerce_text(text)?;
-    let sb = schema.as_ref().map(|s| s.bind(py));
-    let sb_borrow = sb.map(|s| s.borrow());
-    let policy = sb_borrow.as_deref().and_then(Schema::tag_policy);
     let src = CharsSource::Str(StringCharsIter::new(text));
-    let inner = YamlIterInner {
-        parser: Parser::new(src),
-        builder: Builder::new(),
-        policy,
-        done: false,
-        error_slot: None,
-    };
-    Py::new(py, PyYamlIter::new(inner, schema))
+    make_iter(py, src, schema, None)
 }
 
 #[pyfunction]
@@ -286,7 +325,8 @@ fn dump(
     indent: usize,
 ) -> PyResult<()> {
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    emit_doc_to_stream(doc, sb, stream, indent)
+    do_dump(doc, EmitSink::Stream(stream.clone()), sb, indent)?;
+    Ok(())
 }
 
 #[pyfunction]
@@ -294,7 +334,7 @@ fn dump(
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    emit_doc_to_string(doc, sb, indent)
+    Ok(do_dump(doc, EmitSink::String, sb, indent)?.unwrap_or_default())
 }
 
 #[pyfunction]
@@ -308,19 +348,7 @@ fn dump_all(
     indent: usize,
 ) -> PyResult<()> {
     let sb = schema.as_ref().map(|s| s.bind(py));
-    let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
-    let n = items.len();
-    let mut writer = PyStreamWriter::new(stream.clone().unbind());
-    for (i, item) in items.iter().enumerate() {
-        let (node, mut meta) = extract_doc_and_meta(item, sb)?;
-        // Synthetic explicit_start so that multi-doc streams always emit `---`
-        // separators (matches the emit_docs behaviour for batched emit).
-        meta.explicit_start |= (n > 1 && i == 0) || i > 0;
-        let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
-        if let Some(err) = writer.take_error() {
-            return Err(err);
-        }
-    }
+    do_dump_all(docs, EmitSink::Stream(stream.clone()), sb, indent)?;
     Ok(())
 }
 
@@ -334,14 +362,7 @@ fn dumps_all(
     indent: usize,
 ) -> PyResult<String> {
     let sb = schema.as_ref().map(|s| s.bind(py));
-    let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
-    let (nodes, meta): (Vec<YamlNode>, Vec<builder::DocMetadata>) = items
-        .iter()
-        .map(|i| extract_doc_and_meta(i, sb))
-        .collect::<PyResult<Vec<_>>>()?
-        .into_iter()
-        .unzip();
-    Ok(emit_docs(&nodes, &meta, indent))
+    Ok(do_dump_all(docs, EmitSink::String, sb, indent)?.unwrap_or_default())
 }
 
 /// The yarutsk module (private implementation, re-exported via `yarutsk/__init__.py`).
