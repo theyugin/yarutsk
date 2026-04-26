@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-04-26
+
+### Fixed
+- README comparison table no longer claims `dict` / `list` subclassing as a yarutsk feature (stale post-0.8.0).
+
 ## [0.8.0] - 2026-04-26
 
 ### Changed
