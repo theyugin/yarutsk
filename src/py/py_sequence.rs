@@ -1,5 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
@@ -477,7 +479,7 @@ impl PyYamlSequence {
     /// Raises ``IndexError`` for out-of-range indices.
     fn set_alias(&mut self, idx: isize, anchor_name: &str) -> PyResult<()> {
         let i = resolve_seq_idx(idx, self.inner.items.len())?;
-        let resolved = Box::new(self.inner.items[i].clone());
+        let resolved = Arc::new(self.inner.items[i].clone());
         self.inner.items[i] = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,

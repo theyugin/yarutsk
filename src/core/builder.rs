@@ -1,6 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
@@ -63,7 +64,10 @@ pub struct Builder {
     /// entry has been inserted.  Consumed when the next scalar is added.
     pending_inline: Option<String>,
     /// Anchor table: maps anchor name → completed node, for alias resolution.
-    anchor_table: HashMap<String, YamlNode>,
+    /// `Rc` so each `*alias` shares storage with the anchor instead of cloning
+    /// the whole subtree (avoids quadratic memory blow-up for docs with many
+    /// aliases of large blocks).
+    anchor_table: HashMap<String, Arc<YamlNode>>,
 }
 
 enum Frame {
@@ -367,7 +371,8 @@ impl Builder {
     /// Register a node in the anchor table by name (if `anchor_name` is Some).
     fn register_anchor(&mut self, anchor_name: Option<&str>, node: &YamlNode) {
         if let Some(name) = anchor_name {
-            self.anchor_table.insert(name.to_owned(), node.clone());
+            self.anchor_table
+                .insert(name.to_owned(), Arc::new(node.clone()));
         }
     }
 
@@ -722,19 +727,19 @@ impl Builder {
             }
 
             Event::Alias(name) => {
-                // Resolve the alias and store YamlNode::Alias { name, resolved }.
-                // The resolved copy is used by the Python layer; the name is used by the emitter.
+                // Look up the anchor and share its storage via Rc — multiple
+                // aliases for the same anchor reference one underlying node.
                 let resolved = self
                     .anchor_table
                     .get(&name)
                     .cloned()
-                    .unwrap_or(YamlNode::Null);
+                    .unwrap_or_else(|| Arc::new(YamlNode::Null));
                 // If the alias is in mapping key position, record it as an alias key.
                 if let Some(Frame::Mapping(mf)) = self.stack.last_mut()
                     && !mf.pending.has_key()
                 {
                     // Use the resolved scalar value as the key string (for Python access).
-                    mf.pending.key = Some(match &resolved {
+                    mf.pending.key = Some(match resolved.as_ref() {
                         YamlNode::Scalar(s) => s.value().to_key_string(),
                         _ => String::new(),
                     });
@@ -747,7 +752,7 @@ impl Builder {
                 }
                 self.push_node(YamlNode::Alias {
                     name,
-                    resolved: Box::new(resolved),
+                    resolved,
                     meta: NodeMeta::default(),
                 });
             }

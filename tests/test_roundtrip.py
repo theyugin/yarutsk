@@ -209,15 +209,18 @@ class TestRoundTripAliasExpansion:
         doc = yarutsk.loads(src)
         assert doc["actual"] == 42
 
-    def test_alias_expands_independently(self):
-        """Mutations to expanded alias do not affect the anchor site."""
+    def test_alias_shares_identity_with_anchor(self):
+        """Aliases share Python identity with the anchored container, so
+        mutations through one are visible through the other (matches the
+        reference semantics of plain Python dicts/lists)."""
         src = dedent("""\
             a: &anchor {x: 1}
             b: *anchor
         """)
         doc = yarutsk.loads(src)
+        assert doc["a"] is doc["b"]
         doc["b"]["x"] = 99
-        assert doc["a"]["x"] == 1
+        assert doc["a"]["x"] == 99
 
     def test_alias_roundtrips_as_value(self):
         """Aliases are preserved in output: *name round-trips faithfully."""
@@ -783,15 +786,18 @@ class TestAnchorAliasRoundTrip:
         assert list(doc["copy"]) == ["a", "b"]
         assert yarutsk.dumps(doc) == src
 
-    def test_anchor_mutation_does_not_affect_alias(self):
-        """Mutations to the anchor site do not affect the alias (they are independent)."""
+    def test_anchor_and_alias_share_identity(self):
+        """The anchored container and every alias to it surface as the same
+        Python object — mutating through one is visible through the others
+        (Python dict/list reference semantics, intentional in B1)."""
         src = dedent("""\
             a: &anchor {x: 1}
             b: *anchor
         """)
         doc = yarutsk.loads(src)
+        assert doc["a"] is doc["b"]
         doc["b"]["x"] = 99
-        assert doc["a"]["x"] == 1
+        assert doc["a"]["x"] == 99
 
     def test_alias_dump_is_reloadable(self):
         src = dedent("""\

@@ -1730,7 +1730,7 @@ mod tests {
     fn emit_alias_node() {
         let node = YamlNode::Alias {
             name: "myref".to_owned(),
-            resolved: Box::new(YamlNode::Null),
+            resolved: std::sync::Arc::new(YamlNode::Null),
             meta: NodeMeta::default(),
         };
         assert_eq!(node_emit(&node), "*myref");

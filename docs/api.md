@@ -269,6 +269,17 @@ doc["ref"]                             # 1  (resolved value always accessible)
 doc.set_alias("other", "anchor")       # mark value as emitting *anchor
 ```
 
+Aliases share Python identity with the anchored container, so mutations
+through any reference are visible through the others — same reference
+semantics as plain Python dicts and lists:
+
+```python
+doc = yarutsk.loads("a: &x {port: 8080}\nb: *x\n")
+assert doc["a"] is doc["b"]
+doc["b"]["port"] = 9090
+assert doc["a"]["port"] == 9090        # shared via the anchor
+```
+
 ### Sorting
 
 ```python

@@ -1,6 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -119,6 +120,27 @@ impl AnchorEmitState {
     fn next_name(&mut self) -> String {
         self.counter += 1;
         format!("id{:03}", self.counter)
+    }
+}
+
+/// Per-call load state: caches the Python object built for each anchor name so
+/// that aliases can be returned as the *same* `Py<PyAny>`. This gives the
+/// Python-side reference semantics requested for B1 — `*foo` and the
+/// `&foo`-anchored container are the same object, mutations propagate.
+///
+/// Lives for the duration of one top-level `node_to_doc` / `node_to_py` call.
+#[derive(Default)]
+pub(crate) struct LoadCtx {
+    anchors: HashMap<String, Py<PyAny>>,
+}
+
+impl LoadCtx {
+    fn register(&mut self, name: String, py_obj: &Py<PyAny>, py: Python<'_>) {
+        self.anchors.insert(name, py_obj.clone_ref(py));
+    }
+
+    fn lookup(&self, name: &str, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.anchors.get(name).map(|p| p.clone_ref(py))
     }
 }
 
@@ -427,25 +449,59 @@ pub(crate) fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
 /// Convert a `YamlNode` to its Python representation.
 /// Mapping → `PyYamlMapping` (dict subclass), Sequence → `PyYamlSequence` (list subclass),
 /// scalar/null → Python primitive.
+///
+/// Top-level wrapper that constructs a fresh [`LoadCtx`]. For recursion, call
+/// [`node_to_py_inner`] with the existing ctx so anchor identity is shared.
 pub(crate) fn node_to_py(
     py: Python<'_>,
     node: &YamlNode,
     schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<Py<PyAny>> {
+    let mut ctx = LoadCtx::default();
+    node_to_py_inner(py, node, schema, &mut ctx)
+}
+
+/// Recursive body of [`node_to_py`]. For `Alias`, returns the cached Py for
+/// the named anchor if one is registered (so all references share identity).
+pub(crate) fn node_to_py_inner(
+    py: Python<'_>,
+    node: &YamlNode,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut LoadCtx,
 ) -> PyResult<Py<PyAny>> {
     match node {
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s, schema),
         YamlNode::Mapping(m) => {
             let tag = m.meta.tag.clone();
-            let py_obj = mapping_to_py_obj(py, m.clone(), DocMeta::none(), schema)?;
-            apply_loader(py, schema, tag.as_deref(), py_obj)
+            let anchor = m.meta.anchor.clone();
+            let py_obj = mapping_to_py_obj_inner(py, m.clone(), DocMeta::none(), schema, ctx)?;
+            let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
+            if let Some(name) = anchor {
+                ctx.register(name, &final_obj, py);
+            }
+            Ok(final_obj)
         }
         YamlNode::Sequence(s) => {
             let tag = s.meta.tag.clone();
-            let py_obj = sequence_to_py_obj(py, s.clone(), DocMeta::none(), schema)?;
-            apply_loader(py, schema, tag.as_deref(), py_obj)
+            let anchor = s.meta.anchor.clone();
+            let py_obj = sequence_to_py_obj_inner(py, s.clone(), DocMeta::none(), schema, ctx)?;
+            let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
+            if let Some(name) = anchor {
+                ctx.register(name, &final_obj, py);
+            }
+            Ok(final_obj)
         }
-        YamlNode::Alias { resolved, .. } => node_to_py(py, resolved, schema),
+        YamlNode::Alias { name, resolved, .. } => {
+            // Anchor cache hit → share identity with prior reference.
+            if let Some(cached) = ctx.lookup(name, py) {
+                return Ok(cached);
+            }
+            // Cache miss (e.g. set_alias() at runtime, before any Python-side
+            // anchor was ever materialised): fall back to converting the
+            // resolved subtree as a fresh Py.
+            node_to_py_inner(py, resolved, schema, ctx)
+        }
     }
 }
 
@@ -838,16 +894,36 @@ impl ChildKind {
     }
 }
 
-/// Convert a top-level `YamlNode` to `PyYamlMapping`, `PyYamlSequence`, or `PyYamlScalar`.
+/// Convert a top-level `YamlNode` to `PyYamlMapping`, `PyYamlSequence`, or
+/// `PyYamlScalar`. Constructs a fresh [`LoadCtx`] so anchored containers and
+/// the aliases pointing to them surface as the *same* Python object across
+/// the whole document.
 pub(crate) fn node_to_doc(
     py: Python<'_>,
     node: YamlNode,
     meta: DocMeta,
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
+    let mut ctx = LoadCtx::default();
     match node {
-        YamlNode::Mapping(m) => mapping_to_py_obj(py, m, meta, schema),
-        YamlNode::Sequence(s) => sequence_to_py_obj(py, s, meta, schema),
+        YamlNode::Mapping(m) => {
+            let anchor = m.meta.anchor.clone();
+            let py_obj = mapping_to_py_obj_inner(py, m, meta, schema, &mut ctx)?;
+            // Top-level container can itself be an anchor (uncommon but legal);
+            // register it so any nested *self-reference* alias picks it up.
+            if let Some(name) = anchor {
+                ctx.register(name, &py_obj, py);
+            }
+            Ok(py_obj)
+        }
+        YamlNode::Sequence(s) => {
+            let anchor = s.meta.anchor.clone();
+            let py_obj = sequence_to_py_obj_inner(py, s, meta, schema, &mut ctx)?;
+            if let Some(name) = anchor {
+                ctx.register(name, &py_obj, py);
+            }
+            Ok(py_obj)
+        }
         other => Ok(PyYamlScalar {
             inner: other,
             explicit_start: meta.explicit_start,
@@ -1001,7 +1077,7 @@ pub(crate) fn extract_yaml_node_inner(
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
-                resolved: Box::new(YamlNode::Null),
+                resolved: Arc::new(YamlNode::Null),
                 meta: NodeMeta::default(),
             });
         }
@@ -1024,7 +1100,7 @@ pub(crate) fn extract_yaml_node_inner(
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
-                resolved: Box::new(YamlNode::Null),
+                resolved: Arc::new(YamlNode::Null),
                 meta: NodeMeta::default(),
             });
         }
@@ -1043,7 +1119,7 @@ pub(crate) fn extract_yaml_node_inner(
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
-                resolved: Box::new(YamlNode::Null),
+                resolved: Arc::new(YamlNode::Null),
                 meta: NodeMeta::default(),
             });
         }
@@ -1065,18 +1141,33 @@ pub(crate) fn extract_yaml_node_inner(
 
 /// Create a `PyYamlMapping` (dict subclass) from a Rust `YamlMapping`.
 /// The parent dict is populated with the mapping's entries.
+///
+/// Top-level wrapper that constructs a fresh [`LoadCtx`]. Use
+/// [`mapping_to_py_obj_inner`] when recursing inside an existing context so
+/// anchored values surface as the same Python object across aliases.
 pub(crate) fn mapping_to_py_obj(
     py: Python<'_>,
     m: YamlMapping,
     meta: DocMeta,
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
+    let mut ctx = LoadCtx::default();
+    mapping_to_py_obj_inner(py, m, meta, schema, &mut ctx)
+}
+
+pub(crate) fn mapping_to_py_obj_inner(
+    py: Python<'_>,
+    m: YamlMapping,
+    meta: DocMeta,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut LoadCtx,
+) -> PyResult<Py<PyAny>> {
     // Build Python values before moving m into the struct.
     let py_pairs: Vec<(String, Py<PyAny>)> = m
         .entries
         .iter()
         .map(|(k, e)| {
-            let v = node_to_py(py, &e.value, schema)?;
+            let v = node_to_py_inner(py, &e.value, schema, ctx)?;
             Ok((k.python_key(), v))
         })
         .collect::<PyResult<_>>()?;
@@ -1106,17 +1197,32 @@ pub(crate) fn mapping_to_py_obj(
 
 /// Create a `PyYamlSequence` (list subclass) from a Rust `YamlSequence`.
 /// The parent list is populated with the sequence's items.
+///
+/// Top-level wrapper that constructs a fresh [`LoadCtx`]. Use
+/// [`sequence_to_py_obj_inner`] when recursing inside an existing context so
+/// anchored items surface as the same Python object across aliases.
 pub(crate) fn sequence_to_py_obj(
     py: Python<'_>,
     s: YamlSequence,
     meta: DocMeta,
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
+    let mut ctx = LoadCtx::default();
+    sequence_to_py_obj_inner(py, s, meta, schema, &mut ctx)
+}
+
+pub(crate) fn sequence_to_py_obj_inner(
+    py: Python<'_>,
+    s: YamlSequence,
+    meta: DocMeta,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut LoadCtx,
+) -> PyResult<Py<PyAny>> {
     // Build Python values before moving s into the struct.
     let py_items: Vec<Py<PyAny>> = s
         .items
         .iter()
-        .map(|i| node_to_py(py, i, schema))
+        .map(|i| node_to_py_inner(py, i, schema, ctx))
         .collect::<PyResult<_>>()?;
 
     let obj: Py<PyYamlSequence> = Py::new(
