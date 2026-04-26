@@ -14,6 +14,7 @@ Usage:
 """
 
 import io
+from typing import Any
 
 import pytest
 from _yaml_suite import load_test_cases, normalize_for_json_compare, parse_json_docs
@@ -22,24 +23,28 @@ import yarutsk
 
 
 @pytest.fixture(params=load_test_cases())
-def yaml_test_case(request):
+def yaml_test_case(request: pytest.FixtureRequest) -> Any:
     return request.param
 
 
 class TestYamlSuite:
     """Run yaml-test-suite tests against yarutsk."""
 
-    def test_parse(self, yaml_test_case):
+    def test_parse(self, yaml_test_case: dict[str, Any]) -> None:
         """Valid YAML must parse without error; invalid YAML must be rejected."""
         test = yaml_test_case
         try:
             docs = yarutsk.load_all(io.StringIO(test["yaml"]))
+            assert all(
+                isinstance(d, (yarutsk.YamlMapping, yarutsk.YamlSequence, yarutsk.YamlScalar))
+                for d in docs
+            )
             for doc in docs:
                 repr(doc)
         except Exception as e:
             pytest.fail(f"Unexpected parse error: {e}\nYAML:\n{test['yaml']}")
 
-    def test_values(self, yaml_test_case):
+    def test_values(self, yaml_test_case: dict[str, Any]) -> None:
         """Parsed values must match the expected JSON representation."""
         test = yaml_test_case
 
@@ -52,6 +57,10 @@ class TestYamlSuite:
 
         try:
             docs = yarutsk.load_all(io.StringIO(test["yaml"]))
+            assert all(
+                isinstance(d, (yarutsk.YamlMapping, yarutsk.YamlSequence, yarutsk.YamlScalar))
+                for d in docs
+            )
         except Exception as e:
             pytest.skip(f"parse failed (covered by test_parse): {e}")
 
@@ -64,7 +73,7 @@ class TestYamlSuite:
             f"\nExpected: {expected}\nActual:   {actual}\nYAML:\n{test['yaml']}"
         )
 
-    def test_roundtrip(self, yaml_test_case):
+    def test_roundtrip(self, yaml_test_case: dict[str, Any]) -> None:
         """Round-trip value preservation: re-parsed values must match after emit.
 
         The test verifies two hard properties:
@@ -89,7 +98,6 @@ class TestYamlSuite:
 
         result = yarutsk.dumps_all(docs)
 
-        # ── Hard check: emitted YAML must be re-parseable ────────────────────
         try:
             re_docs = list(yarutsk.load_all(io.StringIO(result)))
         except Exception as e:
@@ -97,7 +105,6 @@ class TestYamlSuite:
                 f"Emitter produced invalid YAML: {e}\nOriginal:\n{yaml_src}\nEmitted:\n{result}"
             )
 
-        # ── Hard check: re-parsed values must match original ─────────────────
         if test["json"]:
             expected = [normalize_for_json_compare(d) for d in parse_json_docs(test["json"])]
             actual = [

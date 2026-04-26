@@ -9,60 +9,72 @@ import yarutsk
 class TestQuotedTypeLookalikes:
     """Quoted scalars that look like other types must stay as strings."""
 
-    def test_quoted_true_is_str(self):
+    def test_quoted_true_is_str(self) -> None:
         doc = yarutsk.loads('key: "true"')
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "true"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_false_is_str(self):
+    def test_quoted_false_is_str(self) -> None:
         doc = yarutsk.loads("key: 'false'")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "false"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_null_is_str(self):
+    def test_quoted_null_is_str(self) -> None:
         doc = yarutsk.loads('key: "null"')
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "null"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_integer_is_str(self):
+    def test_quoted_integer_is_str(self) -> None:
         doc = yarutsk.loads('key: "42"')
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "42"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_float_is_str(self):
+    def test_quoted_float_is_str(self) -> None:
         doc = yarutsk.loads("key: '3.14'")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "3.14"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_zero_is_str(self):
+    def test_quoted_zero_is_str(self) -> None:
         doc = yarutsk.loads('key: "0"')
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "0"
         assert isinstance(doc["key"], str)
 
-    def test_quoted_yes_is_str(self):
+    def test_quoted_yes_is_str(self) -> None:
         """'yes' is a bool in YAML 1.1 — but only unquoted."""
         doc = yarutsk.loads('key: "yes"')
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == "yes"
         assert isinstance(doc["key"], str)
 
-    def test_plain_true_is_bool(self):
+    def test_plain_true_is_bool(self) -> None:
         doc = yarutsk.loads("key: true")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] is True
 
-    def test_plain_false_is_bool(self):
+    def test_plain_false_is_bool(self) -> None:
         doc = yarutsk.loads("key: false")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] is False
 
-    def test_plain_null_is_none(self):
+    def test_plain_null_is_none(self) -> None:
         doc = yarutsk.loads("key: null")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] is None
 
-    def test_tilde_is_none(self):
+    def test_tilde_is_none(self) -> None:
         doc = yarutsk.loads("key: ~")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] is None
 
-    def test_plain_integer_is_int(self):
+    def test_plain_integer_is_int(self) -> None:
         doc = yarutsk.loads("key: 42")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert doc["key"] == 42
         assert isinstance(doc["key"], int)
 
@@ -70,60 +82,67 @@ class TestQuotedTypeLookalikes:
 class TestSpecialFloats:
     """Special float literals: .inf, -.inf, .nan."""
 
-    def test_inf(self):
+    def test_inf(self) -> None:
         import math
 
         doc = yarutsk.loads("key: .inf")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert math.isinf(doc["key"])
         assert doc["key"] > 0
 
-    def test_negative_inf(self):
+    def test_negative_inf(self) -> None:
         import math
 
         doc = yarutsk.loads("key: -.inf")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert math.isinf(doc["key"])
         assert doc["key"] < 0
 
-    def test_nan(self):
+    def test_nan(self) -> None:
         import math
 
         doc = yarutsk.loads("key: .nan")
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert math.isnan(doc["key"])
 
-    def test_inf_round_trip(self):
+    def test_inf_round_trip(self) -> None:
         import math
 
         doc = yarutsk.loads("key: .inf")
+        assert doc is not None
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert math.isinf(doc2["key"])
 
 
 class TestBlockScalars:
     """Literal | and folded > block scalars."""
 
-    def test_literal_block_preserves_newlines(self):
+    def test_literal_block_preserves_newlines(self) -> None:
         yaml = dedent("""\
             text: |
               line one
               line two
         """)
         doc = yarutsk.loads(yaml)
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert "line one" in doc["text"]
         assert "line two" in doc["text"]
         assert "\n" in doc["text"]
 
-    def test_folded_block_is_string(self):
+    def test_folded_block_is_string(self) -> None:
         yaml = dedent("""\
             text: >
               folded
               text
         """)
         doc = yarutsk.loads(yaml)
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert isinstance(doc["text"], str)
         assert "folded" in doc["text"]
 
-    def test_literal_block_value_is_string(self):
+    def test_literal_block_value_is_string(self) -> None:
         """Block scalar value is a plain Python str after loading."""
         yaml = dedent("""\
             text: |
@@ -131,6 +150,7 @@ class TestBlockScalars:
               world
         """)
         doc = yarutsk.loads(yaml)
+        assert isinstance(doc, yarutsk.YamlMapping)
         assert isinstance(doc["text"], str)
         assert doc["text"].startswith("hello")
 
@@ -138,34 +158,44 @@ class TestBlockScalars:
 class TestSpecialStringRoundTrips:
     """Strings containing YAML-special characters survive dump/load."""
 
-    def test_string_with_colon(self):
+    def test_string_with_colon(self) -> None:
         doc = yarutsk.loads("url: 'http://example.com:8080/path'")
+        assert doc is not None
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert doc2["url"] == "http://example.com:8080/path"
 
-    def test_string_with_hash(self):
+    def test_string_with_hash(self) -> None:
         doc = yarutsk.loads("comment: 'color: #fff'")
+        assert doc is not None
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert doc2["comment"] == "color: #fff"
 
-    def test_string_with_leading_spaces(self):
+    def test_string_with_leading_spaces(self) -> None:
         doc = yarutsk.loads("key: '  leading spaces'")
+        assert doc is not None
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert doc2["key"] == "  leading spaces"
 
-    def test_string_with_newline(self):
+    def test_string_with_newline(self) -> None:
         doc = yarutsk.loads("key: 'line1\\nline2'")
+        assert isinstance(doc, yarutsk.YamlMapping)
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert doc2["key"] == doc["key"]
 
-    def test_empty_string_key(self):
+    def test_empty_string_key(self) -> None:
         """An empty string value on a non-empty key round-trips correctly."""
         doc = yarutsk.loads("key: ''")
+        assert doc is not None
         out = yarutsk.dumps(doc)
         doc2 = yarutsk.loads(out)
+        assert isinstance(doc2, yarutsk.YamlMapping)
         assert doc2["key"] == ""
         assert isinstance(doc2["key"], str)

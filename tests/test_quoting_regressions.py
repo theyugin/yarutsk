@@ -17,13 +17,11 @@ def _roundtrips(doc: Any, expected: Any) -> None:
     """Dump ``doc``, parse the output, and assert it matches ``expected``."""
     text = yarutsk.dumps(doc)
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     actual = parsed.to_python() if hasattr(parsed, "to_python") else parsed
     assert actual == expected, (
         f"roundtrip lost data\nemitted:\n{text!r}\nexpected: {expected!r}\ngot: {actual!r}"
     )
-
-
-# ─── Boundary whitespace (covered by 0.6.1, kept as a regression guard) ──────
 
 
 @pytest.mark.parametrize(
@@ -34,18 +32,12 @@ def test_value_boundary_whitespace_roundtrips(value: str) -> None:
     _roundtrips({"k": value}, {"k": value})
 
 
-# ─── Internal whitespace ─────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "value",
     ["a b", "a  b", "a   b", "a\tb", "a\t\tb"],
 )
 def test_value_internal_whitespace_roundtrips(value: str) -> None:
     _roundtrips({"k": value}, {"k": value})
-
-
-# ─── Flow-context indicators ─────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -70,9 +62,6 @@ def test_value_in_flow_mapping_roundtrips(value: str) -> None:
     _roundtrips({"k": inner}, {"k": {"a": value, "b": "end"}})
 
 
-# ─── Mapping key edge cases ──────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "key",
     [
@@ -95,17 +84,16 @@ def test_key_keyword_or_indicator_roundtrips(key: str) -> None:
     _roundtrips({key: "v"}, {key: "v"})
 
 
-# ─── format() then re-emit ───────────────────────────────────────────────────
-
-
 def test_format_preserves_boundary_whitespace_in_value() -> None:
     doc = yarutsk.loads('k: " leading"')
+    assert doc is not None
     doc.format()
     _roundtrips(doc, {"k": " leading"})
 
 
 def test_format_preserves_flow_context_value_with_comma() -> None:
     doc = yarutsk.loads('seq: ["a, b", "c"]')
+    assert doc is not None
     doc.format()
     # format() switches container style to block, so the comma is no longer
     # a flow indicator on emit. Round-trip must still be lossless.
@@ -114,11 +102,13 @@ def test_format_preserves_flow_context_value_with_comma() -> None:
 
 def test_format_preserves_keyword_key() -> None:
     doc = yarutsk.loads("'null': 1\n'true': 2\n")
+    assert doc is not None
     doc.format()
     _roundtrips(doc, {"null": 1, "true": 2})
 
 
 def test_format_preserves_dash_leading_key() -> None:
     doc = yarutsk.loads("'-foo': bar\n")
+    assert doc is not None
     doc.format()
     _roundtrips(doc, {"-foo": "bar"})

@@ -16,6 +16,7 @@ data preservation can't be verified without an oracle.
 """
 
 import io
+from typing import Any
 
 import pytest
 from _yaml_suite import load_test_cases, normalize_for_json_compare, parse_json_docs
@@ -24,12 +25,12 @@ import yarutsk
 
 
 @pytest.fixture(params=load_test_cases())
-def yaml_test_case(request):
+def yaml_test_case(request: pytest.FixtureRequest) -> Any:
     return request.param
 
 
 class TestYamlSuiteFormat:
-    def test_format_roundtrip(self, yaml_test_case):
+    def test_format_roundtrip(self, yaml_test_case: dict[str, Any]) -> None:
         test = yaml_test_case
 
         if test["fail"]:

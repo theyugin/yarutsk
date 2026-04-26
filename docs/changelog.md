@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-26
+
+### Changed
+- **Breaking**: `YamlMapping` and `YamlSequence` no longer subclass `dict` / `list`. They still implement the full dict/list protocol (subscript, iteration, `len`, `in`, `keys`/`values`/`items`, `append`/`extend`, etc.), but `isinstance(m, dict)` is now `False`. Call `m.to_python()` (recursive) to get a plain `dict`/`list` — required for `json.dumps`, pydantic `model_validate`, msgspec, cattrs, and any library that strictly checks input type.
+
+### Typing
+- Tightened public stub: `YamlMapping.to_python()` returns `dict[str, Any]`, `YamlSequence.to_python()` returns `list[Any]`, `YamlIter` is `Iterator[YamlNode]`, and `get`/`pop`/`setdefault` plus `YamlSequence.__getitem__` use `@overload` for stdlib-style narrowing.
+
+### Internal
+- Deduplicated mapping/sequence pyclasses via a shared `container_metadata_pymethods!` macro; extracted `ChildContainer` + `for_each_opaque_child` recursion helper.
+- Collapsed redundant `convert::DocMeta` into `builder::DocMetadata`; introduced `DocMetaSource` trait for uniform doc-level metadata extraction.
+- Unified `needs_quoting_for_key` into `needs_quoting`; the for-key path was a behavioral duplicate.
+- Added `synthetic_alias` helper for auto-anchor stub construction.
+
 ## [0.7.8] - 2026-04-26
 
 ### Changed
@@ -209,7 +223,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/theyugin/yarutsk/compare/v0.7.8...v0.8.0
 [0.7.8]: https://github.com/theyugin/yarutsk/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/theyugin/yarutsk/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/theyugin/yarutsk/compare/v0.7.5...v0.7.6

@@ -754,6 +754,7 @@ impl Builder {
                     name,
                     resolved,
                     meta: NodeMeta::default(),
+                    materialised: None,
                 });
             }
         }
@@ -809,8 +810,6 @@ mod tests {
     use super::super::emitter::emit_docs;
     use super::*;
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
     /// Full round-trip: parse `src`, emit, assert output == `src`.
     fn rt(src: &str) {
         let out_data = parse_str(src, None).expect("parse failed");
@@ -828,8 +827,6 @@ mod tests {
         out.docs.remove(0)
     }
 
-    // ── Empty / trivial ───────────────────────────────────────────────────────
-
     #[test]
     fn empty_input_produces_no_docs() {
         let out = parse_str("", None).unwrap();
@@ -842,8 +839,6 @@ mod tests {
         let out = parse_str("   \n  \n", None).unwrap();
         assert!(out.docs.is_empty());
     }
-
-    // ── Null scalar ───────────────────────────────────────────────────────────
 
     #[test]
     fn bare_null_parses_as_null() {
@@ -865,8 +860,6 @@ mod tests {
             panic!("expected Scalar");
         }
     }
-
-    // ── Bool scalars ──────────────────────────────────────────────────────────
 
     #[test]
     fn bool_true_canonical() {
@@ -903,8 +896,6 @@ mod tests {
         }
     }
 
-    // ── Integer scalars ───────────────────────────────────────────────────────
-
     #[test]
     fn decimal_int_no_original() {
         let node = parse_one("42\n");
@@ -939,8 +930,6 @@ mod tests {
             panic!("expected Scalar");
         }
     }
-
-    // ── Float scalars ─────────────────────────────────────────────────────────
 
     #[test]
     fn float_with_dot_no_original() {
@@ -988,8 +977,6 @@ mod tests {
         }
     }
 
-    // ── Quoted scalars ────────────────────────────────────────────────────────
-
     #[test]
     fn single_quoted_style_preserved() {
         let node = parse_one("'hello'\n");
@@ -1032,8 +1019,6 @@ mod tests {
         }
     }
 
-    // ── Tags ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn tag_str_forces_string_value() {
         let node = parse_one("!!str 42\n");
@@ -1064,8 +1049,6 @@ mod tests {
             panic!("expected Sequence");
         }
     }
-
-    // ── Mapping ───────────────────────────────────────────────────────────────
 
     #[test]
     fn simple_mapping_order_preserved() {
@@ -1103,8 +1086,6 @@ mod tests {
         }
     }
 
-    // ── Sequence ──────────────────────────────────────────────────────────────
-
     #[test]
     fn simple_sequence_items() {
         let node = parse_one("- 1\n- 2\n- 3\n");
@@ -1124,8 +1105,6 @@ mod tests {
             panic!("expected Sequence");
         }
     }
-
-    // ── Anchors and aliases ───────────────────────────────────────────────────
 
     #[test]
     fn scalar_anchor_stored() {
@@ -1186,8 +1165,6 @@ mod tests {
         }
     }
 
-    // ── Comments ──────────────────────────────────────────────────────────────
-
     #[test]
     fn inline_comment_attached() {
         let node = parse_one("a: 1  # comment\nb: 2\n");
@@ -1214,8 +1191,6 @@ mod tests {
         }
     }
 
-    // ── Blank lines ───────────────────────────────────────────────────────────
-
     #[test]
     fn blank_lines_before_entry_counted() {
         let node = parse_one("a: 1\n\nb: 2\n");
@@ -1241,8 +1216,6 @@ mod tests {
             panic!("expected Mapping");
         }
     }
-
-    // ── Explicit document markers ─────────────────────────────────────────────
 
     #[test]
     fn explicit_start_marker_recorded() {
@@ -1289,8 +1262,6 @@ mod tests {
         assert_eq!(ends, [true]);
     }
 
-    // ── Multiple documents ────────────────────────────────────────────────────
-
     #[test]
     fn two_docs_parsed() {
         let out = parse_str("---\na: 1\n---\nb: 2\n", None).unwrap();
@@ -1300,8 +1271,6 @@ mod tests {
         assert_eq!(starts, [true, true]);
         assert_eq!(ends, [false, false]);
     }
-
-    // ── Block scalars ─────────────────────────────────────────────────────────
 
     #[test]
     fn literal_block_style_parsed() {
@@ -1331,8 +1300,6 @@ mod tests {
             panic!("expected Mapping");
         }
     }
-
-    // ── Round-trips ───────────────────────────────────────────────────────────
 
     #[test]
     fn rt_simple_mapping() {
@@ -1542,8 +1509,6 @@ mod tests {
     fn rt_sequence_with_comments() {
         rt("- 1  # one\n- 2  # two\n- 3\n");
     }
-
-    // ── Error cases ───────────────────────────────────────────────────────────
 
     #[test]
     fn invalid_yaml_returns_error() {

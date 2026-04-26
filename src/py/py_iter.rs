@@ -4,13 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
-use super::convert::{DocMeta, node_to_doc};
+use super::convert::node_to_doc;
 use super::schema::Schema;
 use super::streaming::CharsSource;
 use crate::core::builder::{Builder, DocMetadata, TagPolicy};
 use crate::core::parser::{Event, Parser};
-
-// ─── Inner state ──────────────────────────────────────────────────────────────
 
 pub(crate) struct YamlIterInner {
     pub(crate) parser: Parser<CharsSource>,
@@ -20,8 +18,6 @@ pub(crate) struct YamlIterInner {
     /// IO error slot shared with `PyIoCharsIter`.  `None` for string sources.
     pub(crate) error_slot: Option<Arc<Mutex<Option<PyErr>>>>,
 }
-
-// ─── PyYamlIter ───────────────────────────────────────────────────────────────
 
 #[pyclass(name = "YamlIter")]
 pub(crate) struct PyYamlIter {
@@ -99,14 +95,7 @@ impl PyYamlIter {
             inner.builder.docs_meta.remove(0)
         };
 
-        let meta = DocMeta {
-            explicit_start: m.explicit_start,
-            explicit_end: m.explicit_end,
-            yaml_version: m.yaml_version,
-            tag_directives: m.tag_directives,
-        };
-
-        let py_doc = node_to_doc(py, doc_node, meta, schema.as_ref())?;
+        let py_doc = node_to_doc(py, doc_node, m, schema.as_ref())?;
         Ok(Some(py_doc))
     }
 }

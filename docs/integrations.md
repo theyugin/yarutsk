@@ -20,7 +20,7 @@ endpoints:
 
 ## Tag-based registration
 
-The non-obvious bit per library: **pydantic accepts `YamlMapping` directly** (it's a `dict` subclass), but **msgspec and cattrs both need `.to_python()`** to flatten the yarutsk wrappers into a plain `dict`.
+`YamlMapping`/`YamlSequence` are not `dict`/`list` subclasses, so all three libraries need `.to_python()` to flatten the yarutsk wrappers into plain `dict` / `list` before validation.
 
 ### pydantic v2
 
@@ -33,7 +33,7 @@ class Endpoint(BaseModel):
     port: int
 
 schema = yarutsk.Schema()
-schema.add_loader("!endpoint", Endpoint.model_validate)
+schema.add_loader("!endpoint", lambda d: Endpoint.model_validate(d.to_python()))
 schema.add_dumper(Endpoint, lambda e: ("!endpoint", e.model_dump()))
 ```
 
@@ -77,14 +77,14 @@ If the entire document is the typed object, validate the loaded yarutsk node dir
 
 ```python
 # pydantic — for mapping-rooted documents
-config = Config.model_validate(yarutsk.loads(text))
+config = Config.model_validate(yarutsk.loads(text).to_python())
 print(yarutsk.dumps(config.model_dump()))
 
 # pydantic — for list-rooted documents, BaseModel doesn't apply.
 # Use TypeAdapter:
 from pydantic import TypeAdapter
 adapter = TypeAdapter(list[Endpoint])
-endpoints = adapter.validate_python(yarutsk.loads(text))
+endpoints = adapter.validate_python(yarutsk.loads(text).to_python())
 print(yarutsk.dumps(adapter.dump_python(endpoints)))
 ```
 

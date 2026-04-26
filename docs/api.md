@@ -212,7 +212,10 @@ doc.comment_inline                       # 'answer'
 
 ## YamlMapping
 
-`YamlMapping` is a subclass of `dict` with insertion-ordered keys. Constructor:
+`YamlMapping` is a standalone class implementing the `dict` protocol with
+insertion-ordered keys. **`isinstance(m, dict)` is False** — call
+`m.to_python()` to get a plain `dict` (recursively) when interop with
+`dict`-typed APIs is needed (e.g. `json.dumps(m.to_python())`).
 
 ```python
 # YamlMapping(mapping=None, *, style="block", tag=None)
@@ -224,7 +227,7 @@ The full method surface, grouped by concern:
 
 ### Read / write
 
-Every standard `dict` method works unchanged: `doc[k]`, `doc[k] = v`, `del doc[k]`, `in`, `len`, `get`, `pop`, `setdefault`, `update`, `keys` / `values` / `items`, iteration, equality, `json.dumps(doc)`. Setting an existing key preserves its position.
+The dict protocol works as expected: `doc[k]`, `doc[k] = v`, `del doc[k]`, `in`, `len`, `get`, `pop`, `popitem`, `setdefault`, `update`, `clear`, `keys` / `values` / `items` (return `list`s), iteration, equality, `__or__` / `__ior__` (PEP 584), `copy`, pickle round-trip via `__reduce__`. Setting an existing key preserves its position.
 
 Also:
 
@@ -302,7 +305,11 @@ See [Normalizing formatting](#normalizing-formatting).
 
 ## YamlSequence
 
-`YamlSequence` is a subclass of `list`. Everything on `YamlMapping` applies, keyed by **integer index** instead of string key. Constructor:
+`YamlSequence` is a standalone class implementing the `list` protocol.
+**`isinstance(s, list)` is False** — call `s.to_python()` for a plain `list`
+(recursively) when interop with `list`-typed APIs is needed. Everything on
+`YamlMapping` applies, keyed by **integer index** instead of string key.
+Constructor:
 
 ```python
 # YamlSequence(iterable=None, *, style="block", tag=None)
@@ -310,7 +317,7 @@ s = yarutsk.YamlSequence([1, 2, 3], style="flow")
 yarutsk.dumps(s)                       # '[1, 2, 3]\n'
 ```
 
-All standard `list` operations work: indexing (negative supported), slicing, `append`, `insert`, `pop`, `remove`, `extend`, `index`, `count`, `reverse`, `in`, `len`, iteration, equality, `json.dumps`.
+The list protocol works as expected: indexing (negative supported), slicing, `append`, `insert`, `pop`, `remove`, `extend`, `index`, `count`, `reverse`, `sort`, `clear`, `copy`, `in`, `len`, iteration, equality and ordering comparisons, `+` / `+=` / `*` / `*=`, pickle round-trip.
 
 Per-item metadata is reached the same way as mappings — via `seq.node(i)`. `IndexError` on out-of-range indices.
 
