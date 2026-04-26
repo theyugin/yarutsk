@@ -3,13 +3,11 @@
 use std::sync::Arc;
 
 use indexmap::IndexMap;
+use pyo3::{Py, PyAny, Python};
 
 /// Key into [`YamlMapping::entries`]. Scalar keys hold their string form;
 /// complex (non-scalar) keys carry only a positional id — the actual key
-/// node lives on [`YamlEntry::key_node`]. Splitting the variants makes
-/// "is this a real key?" a type question instead of a string-prefix check
-/// (the old design synthesised `"\x00<idx>"` placeholders that could collide
-/// with legitimate scalar keys).
+/// node lives on [`YamlEntry::key_node`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MapKey {
     Scalar(String),
@@ -82,7 +80,7 @@ pub struct NodeMeta {
     pub anchor: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum YamlNode {
     Mapping(YamlMapping),
     Sequence(YamlSequence),
@@ -93,12 +91,51 @@ pub enum YamlNode {
     /// On the Python side this also drives identity sharing: `*foo` and the
     /// `&foo`-anchored container surface as the same Python object, so
     /// mutations through one alias are visible through the others (the same
-    /// model as Python dicts/lists shared by reference).
+    /// model as Python dicts/lists shared by reference). When the alias has
+    /// been materialised (load path or `set_alias` on a known anchor) the
+    /// shared Python object is cached in `materialised` so repeat
+    /// `__getitem__` calls return the same Py without re-conversion.
     Alias {
         name: String,
         resolved: Arc<YamlNode>,
+        materialised: Option<Py<PyAny>>,
         meta: NodeMeta,
     },
+    /// Opaque Python object: a value the user assigned that has no native
+    /// `YamlNode` representation (no schema dumper at assignment time, no
+    /// recognised primitive/container shape). The emitter calls
+    /// `py_to_node` again at dump time *with* the schema, so the
+    /// "set first, register schema later, then dump" workflow keeps working
+    /// without storing the value in a parallel parent-dict alongside `inner`.
+    Opaque(Py<PyAny>),
+}
+
+impl Clone for YamlNode {
+    fn clone(&self) -> Self {
+        match self {
+            YamlNode::Mapping(m) => YamlNode::Mapping(m.clone()),
+            YamlNode::Sequence(s) => YamlNode::Sequence(s.clone()),
+            YamlNode::Scalar(s) => YamlNode::Scalar(s.clone()),
+            YamlNode::Null => YamlNode::Null,
+            YamlNode::Alias {
+                name,
+                resolved,
+                materialised,
+                meta,
+            } => YamlNode::Alias {
+                name: name.clone(),
+                resolved: resolved.clone(),
+                materialised: materialised
+                    .as_ref()
+                    .map(|p| Python::attach(|py| p.clone_ref(py))),
+                meta: meta.clone(),
+            },
+            // `Py::clone_ref` requires the GIL — acquire it explicitly so the
+            // public `Clone` impl works in any context the rest of the model is
+            // cloned from (e.g. anchor table snapshots, alias resolved storage).
+            YamlNode::Opaque(p) => YamlNode::Opaque(Python::attach(|py| p.clone_ref(py))),
+        }
+    }
 }
 
 /// Generate paired getter/setter on `YamlNode` that delegate to `meta.<field>` on
@@ -115,7 +152,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field.as_deref(),
                 YamlNode::Scalar(s) => s.meta.$field.as_deref(),
                 YamlNode::Alias { meta, .. } => meta.$field.as_deref(),
-                YamlNode::Null => None,
+                YamlNode::Null | YamlNode::Opaque(_) => None,
             }
         }
 
@@ -125,7 +162,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null => {}
+                YamlNode::Null | YamlNode::Opaque(_) => {}
             }
         }
     };
@@ -139,7 +176,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field,
                 YamlNode::Scalar(s) => s.meta.$field,
                 YamlNode::Alias { meta, .. } => meta.$field,
-                YamlNode::Null => <$ty>::default(),
+                YamlNode::Null | YamlNode::Opaque(_) => <$ty>::default(),
             }
         }
 
@@ -149,7 +186,7 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null => {}
+                YamlNode::Null | YamlNode::Opaque(_) => {}
             }
         }
     };
@@ -223,9 +260,7 @@ pub enum Chomping {
 /// or YAML 1.1 booleans `yes`/`no`/`on`/`off`).
 ///
 /// Mutating a scalar's value drops `Preserved` → `Canonical` by construction:
-/// to update the value you call [`YamlScalar::set_value`] which assigns a
-/// fresh `Canonical`. The compiler enforces what convention used to enforce
-/// (the old `Option<String> original` field had to be cleared by hand).
+/// [`YamlScalar::set_value`] always assigns a fresh `Canonical`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarRepr {
     /// Emit by re-formatting `value` canonically.
@@ -462,8 +497,6 @@ impl Default for YamlSequence {
     }
 }
 
-// ─── Format options ───────────────────────────────────────────────────────────
-
 /// Controls which cosmetic fields are reset by `format_with()`.
 #[derive(Clone, Copy)]
 pub struct FormatOptions {
@@ -554,7 +587,7 @@ impl YamlNode {
             YamlNode::Sequence(s) => s.format_with(opts),
             YamlNode::Scalar(s) => s.format_with(opts),
             YamlNode::Alias { meta, .. } => meta_format_with(meta, opts),
-            YamlNode::Null => {}
+            YamlNode::Null | YamlNode::Opaque(_) => {}
         }
     }
 }
@@ -562,8 +595,6 @@ impl YamlNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Null ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn from_str_null_variants() {
@@ -574,8 +605,6 @@ mod tests {
             );
         }
     }
-
-    // ── Bool ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn from_str_bool_true_variants() {
@@ -600,8 +629,6 @@ mod tests {
             );
         }
     }
-
-    // ── Integer ────────────────────────────────────────────────────────────────
 
     #[test]
     fn from_str_integer_decimal() {
@@ -664,8 +691,6 @@ mod tests {
             ScalarValue::Str(_)
         ));
     }
-
-    // ── Float ──────────────────────────────────────────────────────────────────
 
     #[test]
     fn from_str_float_decimal() {
@@ -753,8 +778,6 @@ mod tests {
         assert!(matches!(ScalarValue::from_str("1"), ScalarValue::Int(1)));
     }
 
-    // ── String fallback ────────────────────────────────────────────────────────
-
     #[test]
     fn from_str_string_fallback() {
         for s in &["hello", "world", "YAML", "not-a-bool", "1.2.3", "v1.0"] {
@@ -764,8 +787,6 @@ mod tests {
             );
         }
     }
-
-    // ── Edge cases ─────────────────────────────────────────────────────────────
 
     #[test]
     fn from_str_invalid_hex_prefix_only_is_str() {

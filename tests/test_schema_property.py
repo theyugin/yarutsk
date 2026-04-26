@@ -46,9 +46,11 @@ I64_INTS = st.integers(min_value=-(2**63), max_value=2**63 - 1)
 def test_custom_tag_roundtrip(x: int, y: int) -> None:
     schema = _point_schema()
     doc = yarutsk.loads("x: placeholder\n")
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc["x"] = Point(x, y)
     out = yarutsk.dumps(doc, schema=schema)
     doc2 = yarutsk.loads(out, schema=schema)
+    assert isinstance(doc2, yarutsk.YamlMapping)
     assert doc2["x"] == Point(x, y)
 
 
@@ -56,9 +58,11 @@ def test_custom_tag_roundtrip(x: int, y: int) -> None:
 @settings(max_examples=100, deadline=None)
 def test_binary_roundtrip(data: bytes) -> None:
     doc = yarutsk.loads("x: placeholder\n")
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc["x"] = data
     out = yarutsk.dumps(doc)
     doc2 = yarutsk.loads(out)
+    assert isinstance(doc2, yarutsk.YamlMapping)
     assert doc2["x"] == data
 
 
@@ -71,9 +75,11 @@ def test_binary_roundtrip(data: bytes) -> None:
 @settings(max_examples=100, deadline=None)
 def test_datetime_roundtrip(dt: datetime.datetime) -> None:
     doc = yarutsk.loads("x: placeholder\n")
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc["x"] = dt
     out = yarutsk.dumps(doc)
     doc2 = yarutsk.loads(out)
+    assert isinstance(doc2, yarutsk.YamlMapping)
     assert doc2["x"] == dt
 
 
@@ -81,9 +87,11 @@ def test_datetime_roundtrip(dt: datetime.datetime) -> None:
 @settings(max_examples=50, deadline=None)
 def test_date_roundtrip(d: datetime.date) -> None:
     doc = yarutsk.loads("x: placeholder\n")
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc["x"] = d
     out = yarutsk.dumps(doc)
     doc2 = yarutsk.loads(out)
+    assert isinstance(doc2, yarutsk.YamlMapping)
     assert doc2["x"] == d
 
 
@@ -93,9 +101,15 @@ def test_int_raw_tag_bypass(n: int) -> None:
     """A registered !!int loader must receive the raw string, not the coerced int."""
     received: list[str] = []
     schema = yarutsk.Schema()
-    schema.add_loader("!!int", lambda raw: received.append(raw) or int(raw))
+
+    def load_int(raw: str) -> int:
+        received.append(raw)
+        return int(raw)
+
+    schema.add_loader("!!int", load_int)
 
     doc = yarutsk.loads(f"x: !!int {n}\n", schema=schema)
+    assert isinstance(doc, yarutsk.YamlMapping)
     assert doc["x"] == n
     assert received == [str(n)]
 
@@ -106,9 +120,15 @@ def test_null_raw_tag_bypass(s: str) -> None:
     """A registered !!null loader must receive the raw string verbatim."""
     received: list[str] = []
     schema = yarutsk.Schema()
-    schema.add_loader("!!null", lambda raw: received.append(raw) or None)
+
+    def load_null(raw: str) -> None:
+        received.append(raw)
+        return None
+
+    schema.add_loader("!!null", load_null)
 
     doc = yarutsk.loads(f"x: !!null {s}\n", schema=schema)
+    assert isinstance(doc, yarutsk.YamlMapping)
     assert doc["x"] is None
     assert received == [s]
 
@@ -123,12 +143,15 @@ def test_bool_raw_tag_bypass(s: str) -> None:
     """A registered !!bool loader must receive the raw string, not the coerced bool."""
     received: list[str] = []
     schema = yarutsk.Schema()
-    schema.add_loader(
-        "!!bool",
-        lambda raw: received.append(raw) or (raw.lower() in {"true", "yes", "on", "y"}),
-    )
+
+    def load_bool(raw: str) -> bool:
+        received.append(raw)
+        return raw.lower() in {"true", "yes", "on", "y"}
+
+    schema.add_loader("!!bool", load_bool)
 
     doc = yarutsk.loads(f"x: !!bool {s}\n", schema=schema)
+    assert isinstance(doc, yarutsk.YamlMapping)
     assert doc["x"] == (s.lower() in {"true", "yes", "on", "y"})
     assert received == [s]
 
@@ -139,10 +162,16 @@ def test_float_raw_tag_bypass(f: float) -> None:
     """A registered !!float loader must receive the raw string, not the coerced float."""
     received: list[str] = []
     schema = yarutsk.Schema()
-    schema.add_loader("!!float", lambda raw: received.append(raw) or float(raw))
+
+    def load_float(raw: str) -> float:
+        received.append(raw)
+        return float(raw)
+
+    schema.add_loader("!!float", load_float)
 
     text = repr(f)
     doc = yarutsk.loads(f'x: !!float "{text}"\n', schema=schema)
+    assert isinstance(doc, yarutsk.YamlMapping)
     assert doc["x"] == f
     assert received == [text]
 
@@ -159,8 +188,14 @@ def test_str_raw_tag_bypass(s: str) -> None:
     """A registered !!str loader must receive the raw string verbatim."""
     received: list[str] = []
     schema = yarutsk.Schema()
-    schema.add_loader("!!str", lambda raw: received.append(raw) or raw)
+
+    def load_str(raw: str) -> str:
+        received.append(raw)
+        return raw
+
+    schema.add_loader("!!str", load_str)
 
     doc = yarutsk.loads(f'x: !!str "{s}"\n', schema=schema)
+    assert isinstance(doc, yarutsk.YamlMapping)
     assert doc["x"] == s
     assert received == [s]

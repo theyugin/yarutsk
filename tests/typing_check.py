@@ -10,13 +10,11 @@ mypy will error if the inferred types contradict the declared ones.
 from __future__ import annotations
 
 import io
-from collections.abc import Callable, KeysView
+from collections.abc import Callable
 from typing import Any
 
 import yarutsk
 from yarutsk import Schema, YamlIter, YamlMapping, YamlScalar, YamlSequence
-
-# ── Schema ────────────────────────────────────────────────────────────────────
 
 
 def check_schema_construction() -> None:
@@ -34,9 +32,6 @@ def check_schema_add_dumper() -> None:
     schema = yarutsk.Schema()
     schema.add_dumper(int, lambda n: ("!!int", str(n)))
     schema.add_dumper(list, lambda lst: ("!!seq", lst))
-
-
-# ── load / loads ──────────────────────────────────────────────────────────────
 
 
 def check_load_from_stream() -> None:
@@ -81,9 +76,6 @@ def check_load_all_with_schema() -> None:
     _ = docs, docs2
 
 
-# ── dump / dumps ──────────────────────────────────────────────────────────────
-
-
 def check_dump_to_stream(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
     yarutsk.dump(doc, io.StringIO())
 
@@ -122,18 +114,12 @@ def check_dump_all_with_schema(
     _ = text
 
 
-# ── None-guard required before using the document ────────────────────────────
-
-
 def check_none_narrowing() -> str:
     doc = yarutsk.loads("key: val")
     if doc is None:
         return ""
     # After the None check mypy knows doc: YamlMapping | YamlSequence | YamlScalar
     return yarutsk.dumps(doc)
-
-
-# ── YamlScalar ────────────────────────────────────────────────────────────────
 
 
 def check_scalar_value(s: YamlScalar) -> None:
@@ -180,21 +166,18 @@ def check_scalar_tag_directives(s: YamlScalar) -> None:
     _ = dirs
 
 
-# ── YamlMapping interface ─────────────────────────────────────────────────────
-
-
 def check_mapping_access(m: YamlMapping) -> None:
     val = m["key"]  # YamlMapping | YamlSequence | int | float | bool | str | None
     m["key"] = "new"
     m["key"] = 42
     contained: bool = "key" in m
     length: int = len(m)
-    keys: KeysView[str] = m.keys()
+    keys: list[str] = m.keys()
     _ = val, contained, length, keys
 
 
 def check_mapping_to_python(m: YamlMapping) -> None:
-    d: Any = m.to_python()
+    d: dict[str, Any] = m.to_python()
     _ = d
 
 
@@ -268,9 +251,6 @@ def check_mapping_scalar_style(m: YamlMapping) -> None:
     m.node("key").style = "plain"
 
 
-# ── YamlSequence interface ────────────────────────────────────────────────────
-
-
 def check_sequence_access(s: YamlSequence) -> None:
     item = s[0]
     s[0] = "replaced"
@@ -280,7 +260,7 @@ def check_sequence_access(s: YamlSequence) -> None:
 
 
 def check_sequence_to_python(s: YamlSequence) -> None:
-    d: Any = s.to_python()
+    d: list[Any] = s.to_python()
     _ = d
 
 
@@ -349,17 +329,11 @@ def check_sequence_tag_directives(s: YamlSequence) -> None:
     _ = dirs
 
 
-# ── New public type aliases ───────────────────────────────────────────────────
-
-
 def check_public_type_aliases() -> None:
     style: yarutsk.ScalarStyle = "double"
     cstyle: yarutsk.ContainerStyle = "flow"
     _node: yarutsk.YamlNode
     _ = style, cstyle
-
-
-# ── YamlMapping constructor ──────────────────────────────────────────────────
 
 
 def check_mapping_constructor() -> None:
@@ -368,24 +342,15 @@ def check_mapping_constructor() -> None:
     _ = m, m2
 
 
-# ── YamlMapping.nodes ────────────────────────────────────────────────────────
-
-
 def check_mapping_nodes(m: YamlMapping) -> None:
     pairs: list[tuple[str, YamlMapping | YamlSequence | YamlScalar]] = m.nodes()
     _ = pairs
-
-
-# ── YamlSequence constructor ─────────────────────────────────────────────────
 
 
 def check_sequence_constructor() -> None:
     s: YamlSequence = YamlSequence([1, 2, {"x": 3}])
     s2: YamlSequence = YamlSequence(["a", "b"])
     _ = s, s2
-
-
-# ── __copy__ / __deepcopy__ ───────────────────────────────────────────────────
 
 
 def check_mapping_copy(m: YamlMapping) -> None:
@@ -408,9 +373,6 @@ def check_sequence_copy(s: YamlSequence) -> None:
     _ = shallow, deep, copy_shallow, copy_deep
 
 
-# ── iter_load_all / iter_loads_all ────────────────────────────────────────────
-
-
 def check_iter_loads_all() -> None:
     it: YamlIter = yarutsk.iter_loads_all("a: 1\n---\nb: 2\n")
     _ = it
@@ -428,7 +390,30 @@ def check_yaml_iter_protocol(it: YamlIter) -> None:
     _ = same, doc
 
 
-# ── Constructor with schema ──────────────────────────────────────────────────
+def check_yaml_iter_is_iterator() -> None:
+    import itertools
+    from collections.abc import Iterator
+
+    it = yarutsk.iter_loads_all("a: 1\n---\nb: 2\n")
+    as_iter: Iterator[YamlMapping | YamlSequence | YamlScalar] = it
+    head: list[YamlMapping | YamlSequence | YamlScalar] = list(itertools.islice(as_iter, 1))
+    _ = head
+
+
+def check_sequence_slice(s: YamlSequence) -> None:
+    item: Any = s[0]
+    sub: list[Any] = s[1:3]
+    _ = item, sub
+
+
+def check_mapping_get_pop_default_overloads(m: YamlMapping) -> None:
+    a: Any = m.get("k")
+    b: Any = m.get("k", "fallback")
+    p: Any = m.pop("k")
+    p2: Any = m.pop("k", 0)
+    sd: Any = m.setdefault("k")
+    sd2: Any = m.setdefault("k", "init")
+    _ = a, b, p, p2, sd, sd2
 
 
 def check_mapping_constructor_with_schema() -> None:
@@ -441,9 +426,6 @@ def check_sequence_constructor_with_schema() -> None:
     schema = yarutsk.Schema()
     s: YamlSequence = YamlSequence([1, 2], schema=schema)
     _ = s
-
-
-# ── dumps / dump accept plain Python types ───────────────────────────────────
 
 
 def check_dumps_plain_dict() -> None:
@@ -464,13 +446,3 @@ def check_dumps_plain_scalar() -> None:
 def check_dump_all_mixed() -> None:
     text: str = yarutsk.dumps_all([{"a": 1}, [2, 3]])
     _ = text
-
-
-# ── Type errors that mypy should catch (kept as comments to document intent) ──
-#
-#   yarutsk.dumps(yarutsk.loads("x: 1"))   # loads returns YamlMapping | YamlSequence | None
-#                                           # dumps requires YamlMapping | YamlSequence
-#
-#   keys: list[int] = list(m.keys())        # keys() returns KeysView[str], not list[int]
-#
-#   text: int = yarutsk.dumps(m)           # dumps returns str

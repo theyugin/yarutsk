@@ -12,8 +12,6 @@ use super::types::{
     YamlMapping, YamlNode, YamlScalar, YamlSequence,
 };
 
-// ─── LastCharTracker ─────────────────────────────────────────────────────────
-
 /// A `fmt::Write` wrapper that remembers the last character written.
 /// Used to check whether a trailing `\n` needs to be appended.
 struct LastCharTracker<W> {
@@ -39,8 +37,6 @@ impl<W: FmtWrite> FmtWrite for LastCharTracker<W> {
         self.inner.write_str(s)
     }
 }
-
-// ─── Emitter ─────────────────────────────────────────────────────────────────
 
 /// Holds the write sink + per-level indentation step. Recursion-frame state
 /// (`indent`, `flow_context`) stays as method parameters because it changes per
@@ -126,6 +122,16 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             YamlNode::Alias { name, .. } => {
                 self.out.write_char('*')?;
                 self.out.write_str(name)?;
+            }
+            // Opaque values must be resolved by `extract_yaml_node` (which
+            // calls `py_to_node` with the active schema) before reaching the
+            // emitter. Hitting this arm means a Python-only object made it
+            // here unmaterialised — a programmer error in the bridge layer.
+            YamlNode::Opaque(_) => {
+                unreachable!(
+                    "YamlNode::Opaque survived to the emitter; \
+                     extract_yaml_node must materialise it via the schema dumper first"
+                );
             }
         }
         Ok(())
@@ -850,11 +856,13 @@ fn emit_scalar_value_with_style(
 
 /// Emit a key string with its original quoting style.
 ///
-/// For `Plain` style, numeric-looking strings are left unquoted since `1:` is
-/// valid YAML and our library always stores keys as strings anyway.
+/// `Plain`-style keys go through [`needs_quoting`] — same rules as values.
+/// yarutsk always stores keys as strings, but plain `true:` / `42:` / `null:`
+/// would re-parse as a non-string scalar in another YAML library, so we
+/// quote anything whose plain form would coerce to bool/int/float/null.
 ///
-/// `flow_context` is `true` when emitting a key inside `{ … }` — flow
-/// indicators terminate a plain key there, so they force quoting.
+/// `flow_context` is `true` for keys inside `{ … }` — flow indicators
+/// terminate a plain key there, so they force quoting.
 ///
 /// Any style containing a character that can't survive plain/single-quoted
 /// emission (C0 controls other than `\t`, plus DEL) is upgraded to double-
@@ -867,96 +875,13 @@ fn emit_key(key: &str, style: ScalarStyle, flow_context: bool) -> String {
         ScalarStyle::SingleQuoted => single_quote(key),
         ScalarStyle::DoubleQuoted => double_quote(key),
         _ => {
-            if needs_quoting_for_key(key, flow_context) {
+            if needs_quoting(key, flow_context) {
                 single_quote(key)
             } else {
                 key.to_owned()
             }
         }
     }
-}
-
-/// Like `needs_quoting` but for mapping keys.
-///
-/// yarutsk stores all mapping keys as strings regardless of their YAML
-/// type, so its own round-trip is safe either way — but another YAML
-/// parser (ruamel, pyyaml) would load `true:`, `42:`, or `null:` as a
-/// boolean / int / None *key*, yielding a different Python dict. To keep
-/// the output interop-safe we quote keys whose plain form would re-parse
-/// as a non-string scalar (same rule as `needs_quoting`).
-///
-/// `flow_context` is `true` for keys inside `{ … }` — flow indicators
-/// terminate a plain key there, so they force quoting.
-fn needs_quoting_for_key(s: &str, flow_context: bool) -> bool {
-    if s.is_empty() {
-        return true;
-    }
-    // Plain keys have leading/trailing whitespace stripped on re-parse.
-    if s.starts_with([' ', '\t']) || s.ends_with([' ', '\t']) {
-        return true;
-    }
-    // Document-start/end markers would collide with YAML directives on re-parse.
-    if s == "---" || s == "..." {
-        return true;
-    }
-    // Keyword / numeric lookalikes — quoted so other YAML parsers read the
-    // key as a string rather than resolving it to bool/int/float/null.
-    if would_parse_as_non_string(s) {
-        return true;
-    }
-    // In a flow mapping, an embedded flow indicator ends the key.
-    if flow_context
-        && s.bytes()
-            .any(|b| matches!(b, b',' | b'[' | b']' | b'{' | b'}'))
-    {
-        return true;
-    }
-    // Check for characters that are structurally significant in YAML.
-    // Per YAML 1.2 the c-indicators that can never start a plain scalar are:
-    //   # & * ! | > % @ ` { } [ ] , ' "
-    // The conditional indicators `-` `?` `:` are safe as the first character
-    // when followed by a non-whitespace byte (in flow context, also not a
-    // flow indicator) — `: ` / `": "` / trailing `:` are caught below.
-    let b = s.as_bytes();
-    let first = b[0] as char;
-    if matches!(
-        first,
-        '#' | '&'
-            | '*'
-            | '|'
-            | '>'
-            | '!'
-            | '%'
-            | '@'
-            | '`'
-            | '{'
-            | '}'
-            | '['
-            | ']'
-            | ','
-            | '\''
-            | '"'
-    ) {
-        return true;
-    }
-    if matches!(first, '-' | '?') {
-        match b.get(1) {
-            None | Some(b' ' | b'\t') => return true,
-            _ => {}
-        }
-    }
-    if s.contains(": ") || s.starts_with(": ") || s.ends_with(':') {
-        return true;
-    }
-    if s.contains(" #") {
-        return true;
-    }
-    // C0 controls (other than `\t`) and DEL can't appear raw in plain form;
-    // force quoting so emission can route them through a double-quoted escape.
-    if needs_double_quote(s) {
-        return true;
-    }
-    false
 }
 
 /// Emit a string value honoring the requested style.
@@ -1181,8 +1106,6 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
     false
 }
 
-// ─── Indentation / tag / scalar-style helpers ────────────────────────────────
-
 // 128 spaces covers any realistic YAML indentation depth.
 // For pathological depths beyond 128, we fall back to an owned allocation.
 const SPACES: &str = "                                                                                                                                ";
@@ -1271,8 +1194,6 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
     true
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
-
 /// Emit a full document list to any `fmt::Write` sink.
 /// `explicit_starts[i]` and `explicit_ends[i]` control whether `---` / `...` are emitted.
 /// `yaml_versions[i]` emits a `%YAML` directive before `---` when `Some`.
@@ -1348,8 +1269,6 @@ pub fn emit_docs(docs: &[YamlNode], meta: &[DocMetadata], indent_step: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn plain_str(s: &str) -> YamlNode {
         YamlNode::Scalar(YamlScalar {
@@ -1437,8 +1356,6 @@ mod tests {
         }
         s
     }
-
-    // ── emit_scalar: value types ──────────────────────────────────────────────
 
     #[test]
     fn emit_null_value() {
@@ -1531,8 +1448,6 @@ mod tests {
         assert_eq!(scalar_emit(&s), ".nan");
     }
 
-    // ── emit_scalar: styles ───────────────────────────────────────────────────
-
     #[test]
     fn emit_single_quoted_str() {
         let s = make_scalar_node(
@@ -1623,8 +1538,6 @@ mod tests {
         assert!(!out.is_empty(), "empty string must not emit empty");
     }
 
-    // ── emit_scalar: original preservation ───────────────────────────────────
-
     #[test]
     fn emit_original_preserved_over_value() {
         // When original is set, it should be emitted verbatim
@@ -1656,8 +1569,6 @@ mod tests {
         assert_eq!(scalar_emit(&s), "~");
     }
 
-    // ── emit_scalar: tags ────────────────────────────────────────────────────
-
     #[test]
     fn emit_tag_prefix_before_value() {
         let s = make_scalar_node(
@@ -1688,8 +1599,6 @@ mod tests {
         );
     }
 
-    // ── emit_scalar: anchors ─────────────────────────────────────────────────
-
     #[test]
     fn emit_anchor_prefix_before_value() {
         let s = make_scalar_node(
@@ -1719,8 +1628,6 @@ mod tests {
         );
     }
 
-    // ── emit_node: Null / Alias ───────────────────────────────────────────────
-
     #[test]
     fn emit_null_node() {
         assert_eq!(node_emit(&YamlNode::Null), "null");
@@ -1731,12 +1638,11 @@ mod tests {
         let node = YamlNode::Alias {
             name: "myref".to_owned(),
             resolved: std::sync::Arc::new(YamlNode::Null),
+            materialised: None,
             meta: NodeMeta::default(),
         };
         assert_eq!(node_emit(&node), "*myref");
     }
-
-    // ── emit_docs: single doc ─────────────────────────────────────────────────
 
     fn meta(explicit_start: bool, explicit_end: bool) -> DocMetadata {
         DocMetadata {
@@ -1775,8 +1681,6 @@ mod tests {
         assert_eq!(out, "---\na: 1\n...\n");
     }
 
-    // ── emit_docs: multiple docs ──────────────────────────────────────────────
-
     #[test]
     fn emit_two_docs_adds_start_markers() {
         let d1 = plain_str("hello");
@@ -1797,8 +1701,6 @@ mod tests {
         let out = emit_docs(&[], &[], 2);
         assert_eq!(out, "");
     }
-
-    // ── emit mapping ──────────────────────────────────────────────────────────
 
     #[test]
     fn emit_mapping_preserves_order() {
@@ -1887,8 +1789,6 @@ mod tests {
         assert_eq!(out, "key: []\n");
     }
 
-    // ── emit sequence ─────────────────────────────────────────────────────────
-
     #[test]
     fn emit_sequence_items() {
         let s = make_seq(&[plain_int(1), plain_int(2), plain_int(3)]);
@@ -1945,8 +1845,6 @@ mod tests {
         let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Sequence(s), 0, false);
         assert_eq!(out, "- 1  # one\n");
     }
-
-    // ── block scalars ────────────────────────────────────────────────────────
 
     #[test]
     fn emit_literal_block_scalar() {
@@ -2091,8 +1989,6 @@ mod tests {
         );
     }
 
-    // ── format_tag helper ────────────────────────────────────────────────────
-
     #[test]
     fn format_tag_yaml_org_maps_to_bang_bang() {
         assert_eq!(format_tag("tag:yaml.org,2002:str").as_ref(), "!!str");
@@ -2125,8 +2021,6 @@ mod tests {
         assert_eq!(format_tag("!weird,tag").as_ref(), "!weird%2Ctag");
         assert_eq!(format_tag("!!has[bracket").as_ref(), "!!has%5Bbracket");
     }
-
-    // ── needs_quoting ────────────────────────────────────────────────────────
 
     #[test]
     fn needs_quoting_empty_str() {
@@ -2186,8 +2080,8 @@ mod tests {
         // collide with YAML directive-end / document-end markers on re-parse.
         assert!(needs_quoting("---", false));
         assert!(needs_quoting("...", false));
-        assert!(needs_quoting_for_key("---", false));
-        assert!(needs_quoting_for_key("...", false));
+        assert!(needs_quoting("---", false));
+        assert!(needs_quoting("...", false));
     }
 
     #[test]
@@ -2244,87 +2138,85 @@ mod tests {
         }
     }
 
-    // ── needs_quoting_for_key ────────────────────────────────────────────────
-
     #[test]
     fn needs_quoting_for_key_empty() {
-        assert!(needs_quoting_for_key("", false));
+        assert!(needs_quoting("", false));
     }
 
     #[test]
     fn needs_quoting_for_key_hash_leading() {
-        assert!(needs_quoting_for_key("#comment", false));
+        assert!(needs_quoting("#comment", false));
     }
 
     #[test]
     fn needs_quoting_for_key_star_leading() {
-        assert!(needs_quoting_for_key("*alias", false));
+        assert!(needs_quoting("*alias", false));
     }
 
     #[test]
     fn needs_quoting_for_key_question_leading() {
         // `?` followed by whitespace or alone starts a complex-key indicator;
         // `?` followed by a non-whitespace byte is a safe plain-scalar start.
-        assert!(needs_quoting_for_key("?", false));
-        assert!(needs_quoting_for_key("? rest", false));
-        assert!(!needs_quoting_for_key("?complex", false));
+        assert!(needs_quoting("?", false));
+        assert!(needs_quoting("? rest", false));
+        assert!(!needs_quoting("?complex", false));
     }
 
     #[test]
     fn needs_quoting_for_key_dash_leading() {
         // Same rule as `?`: only `- ` is the sequence indicator.
-        assert!(needs_quoting_for_key("-", false));
-        assert!(needs_quoting_for_key("- rest", false));
-        assert!(!needs_quoting_for_key("-foo", false));
+        assert!(needs_quoting("-", false));
+        assert!(needs_quoting("- rest", false));
+        assert!(!needs_quoting("-foo", false));
     }
 
     #[test]
     fn needs_quoting_for_key_non_indicator_leading_safe() {
         // `<` and `=` are not YAML 1.2 indicators and must not force quoting.
-        assert!(!needs_quoting_for_key("<hostname>", false));
-        assert!(!needs_quoting_for_key("=value", false));
+        assert!(!needs_quoting("<hostname>", false));
+        assert!(!needs_quoting("=value", false));
     }
 
     #[test]
     fn needs_quoting_for_key_quote_leading() {
         // `'` and `"` start quoted-scalar openers — plain emission would
         // be misread as a broken quoted scalar.
-        assert!(needs_quoting_for_key("'apos", false));
-        assert!(needs_quoting_for_key("\"quote", false));
+        assert!(needs_quoting("'apos", false));
+        assert!(needs_quoting("\"quote", false));
     }
 
     #[test]
     fn needs_quoting_for_key_bang_leading() {
-        assert!(needs_quoting_for_key("!tag", false));
+        assert!(needs_quoting("!tag", false));
     }
 
     #[test]
     fn needs_quoting_for_key_ends_with_colon() {
-        assert!(needs_quoting_for_key("key:", false));
+        assert!(needs_quoting("key:", false));
     }
 
     #[test]
     fn needs_quoting_for_key_colon_space_inside() {
-        assert!(needs_quoting_for_key("key: value", false));
+        assert!(needs_quoting("key: value", false));
     }
 
     #[test]
     fn needs_quoting_for_key_space_hash_inside() {
-        assert!(needs_quoting_for_key("key #comment", false));
+        assert!(needs_quoting("key #comment", false));
     }
 
     #[test]
     fn needs_quoting_for_key_newline() {
-        assert!(needs_quoting_for_key("a\nb", false));
+        assert!(needs_quoting("a\nb", false));
     }
 
     #[test]
     fn needs_quoting_for_key_whitespace_boundary() {
-        assert!(needs_quoting_for_key(" leading", false));
-        assert!(needs_quoting_for_key("trailing ", false));
-        assert!(needs_quoting_for_key("\t", false));
-        assert!(!needs_quoting_for_key("a b", false));
-        assert!(!needs_quoting_for_key("a\tb", false));
+        assert!(needs_quoting(" leading", false));
+        assert!(needs_quoting("trailing ", false));
+        assert!(needs_quoting("\t", false));
+        assert!(!needs_quoting("a b", false));
+        assert!(!needs_quoting("a\tb", false));
     }
 
     #[test]
@@ -2332,29 +2224,27 @@ mod tests {
         // yarutsk stores all keys as strings, but other YAML parsers
         // resolve keyword/numeric-looking keys to bool/int/float/null.
         // Quote them for interop safety.
-        assert!(needs_quoting_for_key("42", false));
-        assert!(needs_quoting_for_key("3.14", false));
-        assert!(needs_quoting_for_key("0xFF", false));
-        assert!(needs_quoting_for_key("0o77", false));
-        assert!(needs_quoting_for_key("-1", false));
-        assert!(needs_quoting_for_key("1e5", false));
-        assert!(needs_quoting_for_key("true", false));
-        assert!(needs_quoting_for_key("False", false));
-        assert!(needs_quoting_for_key("yes", false));
-        assert!(needs_quoting_for_key("null", false));
-        assert!(needs_quoting_for_key("~", false));
-        assert!(needs_quoting_for_key(".inf", false));
-        assert!(needs_quoting_for_key(".nan", false));
+        assert!(needs_quoting("42", false));
+        assert!(needs_quoting("3.14", false));
+        assert!(needs_quoting("0xFF", false));
+        assert!(needs_quoting("0o77", false));
+        assert!(needs_quoting("-1", false));
+        assert!(needs_quoting("1e5", false));
+        assert!(needs_quoting("true", false));
+        assert!(needs_quoting("False", false));
+        assert!(needs_quoting("yes", false));
+        assert!(needs_quoting("null", false));
+        assert!(needs_quoting("~", false));
+        assert!(needs_quoting(".inf", false));
+        assert!(needs_quoting(".nan", false));
     }
 
     #[test]
     fn needs_quoting_for_key_plain_safe() {
-        assert!(!needs_quoting_for_key("simple", false));
-        assert!(!needs_quoting_for_key("snake_case", false));
-        assert!(!needs_quoting_for_key("kebab-case", false));
+        assert!(!needs_quoting("simple", false));
+        assert!(!needs_quoting("snake_case", false));
+        assert!(!needs_quoting("kebab-case", false));
     }
-
-    // ── emit_key ─────────────────────────────────────────────────────────────
 
     fn do_emit_key(key: &str, style: ScalarStyle) -> String {
         emit_key(key, style, false)
@@ -2418,17 +2308,12 @@ mod tests {
     fn needs_quoting_for_key_flow_context_indicators() {
         for s in &["a,b", "a, b", "a]b", "a}b", "x,y,z"] {
             assert!(
-                needs_quoting_for_key(s, true),
+                needs_quoting(s, true),
                 "flow-context should need quoting: {s}"
             );
-            assert!(
-                !needs_quoting_for_key(s, false),
-                "block-context should not: {s}"
-            );
+            assert!(!needs_quoting(s, false), "block-context should not: {s}");
         }
     }
-
-    // ── emit_string_with_style ───────────────────────────────────────────────
 
     #[test]
     fn emit_string_single_quoted_with_newline_uses_double_quotes() {

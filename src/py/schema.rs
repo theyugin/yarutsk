@@ -6,8 +6,6 @@ use pyo3::prelude::*;
 
 use crate::core::builder::TagPolicy;
 
-// ─── Schema ───────────────────────────────────────────────────────────────────
-
 /// Tags for which the builder skips coercion when a loader is registered.
 /// These are the tags whose `ScalarValue` is determined by the builder, so a
 /// loader for them needs the raw string rather than a pre-converted value.
@@ -64,8 +62,8 @@ impl Schema {
     /// - For scalar nodes: a Python `str` (raw YAML text) when the tag is a
     ///   standard coercion tag (``!!int``, ``!!float``, ``!!bool``, ``!!null``,
     ///   ``!!str``); otherwise whatever type inference produced.
-    /// - For mapping nodes: the ``YamlMapping`` (dict subclass).
-    /// - For sequence nodes: the ``YamlSequence`` (list subclass).
+    /// - For mapping nodes: the ``YamlMapping``.
+    /// - For sequence nodes: the ``YamlSequence``.
     ///
     /// The return value of *func* is used as the loaded Python object.
     fn add_loader(&mut self, tag: &str, func: Py<PyAny>) {

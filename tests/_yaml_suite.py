@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 import pytest
+from _pytest.mark.structures import ParameterSet
 
 import yarutsk
 
@@ -37,7 +38,7 @@ def _decode(value: str | None) -> str | None:
 _BASE64_RE = re.compile(r"^[A-Za-z0-9+/\s]*={0,2}\s*$")
 
 
-def normalize_for_json_compare(value):
+def normalize_for_json_compare(value: object) -> object:
     """Coerce yarutsk's tag-aware scalars (``bytes``, ``datetime``, ``date``) into
     a canonical form for comparison with the yaml-test-suite's ``json`` field.
 
@@ -62,12 +63,12 @@ def normalize_for_json_compare(value):
     return value
 
 
-def parse_json_docs(json_str: str) -> list:
+def parse_json_docs(json_str: str) -> list[object]:
     """Parse one or more JSON values from the json field (multi-doc YAML may
     produce multiple top-level JSON values separated by whitespace)."""
     dec = json_mod.JSONDecoder()
     pos = 0
-    results = []
+    results: list[object] = []
     s = json_str.strip()
     while pos < len(s):
         val, pos = dec.raw_decode(s, pos)
@@ -77,7 +78,7 @@ def parse_json_docs(json_str: str) -> list:
     return results
 
 
-def load_test_cases() -> list:
+def load_test_cases() -> list[ParameterSet]:
     if not SRC_DIR.exists():
         return []
 
@@ -85,7 +86,13 @@ def load_test_cases() -> list:
     for yaml_file in sorted(SRC_DIR.glob("*.yaml")):
         try:
             raw = yaml_file.read_text(encoding="utf-8")
-            tests = yarutsk.loads(raw)
+            loaded = yarutsk.loads(raw)
+            assert loaded is not None
+            # Convert to plain Python so the `isinstance(..., list/dict)` checks
+            # below work — `YamlMapping`/`YamlSequence` are no longer dict/list
+            # subclasses post-C2, but the test runner only cares about the
+            # *value* shape of each test case (`yaml`, `json`, `fail`, etc.).
+            tests = loaded.to_python() if hasattr(loaded, "to_python") else loaded
         except Exception:
             continue
 

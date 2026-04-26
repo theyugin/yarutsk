@@ -5,8 +5,6 @@ use std::sync::{Arc, Mutex};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-// ─── PyIoCharsIter ────────────────────────────────────────────────────────────
-
 /// Reads from a Python IO object in 8 KB chunks, yielding `char` values one at
 /// a time.  Supports both text (`str`) and binary (`bytes`) streams.
 ///
@@ -153,8 +151,6 @@ impl Iterator for PyIoCharsIter {
     }
 }
 
-// ─── StringCharsIter ─────────────────────────────────────────────────────────
-
 /// Owns a `String` and iterates its chars.  Used for `iter_loads_all` where
 /// the text is already in memory but we need a concrete `Iterator<Item=char>`.
 pub(crate) struct StringCharsIter {
@@ -178,8 +174,6 @@ impl Iterator for StringCharsIter {
     }
 }
 
-// ─── CharsSource ─────────────────────────────────────────────────────────────
-
 /// Type-erased character source for `Parser<CharsSource>`.
 /// The enum is `Send` because `Py<PyAny>: Send` and `Arc<Mutex<>>: Send`.
 pub(crate) enum CharsSource {
@@ -197,8 +191,6 @@ impl Iterator for CharsSource {
         }
     }
 }
-
-// ─── PyStreamWriter ──────────────────────────────────────────────────────────
 
 /// A `fmt::Write` sink that writes directly to a Python IO stream.
 ///

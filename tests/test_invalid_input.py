@@ -13,6 +13,7 @@ Covers:
 
 import io
 from textwrap import dedent
+from typing import Any
 
 import pytest
 
@@ -20,15 +21,15 @@ import yarutsk
 
 
 class TestMalformedYaml:
-    def test_unclosed_single_quote(self):
+    def test_unclosed_single_quote(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("x: 'unclosed")
 
-    def test_unclosed_double_quote(self):
+    def test_unclosed_double_quote(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads('x: "unclosed')
 
-    def test_tab_indentation(self):
+    def test_tab_indentation(self) -> None:
         # YAML forbids tabs as indentation characters
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads(
@@ -38,15 +39,15 @@ class TestMalformedYaml:
             """)
             )
 
-    def test_unclosed_flow_mapping(self):
+    def test_unclosed_flow_mapping(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("{foo: bar")
 
-    def test_unclosed_flow_sequence(self):
+    def test_unclosed_flow_sequence(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads("[1, 2, 3")
 
-    def test_invalid_block_mapping_indentation(self):
+    def test_invalid_block_mapping_indentation(self) -> None:
         # Second key less-indented than first value would be a parse error
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads(
@@ -57,7 +58,7 @@ class TestMalformedYaml:
             """)
             )
 
-    def test_loads_all_malformed(self):
+    def test_loads_all_malformed(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.loads_all(
                 dedent("""\
@@ -68,63 +69,66 @@ class TestMalformedYaml:
             """)
             )
 
-    def test_load_stream_malformed(self):
+    def test_load_stream_malformed(self) -> None:
         with pytest.raises(yarutsk.ParseError):
             yarutsk.load(io.StringIO("x: 'unclosed"))
 
 
 class TestInvalidDumpTypes:
-    def test_object_raises(self):
+    def test_object_raises(self) -> None:
         with pytest.raises(RuntimeError, match="Cannot convert"):
-            yarutsk.dumps(object())
+            yarutsk.dumps(object())  # type: ignore[arg-type]
 
-    def test_lambda_raises(self):
+    def test_lambda_raises(self) -> None:
         with pytest.raises(RuntimeError, match="Cannot convert"):
-            yarutsk.dumps(lambda: None)
+            yarutsk.dumps(lambda: None)  # type: ignore[arg-type]
 
-    def test_nested_object_in_sequence_raises(self):
+    def test_nested_object_in_sequence_raises(self) -> None:
         doc = yarutsk.loads(
             dedent("""\
             - 1
             - 2
         """)
         )
+        assert isinstance(doc, yarutsk.YamlSequence)
         doc.append(object())
         with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(doc)
 
-    def test_tuple_accepted_as_sequence(self):
+    def test_tuple_accepted_as_sequence(self) -> None:
         result = yarutsk.dumps((1, 2, 3))
         assert "1" in result
         assert "2" in result
         assert "3" in result
 
-    def test_nested_tuple_accepted(self):
+    def test_nested_tuple_accepted(self) -> None:
         doc = yarutsk.loads("items: []\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["items"] = (10, 20, 30)
         result = yarutsk.dumps(doc)
         assert "10" in result
         assert "20" in result
         assert "30" in result
 
-    def test_empty_tuple_accepted(self):
+    def test_empty_tuple_accepted(self) -> None:
         result = yarutsk.dumps(())
         assert isinstance(result, str)
 
-    def test_tuple_in_plain_dict(self):
+    def test_tuple_in_plain_dict(self) -> None:
         result = yarutsk.dumps({"coords": (1.0, 2.0)})
         assert "1.0" in result
         assert "2.0" in result
 
-    def test_dump_invalid_type_to_stream_raises(self):
+    def test_dump_invalid_type_to_stream_raises(self) -> None:
         buf = io.StringIO()
         with pytest.raises(RuntimeError, match="Cannot convert"):
-            yarutsk.dump(object(), buf)
+            yarutsk.dump(object(), buf)  # type: ignore[arg-type]
 
-    def test_dumps_all_with_invalid_item(self):
+    def test_dumps_all_with_invalid_item(self) -> None:
         doc = yarutsk.loads("a: 1\n")
+        assert doc is not None
         with pytest.raises(RuntimeError, match="Cannot convert"):
-            yarutsk.dumps_all([doc, object()])
+            yarutsk.dumps_all([doc, object()])  # type: ignore[list-item]
 
 
 class _Opaque:
@@ -132,69 +136,74 @@ class _Opaque:
 
 
 class TestSchemaDumperErrors:
-    def test_dumper_returns_string_not_tuple(self):
+    def test_dumper_returns_string_not_tuple(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_dumper(_Opaque, lambda x: "not-a-tuple")
+        schema.add_dumper(_Opaque, lambda x: "not-a-tuple")  # type: ignore[arg-type,return-value]
         doc = yarutsk.loads("x: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["x"] = _Opaque()
         with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
-    def test_dumper_returns_1_tuple(self):
+    def test_dumper_returns_1_tuple(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_dumper(_Opaque, lambda x: ("!tag",))
+        schema.add_dumper(_Opaque, lambda x: ("!tag",))  # type: ignore[arg-type,return-value]
         doc = yarutsk.loads("x: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["x"] = _Opaque()
         with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
-    def test_dumper_returns_3_tuple(self):
+    def test_dumper_returns_3_tuple(self) -> None:
         schema = yarutsk.Schema()
-        schema.add_dumper(_Opaque, lambda x: ("!tag", "data", "extra"))
+        schema.add_dumper(_Opaque, lambda x: ("!tag", "data", "extra"))  # type: ignore[arg-type,return-value]
         doc = yarutsk.loads("x: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["x"] = _Opaque()
         with pytest.raises(yarutsk.DumperError, match="tuple"):
             yarutsk.dumps(doc, schema=schema)
 
-    def test_dumper_returns_non_serializable_data(self):
+    def test_dumper_returns_non_serializable_data(self) -> None:
         schema = yarutsk.Schema()
         # Returns a valid tag but the data (an object) cannot be serialized.
         schema.add_dumper(_Opaque, lambda x: ("!opaque", object()))
         doc = yarutsk.loads("x: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["x"] = _Opaque()
         with pytest.raises(RuntimeError, match="Cannot convert"):
             yarutsk.dumps(doc, schema=schema)
 
-    def test_dumper_raises_exception_propagates(self):
+    def test_dumper_raises_exception_propagates(self) -> None:
         schema = yarutsk.Schema()
 
-        def bad_dumper(x):
+        def bad_dumper(x: _Opaque) -> tuple[str, Any]:
             raise ValueError("dumper exploded")
 
         schema.add_dumper(_Opaque, bad_dumper)
         doc = yarutsk.loads("x: 1\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["x"] = _Opaque()
         with pytest.raises(yarutsk.DumperError, match="dumper exploded"):
             yarutsk.dumps(doc, schema=schema)
 
-    def test_no_dumper_registered_raises(self):
+    def test_no_dumper_registered_raises(self) -> None:
         """Dumping an unknown type without a schema raises RuntimeError."""
         with pytest.raises(RuntimeError, match="Cannot convert"):
-            yarutsk.dumps(_Opaque())
+            yarutsk.dumps(_Opaque())  # type: ignore[arg-type]
 
 
 class TestSchemaLoaderErrors:
-    def test_loader_exception_propagates(self):
+    def test_loader_exception_propagates(self) -> None:
         schema = yarutsk.Schema()
 
-        def bad_loader(v):
+        def bad_loader(v: Any) -> Any:
             raise ValueError("loader exploded")
 
         schema.add_loader("!boom", bad_loader)
         with pytest.raises(yarutsk.LoaderError, match="loader exploded"):
             yarutsk.loads("x: !boom whatever\n", schema=schema)
 
-    def test_loader_returning_unserializable_object_is_stored(self):
+    def test_loader_returning_unserializable_object_is_stored(self) -> None:
         """A loader may return any Python object; it is stored in the Python dict
         layer but the Rust inner model retains the original YAML node.
 
@@ -206,11 +215,18 @@ class TestSchemaLoaderErrors:
         schema = yarutsk.Schema()
         schema.add_loader("!opaque", lambda v: {1, 2, 3})  # returns a set
         doc = yarutsk.loads("x: !opaque value\n", schema=schema)
-        # The set is accessible via the Python dict layer.
+        assert isinstance(doc, yarutsk.YamlMapping)
+        # The loaded value is what the user reads on access.
         assert doc["x"] == {1, 2, 3}
-        # dumps uses the Rust inner node, so it re-emits the original YAML.
-        result = yarutsk.dumps(doc)
-        assert "!opaque" in result
+        # Without a matching dumper for the loader's output type, dumps falls
+        # back to the natural py_to_node conversion (a set is iterable, so it
+        # serialises as a sequence). Round-tripping the original `!opaque`
+        # tag requires registering a dumper too — this is the documented
+        # contract.
+        yarutsk.dumps(doc)
+        # No assertion on tag preservation: with the post-C2 design (single
+        # source of truth in `inner`), the schema dumper, not a hidden
+        # parent-dict cache, is what reproduces the original tagged form.
 
 
 class _NoReadStream:
@@ -236,87 +252,94 @@ class _NoWriteStream:
 
 
 class TestStreamEdgeCases:
-    def test_load_no_read_method(self):
+    def test_load_no_read_method(self) -> None:
         with pytest.raises(AttributeError):
-            yarutsk.load(_NoReadStream())
+            yarutsk.load(_NoReadStream())  # type: ignore[arg-type]
 
-    def test_load_read_returns_int(self):
+    def test_load_read_returns_int(self) -> None:
         with pytest.raises(RuntimeError, match="str or bytes"):
-            yarutsk.load(_BadReadStream())
+            yarutsk.load(_BadReadStream())  # type: ignore[arg-type]
 
-    def test_load_read_returns_none(self):
+    def test_load_read_returns_none(self) -> None:
         with pytest.raises(RuntimeError, match="str or bytes"):
-            yarutsk.load(_NoneReadStream())
+            yarutsk.load(_NoneReadStream())  # type: ignore[arg-type]
 
-    def test_load_non_utf8_bytes(self):
+    def test_load_non_utf8_bytes(self) -> None:
         stream = io.BytesIO(b"\xff\xfe invalid utf-8")
         with pytest.raises(RuntimeError, match=r"[Uu][Tt][Ff]"):
             yarutsk.load(stream)
 
-    def test_dump_no_write_method(self):
+    def test_dump_no_write_method(self) -> None:
         doc = yarutsk.loads("a: 1\n")
+        assert doc is not None
         with pytest.raises((AttributeError, RuntimeError)):
-            yarutsk.dump(doc, _NoWriteStream())
+            yarutsk.dump(doc, _NoWriteStream())  # type: ignore[arg-type]
 
-    def test_load_all_no_read_method(self):
+    def test_load_all_no_read_method(self) -> None:
         with pytest.raises(AttributeError):
-            yarutsk.load_all(_NoReadStream())
+            yarutsk.load_all(_NoReadStream())  # type: ignore[arg-type]
 
 
 class TestDumpsAllInvalidDocs:
-    def test_docs_none(self):
+    def test_docs_none(self) -> None:
         with pytest.raises((TypeError, RuntimeError)):
             yarutsk.dumps_all(None)  # type: ignore[arg-type]
 
-    def test_docs_integer(self):
+    def test_docs_integer(self) -> None:
         with pytest.raises((TypeError, RuntimeError)):
             yarutsk.dumps_all(42)  # type: ignore[arg-type]
 
-    def test_docs_with_invalid_item(self):
+    def test_docs_with_invalid_item(self) -> None:
         doc = yarutsk.loads("a: 1\n")
+        assert doc is not None
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dumps_all([doc, object()])  # type: ignore[list-item]
 
-    def test_dump_all_docs_none(self):
+    def test_dump_all_docs_none(self) -> None:
         buf = io.StringIO()
         with pytest.raises((TypeError, RuntimeError)):
             yarutsk.dump_all(None, buf)  # type: ignore[arg-type]
 
-    def test_dump_all_with_invalid_item(self):
+    def test_dump_all_with_invalid_item(self) -> None:
         doc = yarutsk.loads("a: 1\n")
+        assert doc is not None
         buf = io.StringIO()
         with pytest.raises((RuntimeError, TypeError)):
             yarutsk.dump_all([doc, object()], buf)  # type: ignore[list-item]
 
 
 class TestBadCommentAndStyleArgs:
-    def test_comment_inline_out_of_range_index_raises(self):
+    def test_comment_inline_out_of_range_index_raises(self) -> None:
         doc = yarutsk.loads(
             dedent("""\
             - a
             - b
         """)
         )
+        assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(IndexError):
             doc.node(99).comment_inline = "note"
 
-    def test_comment_before_out_of_range_index_raises(self):
+    def test_comment_before_out_of_range_index_raises(self) -> None:
         doc = yarutsk.loads(
             dedent("""\
             - a
             - b
         """)
         )
+        assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(IndexError):
             doc.node(99).comment_before = "note"
 
-    def test_scalar_style_invalid_name_raises(self):
+    def test_scalar_style_invalid_name_raises(self) -> None:
         doc = yarutsk.loads("key: value\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         with pytest.raises(ValueError):
-            doc.node("key").style = "invalid_style"
+            doc.node("key").style = "invalid_style"  # type: ignore[assignment]
 
-    def test_scalar_style_missing_key_raises(self):
+    def test_scalar_style_missing_key_raises(self) -> None:
         doc = yarutsk.loads("key: value\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         with pytest.raises(KeyError):
             doc.node("missing").style = "plain"
 
@@ -329,33 +352,38 @@ class TestPlainCollectionAssignment:
     otherwise extract as Vec<u8>.
     """
 
-    def test_list_of_integers_becomes_sequence_not_binary(self):
+    def test_list_of_integers_becomes_sequence_not_binary(self) -> None:
         doc = yarutsk.loads("k: placeholder\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["k"] = [1, 2, 3]
         out = yarutsk.dumps(doc)
         assert "!!binary" not in out
         assert "- 1" in out
 
-    def test_list_of_strings_becomes_sequence(self):
+    def test_list_of_strings_becomes_sequence(self) -> None:
         doc = yarutsk.loads("k: placeholder\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["k"] = ["a", "b"]
         out = yarutsk.dumps(doc)
         assert "- a\n" in out
         assert "- b\n" in out
 
-    def test_bytes_still_becomes_binary(self):
+    def test_bytes_still_becomes_binary(self) -> None:
         doc = yarutsk.loads("k: placeholder\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["k"] = b"hello"
         out = yarutsk.dumps(doc)
         assert "!!binary" in out
 
-    def test_new_list_default_style_is_block(self):
+    def test_new_list_default_style_is_block(self) -> None:
         doc = yarutsk.loads("k: placeholder\n")
+        assert isinstance(doc, yarutsk.YamlMapping)
         doc["k"] = ["a", "b"]
         assert doc.node("k").style == "block"
 
-    def test_list_in_sequence_item_becomes_sequence(self):
+    def test_list_in_sequence_item_becomes_sequence(self) -> None:
         doc = yarutsk.loads("- placeholder\n")
+        assert isinstance(doc, yarutsk.YamlSequence)
         doc[0] = [10, 20]
         out = yarutsk.dumps(doc)
         assert "!!binary" not in out

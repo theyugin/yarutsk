@@ -31,7 +31,7 @@ print(out.getvalue())
 # port: 5433
 ```
 
-`YamlMapping` is a subclass of `dict` and `YamlSequence` is a subclass of `list`, so they work everywhere a dict or list is expected — including `json.dumps`, `isinstance(x, dict)`, and any library that accepts plain mappings or sequences.
+`YamlMapping` and `YamlSequence` implement the dict/list protocols (subscript, iteration, `len`, `in`, etc.) but are not `dict`/`list` subclasses — `isinstance(m, dict)` is `False`. Call `m.to_python()` (recursive) to get a plain `dict`/`list` for libraries that need it (including `json.dumps`).
 
 ## What's preserved
 

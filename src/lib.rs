@@ -6,10 +6,10 @@ mod py;
 
 use std::sync::{Arc, Mutex};
 
-use core::builder;
+use core::builder::{self, DocMetadata};
 use core::emitter::{emit_docs, emit_docs_to};
 use core::types::YamlNode;
-use py::convert::{DocMeta, extract_yaml_node, node_to_doc, parse_stream, parse_text};
+use py::convert::{DocMetaSource, extract_yaml_node, node_to_doc, parse_stream, parse_text};
 use py::py_iter::{PyYamlIter, YamlIterInner};
 use py::py_mapping::PyYamlMapping;
 use py::py_scalar::PyYamlScalar;
@@ -25,59 +25,32 @@ pyo3::create_exception!(yarutsk, ParseError, YarutskError);
 pyo3::create_exception!(yarutsk, LoaderError, YarutskError);
 pyo3::create_exception!(yarutsk, DumperError, YarutskError);
 
-// ─── Module-level helpers ─────────────────────────────────────────────────────
-
-/// Build a `DocMeta` for document index `i` from a slice of `DocMetadata`.
-fn doc_meta(meta: &[builder::DocMetadata], i: usize) -> DocMeta {
-    let m = meta.get(i).cloned().unwrap_or_default();
-    DocMeta {
-        explicit_start: m.explicit_start,
-        explicit_end: m.explicit_end,
-        yaml_version: m.yaml_version,
-        tag_directives: m.tag_directives,
-    }
+/// Take the metadata for document index `i` from a parser output slice;
+/// `default()` if `i` is out of range.
+fn doc_meta(meta: &[DocMetadata], i: usize) -> DocMetadata {
+    meta.get(i).cloned().unwrap_or_default()
 }
 
-/// Build a single-doc `DocMetadata` from a Python doc object's flags. Probes
-/// each of the three doc-carrying classes once; falls back to defaults if the
-/// object isn't one of them.
-fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> builder::DocMetadata {
+/// Probe a Python doc object for its doc-level metadata, falling back to
+/// defaults if it isn't one of the three doc-carrying pyclasses.
+fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> DocMetadata {
     if let Ok(m) = doc.cast::<PyYamlMapping>() {
-        let m = m.borrow();
-        return builder::DocMetadata {
-            explicit_start: m.explicit_start,
-            explicit_end: m.explicit_end,
-            yaml_version: m.yaml_version,
-            tag_directives: m.tag_directives.clone(),
-        };
+        return m.borrow().doc_metadata();
     }
     if let Ok(s) = doc.cast::<PyYamlSequence>() {
-        let s = s.borrow();
-        return builder::DocMetadata {
-            explicit_start: s.explicit_start,
-            explicit_end: s.explicit_end,
-            yaml_version: s.yaml_version,
-            tag_directives: s.tag_directives.clone(),
-        };
+        return s.borrow().doc_metadata();
     }
     if let Ok(sc) = doc.extract::<PyYamlScalar>() {
-        return builder::DocMetadata {
-            explicit_start: sc.explicit_start,
-            explicit_end: sc.explicit_end,
-            yaml_version: sc.yaml_version,
-            tag_directives: sc.tag_directives,
-        };
+        return sc.doc_metadata();
     }
-    builder::DocMetadata::default()
+    DocMetadata::default()
 }
 
 /// Extract a `YamlNode` plus its per-doc metadata from a Python doc object.
-/// `extract_yaml_node` constructs its own per-call `EmitCtx` (anchor + cycle
-/// state), so no extra setup is needed here.
 fn extract_doc_and_meta(
     doc: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
-) -> PyResult<(YamlNode, builder::DocMetadata)> {
+) -> PyResult<(YamlNode, DocMetadata)> {
     let node = extract_yaml_node(doc, schema)?;
     Ok((node, doc_meta_from_py(doc)))
 }
@@ -106,8 +79,6 @@ fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
         "expected str, bytes, or bytearray",
     ))
 }
-
-// ─── Unified load / dump cores ────────────────────────────────────────────────
 
 /// Source for `do_load` — either a Python stream-like object or owned text.
 enum LoadSource<'py> {
@@ -214,7 +185,7 @@ fn do_dump_all(
     let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
     match sink {
         EmitSink::String => {
-            let (nodes, meta): (Vec<YamlNode>, Vec<builder::DocMetadata>) = items
+            let (nodes, meta): (Vec<YamlNode>, Vec<DocMetadata>) = items
                 .iter()
                 .map(|i| extract_doc_and_meta(i, schema))
                 .collect::<PyResult<Vec<_>>>()?
@@ -239,8 +210,6 @@ fn do_dump_all(
         }
     }
 }
-
-// ─── Module-level functions ───────────────────────────────────────────────────
 
 #[pyfunction]
 #[pyo3(signature = (stream, *, schema=None))]

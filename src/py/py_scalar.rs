@@ -3,14 +3,13 @@
 use pyo3::prelude::*;
 
 use super::convert::{
-    NodeParent, date_type, datetime_type, parse_scalar_style, parse_yaml_version,
+    DocMetaSource, NodeParent, date_type, datetime_type, parse_scalar_style, parse_yaml_version,
     py_primitive_to_scalar, scalar_to_py_with_tag,
 };
+use crate::core::builder::DocMetadata;
 use crate::core::types::{
     FormatOptions, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlNode, YamlScalar,
 };
-
-// ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
 /// A YAML scalar document node (int, float, bool, str, or null).
 #[pyclass(name = "YamlScalar", from_py_object)]
@@ -287,5 +286,16 @@ impl PyYamlScalar {
     {
         f(&mut self.inner);
         self.parent.with_node_mut(py, f);
+    }
+}
+
+impl DocMetaSource for PyYamlScalar {
+    fn doc_metadata(&self) -> DocMetadata {
+        DocMetadata {
+            explicit_start: self.explicit_start,
+            explicit_end: self.explicit_end,
+            yaml_version: self.yaml_version,
+            tag_directives: self.tag_directives.clone(),
+        }
     }
 }

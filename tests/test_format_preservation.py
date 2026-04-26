@@ -34,17 +34,11 @@ def _roundtrip_through_format(doc: Any, expected: Any, **opts: bool) -> None:
         doc.format(**opts)
     text = yarutsk.dumps(doc)
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     actual = parsed.to_python() if hasattr(parsed, "to_python") else parsed
     assert actual == expected, (
         f"format() lost data\nemitted:\n{text!r}\nexpected: {expected!r}\ngot: {actual!r}"
     )
-
-
-# ─── Numeric-looking strings ─────────────────────────────────────────────────
-#
-# When the input string ``original`` is cleared by ``format(styles=True)`` and
-# the style is reset to Plain, the emitter must quote it or the parser will
-# coerce it to int/float.
 
 
 @pytest.mark.parametrize(
@@ -70,22 +64,22 @@ def _roundtrip_through_format(doc: Any, expected: Any, **opts: bool) -> None:
 )
 def test_numeric_string_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f'k: "{value}"')
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
 
 
 @pytest.mark.parametrize("value", ["42", "0x10", "3.14", "1e10"])
 def test_numeric_string_in_flow_seq_preserved(value: str) -> None:
     doc = yarutsk.loads(f'k: ["{value}", "end"]')
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": [value, "end"]})
 
 
 @pytest.mark.parametrize("value", ["42", "3.14", "1e10"])
 def test_numeric_string_in_flow_map_preserved(value: str) -> None:
     doc = yarutsk.loads(f'k: {{a: "{value}", b: end}}')
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": {"a": value, "b": "end"}})
-
-
-# ─── Keyword strings (null/bool variants) ────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -130,6 +124,7 @@ def test_numeric_string_in_flow_map_preserved(value: str) -> None:
 )
 def test_keyword_string_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
 
 
@@ -139,10 +134,8 @@ def test_keyword_string_value_preserved(value: str) -> None:
 )
 def test_keyword_string_in_flow_seq_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: ['{value}', 'end']")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": [value, "end"]})
-
-
-# ─── Strings with structural characters ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -170,6 +163,7 @@ def test_keyword_string_in_flow_seq_preserved(value: str) -> None:
 )
 def test_leading_indicator_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
 
 
@@ -184,16 +178,15 @@ def test_leading_indicator_value_preserved(value: str) -> None:
 )
 def test_colon_or_hash_in_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
 
 
 @pytest.mark.parametrize("value", ["---", "..."])
 def test_document_marker_string_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
-
-
-# ─── Boundary and internal whitespace ────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -211,6 +204,7 @@ def test_document_marker_string_preserved(value: str) -> None:
 )
 def test_boundary_whitespace_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
 
 
@@ -220,23 +214,20 @@ def test_boundary_whitespace_value_preserved(value: str) -> None:
 )
 def test_internal_whitespace_value_preserved(value: str) -> None:
     doc = yarutsk.loads(f"k: '{value}'")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": value})
-
-
-# ─── Empty / whitespace-only strings ─────────────────────────────────────────
 
 
 def test_empty_string_value_preserved() -> None:
     doc = yarutsk.loads("k: ''")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": ""})
 
 
 def test_empty_string_in_flow_seq_preserved() -> None:
     doc = yarutsk.loads("k: ['', 'end']")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": ["", "end"]})
-
-
-# ─── Multiline strings (force literal style on format) ───────────────────────
 
 
 @pytest.mark.parametrize(
@@ -271,21 +262,21 @@ def test_multiline_no_trailing_newline_preserved() -> None:
     _roundtrip_through_format(doc, {"k": value})
 
 
-# ─── Container shape (flow → block) ──────────────────────────────────────────
-
-
 def test_flow_mapping_format_to_block_preserves_content() -> None:
     doc = yarutsk.loads("k: {a: 1, b: 2, c: 3}")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": {"a": 1, "b": 2, "c": 3}})
 
 
 def test_flow_sequence_format_to_block_preserves_content() -> None:
     doc = yarutsk.loads("k: [1, 2, 3, 4]")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": [1, 2, 3, 4]})
 
 
 def test_nested_flow_format_to_block_preserves_content() -> None:
     doc = yarutsk.loads("k: {a: [1, {b: [2, 3]}], c: 4}")
+    assert doc is not None
     _roundtrip_through_format(
         doc,
         {"k": {"a": [1, {"b": [2, 3]}], "c": 4}},
@@ -294,15 +285,14 @@ def test_nested_flow_format_to_block_preserves_content() -> None:
 
 def test_empty_flow_mapping_preserved() -> None:
     doc = yarutsk.loads("k: {}")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": {}})
 
 
 def test_empty_flow_sequence_preserved() -> None:
     doc = yarutsk.loads("k: []")
+    assert doc is not None
     _roundtrip_through_format(doc, {"k": []})
-
-
-# ─── Mapping keys ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -342,41 +332,46 @@ def test_risky_key_preserved(key: str) -> None:
 def test_keys_in_flow_mapping_preserved() -> None:
     src = "{a: 1, b: 2, '-foo': 3, 'null': 4}"
     doc = yarutsk.loads(src)
+    assert doc is not None
     _roundtrip_through_format(doc, {"a": 1, "b": 2, "-foo": 3, "null": 4})
-
-
-# ─── Tags / anchors / aliases preserved through format() ─────────────────────
 
 
 def test_tag_on_scalar_preserved() -> None:
     doc = yarutsk.loads("v: !!str 42")
+    assert doc is not None
     doc.format()
     text = yarutsk.dumps(doc)
     assert "!!str" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"v": "42"}
 
 
 def test_tag_on_mapping_preserved() -> None:
     doc = yarutsk.loads("v: !!map {a: 1}")
+    assert doc is not None
     doc.format()
     text = yarutsk.dumps(doc)
     assert "!!map" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"v": {"a": 1}}
 
 
 def test_tag_on_sequence_preserved() -> None:
     doc = yarutsk.loads("v: !!seq [1, 2, 3]")
+    assert doc is not None
     doc.format()
     text = yarutsk.dumps(doc)
     assert "!!seq" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"v": [1, 2, 3]}
 
 
 def test_custom_tag_preserved() -> None:
     doc = yarutsk.loads("v: !custom value")
+    assert doc is not None
     doc.format()
     text = yarutsk.dumps(doc)
     assert "!custom" in text
@@ -385,9 +380,11 @@ def test_custom_tag_preserved() -> None:
 def test_anchor_alias_preserved() -> None:
     src = "a: &name value\nb: *name\n"
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     text = yarutsk.dumps(doc)
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"a": "value", "b": "value"}
     assert "&name" in text
     assert "*name" in text
@@ -396,13 +393,12 @@ def test_anchor_alias_preserved() -> None:
 def test_anchor_on_container_preserved() -> None:
     src = "a: &grp\n  x: 1\n  y: 2\nb: *grp\n"
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     expected = {"x": 1, "y": 2}
     assert parsed.to_python() == {"a": expected, "b": expected}
-
-
-# ─── Float precision and special floats ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -419,8 +415,10 @@ def test_anchor_on_container_preserved() -> None:
 )
 def test_float_value_preserved(src: str, expected: dict[str, Any]) -> None:
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == expected
 
 
@@ -429,13 +427,12 @@ def test_nan_value_remains_nan() -> None:
     import math
 
     doc = yarutsk.loads("v: .nan")
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert isinstance(parsed, yarutsk.YamlMapping)
     val = parsed.to_python()["v"]
     assert isinstance(val, float) and math.isnan(val)
-
-
-# ─── Integer canonicalisation (hex/octal → decimal is OK semantically) ───────
 
 
 @pytest.mark.parametrize(
@@ -449,12 +446,11 @@ def test_nan_value_remains_nan() -> None:
 )
 def test_int_value_preserved(src: str, expected: dict[str, Any]) -> None:
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == expected
-
-
-# ─── Idempotency ─────────────────────────────────────────────────────────────
 
 
 def test_format_twice_equals_once() -> None:
@@ -465,10 +461,12 @@ def test_format_twice_equals_once() -> None:
     nested: {x: 1, y: [1, 2]}
     """
     doc1 = yarutsk.loads(src)
+    assert doc1 is not None
     doc1.format()
     out1 = yarutsk.dumps(doc1)
 
     doc2 = yarutsk.loads(src)
+    assert doc2 is not None
     doc2.format()
     doc2.format()
     out2 = yarutsk.dumps(doc2)
@@ -480,56 +478,60 @@ def test_dump_after_format_is_fixed_point() -> None:
     """dumps(format(loads(out))) == dumps(format(loads(dumps(format(loads(out))))))"""
     src = "a: 'one'\nb: [1, 2]\nc: {x: 'y'}\n"
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     once = yarutsk.dumps(doc)
 
     doc2 = yarutsk.loads(once)
+    assert doc2 is not None
     doc2.format()
     twice = yarutsk.dumps(doc2)
 
     assert once == twice
 
 
-# ─── Format-option toggles ───────────────────────────────────────────────────
-
-
 def test_styles_false_keeps_quoted_string() -> None:
     """With styles=False, original style is kept; content still preserved."""
     doc = yarutsk.loads('k: "42"')
+    assert doc is not None
     doc.format(styles=False)
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"k": "42"}
 
 
 def test_comments_false_preserves_inline_comment_in_dump() -> None:
     doc = yarutsk.loads("k: v  # hello")
+    assert doc is not None
     doc.format(comments=False)
     text = yarutsk.dumps(doc)
     assert "# hello" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"k": "v"}
 
 
 def test_blank_lines_false_preserves_separator_in_dump() -> None:
     src = "a: 1\n\n\nb: 2\n"
     doc = yarutsk.loads(src)
+    assert isinstance(doc, yarutsk.YamlMapping)
     doc.format(blank_lines=False)
     text = yarutsk.dumps(doc)
     assert "\n\n" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"a": 1, "b": 2}
 
 
 def test_styles_false_keeps_flow_container() -> None:
     doc = yarutsk.loads("k: {a: 1, b: 2}")
+    assert doc is not None
     doc.format(styles=False)
     text = yarutsk.dumps(doc)
     assert "{" in text
     parsed = yarutsk.loads(text)
+    assert parsed is not None
     assert parsed.to_python() == {"k": {"a": 1, "b": 2}}
-
-
-# ─── format() on a YamlScalar standalone ─────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -542,6 +544,7 @@ def test_yamlscalar_format_preserves_content(value: str) -> None:
     doc = yarutsk.YamlMapping()
     doc["k"] = s
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"k": value}
 
 
@@ -552,10 +555,8 @@ def test_yamlscalar_format_multiline_to_literal() -> None:
     doc = yarutsk.YamlMapping()
     doc["k"] = s
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"k": "a\nb\n"}
-
-
-# ─── Deeply nested structures ────────────────────────────────────────────────
 
 
 def test_deep_nesting_preserved() -> None:
@@ -567,8 +568,10 @@ def test_deep_nesting_preserved() -> None:
             e: 'deep'
     """
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"a": {"b": {"c": {"d": {"e": "deep"}}}}}
 
 
@@ -581,8 +584,10 @@ def test_mixed_nesting_preserved() -> None:
       - 'plain'
     """
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {
         "items": [
             {"name": "a", "vals": [1, 2]},
@@ -590,9 +595,6 @@ def test_mixed_nesting_preserved() -> None:
             "plain",
         ],
     }
-
-
-# ─── Big mixed-content stress case ───────────────────────────────────────────
 
 
 def test_all_categories_in_one_doc() -> None:
@@ -620,8 +622,10 @@ def test_all_categories_in_one_doc() -> None:
       mapping: !!map {a: 1}
     """
     doc = yarutsk.loads(src)
+    assert doc is not None
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     expected = {
         "nums": {
             "int": 42,
@@ -645,14 +649,6 @@ def test_all_categories_in_one_doc() -> None:
         "tags": {"string": "42", "mapping": {"a": 1}},
     }
     assert parsed.to_python() == expected
-
-
-# ─── Hypothesis property: format() never loses risky content ─────────────────
-#
-# The default property test in ``test_roundtrip_property.py`` uses a "safe"
-# alphabet. Here we deliberately target inputs the emitter has to *quote* to
-# survive ``format()``: numerics, keywords, leading indicators, structural
-# punctuation.
 
 
 _RISKY_SAMPLED = st.sampled_from(
@@ -762,9 +758,11 @@ def _trees() -> st.SearchStrategy[Any]:
 def test_format_then_roundtrip_risky_leaves(tree: Any) -> None:
     """Build doc → format() → dump → load → assert tree equality."""
     doc = yarutsk.loads(yarutsk.dumps(tree))
+    assert doc is not None
     if hasattr(doc, "format"):
         doc.format()
     again = yarutsk.loads(yarutsk.dumps(doc))
+    assert again is not None
     actual = again.to_python() if hasattr(again, "to_python") else again
     assert actual == tree
 
@@ -780,9 +778,11 @@ def test_format_preserves_risky_keys(items: list[tuple[str, Any]]) -> None:
     """Hypothesis-generated risky keys round-trip through format() losslessly."""
     tree = dict(items)
     doc = yarutsk.loads(yarutsk.dumps(tree))
+    assert doc is not None
     if hasattr(doc, "format"):
         doc.format()
     again = yarutsk.loads(yarutsk.dumps(doc))
+    assert again is not None
     actual = again.to_python() if hasattr(again, "to_python") else again
     assert actual == tree
 
@@ -798,6 +798,7 @@ def test_format_flow_seq_with_risky_values(values: list[Any]) -> None:
     doc["k"] = seq
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"k": values}
 
 
@@ -811,4 +812,5 @@ def test_format_flow_map_with_risky_values(items: dict[str, Any]) -> None:
     doc["k"] = m
     doc.format()
     parsed = yarutsk.loads(yarutsk.dumps(doc))
+    assert parsed is not None
     assert parsed.to_python() == {"k": items}

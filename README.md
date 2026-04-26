@@ -36,7 +36,7 @@ print(out.getvalue())
 # port: 5433
 ```
 
-`YamlMapping` subclasses `dict` and `YamlSequence` subclasses `list`, so they work everywhere a dict or list is expected — `isinstance(doc, dict)`, `json.dumps(doc)`, and any library accepting plain mappings or sequences.
+`YamlMapping` and `YamlSequence` implement the dict/list protocols (subscript, iteration, `len`, `in`, etc.) but are not `dict`/`list` subclasses. Call `doc.to_python()` (recursive) for a plain `dict`/`list` — needed for `json.dumps`, pydantic, msgspec, cattrs, and other libraries that type-check input strictly.
 
 Python 3.12+ required. Pre-built wheels for Linux / macOS / Windows on x86_64 and aarch64.
 
