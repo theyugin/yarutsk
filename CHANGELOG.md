@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-04-26
+
+### Changed
+- **Breaking**: aliases now share Python identity with their anchored container — `*foo` and the `&foo`-anchored mapping/sequence surface as the same Python object, so mutations through any reference are visible through the others (matches plain Python dict/list reference semantics).
+
+### Internal
+- Refactor of builder/converter/type system: `NodeMeta` sidecar, typed `MapKey` for complex keys, `ScalarRepr` enum, explicit `EmitCtx`/`LoadCtx` (no more thread-locals), consolidated load/dump entry points, `Arc`-shared alias storage.
+
 ## [0.7.7] - 2026-04-26
 
 ### Changed
@@ -231,7 +239,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/theyugin/yarutsk/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/theyugin/yarutsk/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/theyugin/yarutsk/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/theyugin/yarutsk/compare/v0.7.4...v0.7.5
