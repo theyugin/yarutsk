@@ -10,7 +10,9 @@ use super::convert::{
 };
 use super::py_mapping::PyYamlMapping;
 use super::schema::Schema;
-use crate::core::types::{ContainerStyle, FormatOptions, YamlMapping, YamlNode, YamlSequence};
+use crate::core::types::{
+    ContainerStyle, FormatOptions, NodeMeta, YamlMapping, YamlNode, YamlSequence,
+};
 
 // ─── PyYamlSequence (Python: YamlSequence extends list) ──────────────────────
 
@@ -47,7 +49,7 @@ impl PyYamlSequence {
         let _ = (iterable, schema); // populated in __init__ once the parent list is available
         let mut inner = YamlSequence::new();
         inner.style = parse_container_style(style)?;
-        inner.tag = tag.map(str::to_owned);
+        inner.meta.tag = tag.map(str::to_owned);
         Ok(PyYamlSequence {
             inner,
             explicit_start: false,
@@ -79,10 +81,10 @@ impl PyYamlSequence {
                     let list_part = slf.as_super();
                     let mut borrow = slf.borrow_mut();
                     let style = borrow.inner.style;
-                    let tag = std::mem::take(&mut borrow.inner.tag);
+                    let tag = std::mem::take(&mut borrow.inner.meta.tag);
                     borrow.inner = parsed;
                     borrow.inner.style = style;
-                    borrow.inner.tag = tag;
+                    borrow.inner.meta.tag = tag;
                     drop(borrow);
                     let borrow = slf.borrow();
                     for item in &borrow.inner.items {
@@ -479,9 +481,7 @@ impl PyYamlSequence {
         self.inner.items[i] = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         };
         Ok(())
     }
@@ -489,23 +489,23 @@ impl PyYamlSequence {
     /// The YAML tag on this sequence (e.g. ``"!!seq"``), or ``None``.
     #[getter]
     fn get_tag(&self) -> Option<&str> {
-        self.inner.tag.as_deref()
+        self.inner.meta.tag.as_deref()
     }
 
     #[setter]
     fn set_tag(&mut self, tag: Option<&str>) {
-        self.inner.tag = tag.map(str::to_owned);
+        self.inner.meta.tag = tag.map(str::to_owned);
     }
 
     /// The anchor name declared on this sequence (``&name``), or ``None``.
     #[getter]
     fn get_anchor(&self) -> Option<&str> {
-        self.inner.anchor.as_deref()
+        self.inner.meta.anchor.as_deref()
     }
 
     #[setter]
     fn set_anchor(&mut self, anchor: Option<&str>) {
-        self.inner.anchor = anchor.map(str::to_owned);
+        self.inner.meta.anchor = anchor.map(str::to_owned);
     }
 
     /// The container style: ``"block"`` or ``"flow"``.
@@ -573,36 +573,36 @@ impl PyYamlSequence {
     /// The number of blank lines emitted before this sequence (0–255).
     #[getter]
     fn get_blank_lines_before(&self) -> u8 {
-        self.inner.blank_lines_before
+        self.inner.meta.blank_lines_before
     }
 
     #[setter]
     fn set_blank_lines_before(&mut self, n: u32) {
-        self.inner.blank_lines_before = n.min(255) as u8;
+        self.inner.meta.blank_lines_before = n.min(255) as u8;
     }
 
     /// The inline (trailing) comment on this sequence, or ``None``. Assign
     /// ``None`` to clear.
     #[getter]
     fn get_comment_inline(&self) -> Option<&str> {
-        self.inner.comment_inline.as_deref()
+        self.inner.meta.comment_inline.as_deref()
     }
 
     #[setter]
     fn set_comment_inline(&mut self, comment: Option<String>) {
-        self.inner.comment_inline = comment;
+        self.inner.meta.comment_inline = comment;
     }
 
     /// The block comment preceding this sequence, or ``None``. Assign ``None``
     /// to clear.
     #[getter]
     fn get_comment_before(&self) -> Option<&str> {
-        self.inner.comment_before.as_deref()
+        self.inner.meta.comment_before.as_deref()
     }
 
     #[setter]
     fn set_comment_before(&mut self, comment: Option<String>) {
-        self.inner.comment_before = comment;
+        self.inner.meta.comment_before = comment;
     }
 
     /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
@@ -695,17 +695,17 @@ fn read_old_metadata_seq(
     if let Ok(child) = py_val.cast::<PyYamlMapping>() {
         let b = child.borrow();
         return Ok((
-            b.inner.comment_inline.clone(),
-            b.inner.comment_before.clone(),
-            b.inner.blank_lines_before,
+            b.inner.meta.comment_inline.clone(),
+            b.inner.meta.comment_before.clone(),
+            b.inner.meta.blank_lines_before,
         ));
     }
     if let Ok(child) = py_val.cast::<PyYamlSequence>() {
         let b = child.borrow();
         return Ok((
-            b.inner.comment_inline.clone(),
-            b.inner.comment_before.clone(),
-            b.inner.blank_lines_before,
+            b.inner.meta.comment_inline.clone(),
+            b.inner.meta.comment_before.clone(),
+            b.inner.meta.blank_lines_before,
         ));
     }
     Ok(fallback)

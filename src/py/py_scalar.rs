@@ -6,7 +6,7 @@ use super::convert::{
     NodeParent, date_type, datetime_type, parse_scalar_style, parse_yaml_version,
     py_primitive_to_scalar, scalar_to_py_with_tag,
 };
-use crate::core::types::{FormatOptions, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
+use crate::core::types::{FormatOptions, NodeMeta, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
 
 // ─── PyYamlScalar (Python: YamlScalar) ───────────────────────────────────────
 
@@ -51,7 +51,7 @@ impl PyYamlScalar {
             match node {
                 YamlNode::Scalar(mut s) => {
                     s.style = scalar_style;
-                    s.tag = tag.map(str::to_owned);
+                    s.meta.tag = tag.map(str::to_owned);
                     YamlNode::Scalar(s)
                 }
                 other => other, // Null
@@ -64,13 +64,12 @@ impl PyYamlScalar {
             YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str(STANDARD.encode(&b)),
                 style: scalar_style,
-                tag: Some(tag.unwrap_or("!!binary").to_owned()),
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta {
+                    tag: Some(tag.unwrap_or("!!binary").to_owned()),
+                    ..NodeMeta::default()
+                },
             })
         } else {
             // datetime.datetime / datetime.date
@@ -80,13 +79,12 @@ impl PyYamlScalar {
                 YamlNode::Scalar(YamlScalar {
                     value: ScalarValue::Str(iso),
                     style: scalar_style,
-                    tag: Some(tag.unwrap_or("!!timestamp").to_owned()),
                     original: None,
                     chomping: None,
-                    anchor: None,
-                    comment_inline: None,
-                    comment_before: None,
-                    blank_lines_before: 0,
+                    meta: NodeMeta {
+                        tag: Some(tag.unwrap_or("!!timestamp").to_owned()),
+                        ..NodeMeta::default()
+                    },
                 })
             } else {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -162,7 +160,7 @@ impl PyYamlScalar {
     #[getter]
     fn get_comment_inline(&self) -> Option<&str> {
         match &self.inner {
-            YamlNode::Scalar(s) => s.comment_inline.as_deref(),
+            YamlNode::Scalar(s) => s.meta.comment_inline.as_deref(),
             _ => None,
         }
     }
@@ -178,7 +176,7 @@ impl PyYamlScalar {
     #[getter]
     fn get_comment_before(&self) -> Option<&str> {
         match &self.inner {
-            YamlNode::Scalar(s) => s.comment_before.as_deref(),
+            YamlNode::Scalar(s) => s.meta.comment_before.as_deref(),
             _ => None,
         }
     }
@@ -220,7 +218,7 @@ impl PyYamlScalar {
     #[getter]
     fn get_tag(&self) -> Option<&str> {
         match &self.inner {
-            YamlNode::Scalar(s) => s.tag.as_deref(),
+            YamlNode::Scalar(s) => s.meta.tag.as_deref(),
             _ => None,
         }
     }
@@ -230,7 +228,7 @@ impl PyYamlScalar {
         let owned = tag.map(str::to_owned);
         self.propagate(py, |node| {
             if let YamlNode::Scalar(s) = node {
-                s.tag.clone_from(&owned);
+                s.meta.tag.clone_from(&owned);
             }
         });
     }
@@ -239,7 +237,7 @@ impl PyYamlScalar {
     #[getter]
     fn get_anchor(&self) -> Option<&str> {
         match &self.inner {
-            YamlNode::Scalar(s) => s.anchor.as_deref(),
+            YamlNode::Scalar(s) => s.meta.anchor.as_deref(),
             _ => None,
         }
     }
@@ -249,7 +247,7 @@ impl PyYamlScalar {
         let owned = anchor.map(str::to_owned);
         self.propagate(py, |node| {
             if let YamlNode::Scalar(s) = node {
-                s.anchor.clone_from(&owned);
+                s.meta.anchor.clone_from(&owned);
             }
         });
     }

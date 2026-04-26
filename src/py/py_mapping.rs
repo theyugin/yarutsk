@@ -11,7 +11,7 @@ use super::convert::{
 };
 use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
-use crate::core::types::{ContainerStyle, FormatOptions, YamlMapping, YamlNode};
+use crate::core::types::{ContainerStyle, FormatOptions, NodeMeta, YamlMapping, YamlNode};
 
 // ─── PyYamlMapping (Python: YamlMapping extends dict) ─────────────────────────
 
@@ -48,7 +48,7 @@ impl PyYamlMapping {
         let _ = (mapping, schema); // populated in __init__ once the parent dict is available
         let mut inner = YamlMapping::new();
         inner.style = parse_container_style(style)?;
-        inner.tag = tag.map(str::to_owned);
+        inner.meta.tag = tag.map(str::to_owned);
         Ok(PyYamlMapping {
             inner,
             explicit_start: false,
@@ -83,10 +83,10 @@ impl PyYamlMapping {
                     let mut borrow = slf.borrow_mut();
                     // Preserve style/tag from __new__, overlay entries from parsed.
                     let style = borrow.inner.style;
-                    let tag = std::mem::take(&mut borrow.inner.tag);
+                    let tag = std::mem::take(&mut borrow.inner.meta.tag);
                     borrow.inner = parsed;
                     borrow.inner.style = style;
-                    borrow.inner.tag = tag;
+                    borrow.inner.meta.tag = tag;
                     drop(borrow);
                     // Sync the parent dict with Python-visible values.
                     let borrow = slf.borrow();
@@ -383,9 +383,7 @@ impl PyYamlMapping {
         entry.value = YamlNode::Alias {
             name: anchor_name.to_owned(),
             resolved,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         };
         Ok(())
     }
@@ -393,23 +391,23 @@ impl PyYamlMapping {
     /// The YAML tag on this mapping (e.g. ``"!!map"``), or ``None``.
     #[getter]
     fn get_tag(&self) -> Option<&str> {
-        self.inner.tag.as_deref()
+        self.inner.meta.tag.as_deref()
     }
 
     #[setter]
     fn set_tag(&mut self, tag: Option<&str>) {
-        self.inner.tag = tag.map(str::to_owned);
+        self.inner.meta.tag = tag.map(str::to_owned);
     }
 
     /// The anchor name declared on this mapping (``&name``), or ``None``.
     #[getter]
     fn get_anchor(&self) -> Option<&str> {
-        self.inner.anchor.as_deref()
+        self.inner.meta.anchor.as_deref()
     }
 
     #[setter]
     fn set_anchor(&mut self, anchor: Option<&str>) {
-        self.inner.anchor = anchor.map(str::to_owned);
+        self.inner.meta.anchor = anchor.map(str::to_owned);
     }
 
     /// The container style: ``"block"`` or ``"flow"``.
@@ -466,36 +464,36 @@ impl PyYamlMapping {
     /// The number of blank lines emitted before this mapping (0–255).
     #[getter]
     fn get_blank_lines_before(&self) -> u8 {
-        self.inner.blank_lines_before
+        self.inner.meta.blank_lines_before
     }
 
     #[setter]
     fn set_blank_lines_before(&mut self, n: u32) {
-        self.inner.blank_lines_before = n.min(255) as u8;
+        self.inner.meta.blank_lines_before = n.min(255) as u8;
     }
 
     /// The inline (trailing) comment on this mapping, or ``None``. Assign
     /// ``None`` to clear.
     #[getter]
     fn get_comment_inline(&self) -> Option<&str> {
-        self.inner.comment_inline.as_deref()
+        self.inner.meta.comment_inline.as_deref()
     }
 
     #[setter]
     fn set_comment_inline(&mut self, comment: Option<String>) {
-        self.inner.comment_inline = comment;
+        self.inner.meta.comment_inline = comment;
     }
 
     /// The block comment preceding this mapping, or ``None``. Assign ``None``
     /// to clear.
     #[getter]
     fn get_comment_before(&self) -> Option<&str> {
-        self.inner.comment_before.as_deref()
+        self.inner.meta.comment_before.as_deref()
     }
 
     #[setter]
     fn set_comment_before(&mut self, comment: Option<String>) {
-        self.inner.comment_before = comment;
+        self.inner.meta.comment_before = comment;
     }
 
     /// Strip cosmetic formatting metadata, resetting to clean YAML defaults.
@@ -629,17 +627,17 @@ fn read_old_metadata_map(
     if let Ok(child) = py_val.cast::<PyYamlMapping>() {
         let b = child.borrow();
         return Ok((
-            b.inner.comment_inline.clone(),
-            b.inner.comment_before.clone(),
-            b.inner.blank_lines_before,
+            b.inner.meta.comment_inline.clone(),
+            b.inner.meta.comment_before.clone(),
+            b.inner.meta.blank_lines_before,
         ));
     }
     if let Ok(child) = py_val.cast::<PyYamlSequence>() {
         let b = child.borrow();
         return Ok((
-            b.inner.comment_inline.clone(),
-            b.inner.comment_before.clone(),
-            b.inner.blank_lines_before,
+            b.inner.meta.comment_inline.clone(),
+            b.inner.meta.comment_before.clone(),
+            b.inner.meta.blank_lines_before,
         ));
     }
     Ok(fallback)
