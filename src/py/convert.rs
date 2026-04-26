@@ -1,6 +1,5 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use pyo3::exceptions::PyRuntimeError;
@@ -100,42 +99,13 @@ pub(crate) fn date_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     DATE_TYPE.import(py, "datetime", "date")
 }
 
-// ─── Cycle detection ─────────────────────────────────────────────────────────
-
-// Thread-local set of Python object pointer IDs currently on the serialisation
-// call stack.  Used to detect self-referential dicts/lists/tuples before they
-// overflow the Rust stack.
-thread_local! {
-    static CYCLE_GUARD: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
-}
-
-/// RAII guard: inserts *ptr* into `CYCLE_GUARD` on creation and removes it on
-/// drop, even if the enclosing function returns an error.
-struct CycleGuard(usize);
-
-impl CycleGuard {
-    /// Returns `Some(guard)` if *ptr* was not already in the set (safe to
-    /// recurse), or `None` if a cycle is detected.
-    fn enter(ptr: usize) -> Option<Self> {
-        CYCLE_GUARD.with(|s| {
-            if s.borrow_mut().insert(ptr) {
-                Some(CycleGuard(ptr))
-            } else {
-                None
-            }
-        })
-    }
-}
-
-impl Drop for CycleGuard {
-    fn drop(&mut self) {
-        CYCLE_GUARD.with(|s| {
-            s.borrow_mut().remove(&self.0);
-        });
-    }
-}
-
-// ─── Auto-anchor state ───────────────────────────────────────────────────────
+// ─── Per-call extraction context ─────────────────────────────────────────────
+//
+// State that used to live in two thread-locals (`CYCLE_GUARD` and `ANCHOR_EMIT`)
+// is now bundled into `EmitCtx` and threaded explicitly through the recursive
+// `*_inner` helpers. Each top-level entry point (`extract_yaml_node`,
+// `py_to_node`, `py_to_node_with_fallback`) constructs a fresh ctx, so callers
+// from PyO3 method handlers don't need to know it exists.
 
 struct AnchorEmitState {
     /// Plain-container objects that appear more than once in a document.
@@ -152,8 +122,76 @@ impl AnchorEmitState {
     }
 }
 
-thread_local! {
-    static ANCHOR_EMIT: RefCell<Option<AnchorEmitState>> = const { RefCell::new(None) };
+/// Per-call extraction state. One instance lives for the duration of a single
+/// top-level `extract_yaml_node` / `py_to_node` call and is passed by mutable
+/// reference into every recursive callee.
+#[derive(Default)]
+pub(crate) struct EmitCtx {
+    /// Set of Python object ptrs currently on the conversion stack — used to
+    /// short-circuit self-referential dicts/lists/tuples before they overflow
+    /// the Rust stack.
+    cycle_set: HashSet<usize>,
+    /// Auto-anchor state for the document being extracted. `None` outside of
+    /// `extract_yaml_node` (anchor handling only applies on the dump path).
+    anchors: Option<AnchorEmitState>,
+}
+
+impl EmitCtx {
+    /// Run `f` with `ptr` registered as on the current call stack. Returns
+    /// the error produced by `cycle_err` if `ptr` is already present (cycle).
+    /// `ptr` is removed on the way out, including when `f` returns `Err`.
+    fn with_cycle<T>(
+        &mut self,
+        ptr: usize,
+        cycle_err: impl FnOnce() -> PyErr,
+        f: impl FnOnce(&mut Self) -> PyResult<T>,
+    ) -> PyResult<T> {
+        if !self.cycle_set.insert(ptr) {
+            return Err(cycle_err());
+        }
+        let result = f(self);
+        self.cycle_set.remove(&ptr);
+        result
+    }
+
+    /// Initialise per-document anchor state by walking `doc` once and
+    /// recording every plain container that appears more than once.
+    fn init_anchors(&mut self, doc: &Bound<'_, PyAny>) {
+        let mut ref_count: HashMap<usize, usize> = HashMap::new();
+        prepass(doc, &mut ref_count);
+        let anchors = ref_count
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(ptr, _)| (ptr, None))
+            .collect();
+        self.anchors = Some(AnchorEmitState {
+            anchors,
+            counter: 0,
+        });
+    }
+
+    /// Check whether *ptr* needs special anchor/alias treatment during emit.
+    ///
+    /// Returns `(Some(alias_name), None)` if the object was already serialised
+    /// and should be emitted as `*alias_name`.
+    /// Returns `(None, Some(anchor_name))` on the first encounter of a
+    /// multi-ref object; the caller attaches `anchor_name` to the node.
+    /// Returns `(None, None)` if no anchor tracking applies.
+    fn check_anchor(&mut self, ptr: usize) -> (Option<String>, Option<String>) {
+        let Some(st) = self.anchors.as_mut() else {
+            return (None, None);
+        };
+        if !st.anchors.contains_key(&ptr) {
+            return (None, None);
+        }
+        let current = st.anchors.get(&ptr).and_then(std::clone::Clone::clone);
+        if let Some(name) = current {
+            return (Some(name), None);
+        }
+        let name = st.next_name();
+        st.anchors.insert(ptr, Some(name.clone()));
+        (None, Some(name))
+    }
 }
 
 /// Walk plain Python containers (dict/list/tuple), counting how many times each
@@ -222,80 +260,6 @@ fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
             prepass(&item, ref_count);
         }
     }
-}
-
-/// Initialise per-document anchor state.  Run the pre-pass over *doc* to find
-/// all plain containers that appear more than once, then store the result in the
-/// thread-local `ANCHOR_EMIT`.
-fn init_anchor_state(doc: &Bound<'_, PyAny>) {
-    let mut ref_count: HashMap<usize, usize> = HashMap::new();
-    prepass(doc, &mut ref_count);
-    let anchors = ref_count
-        .into_iter()
-        .filter(|(_, n)| *n > 1)
-        .map(|(ptr, _)| (ptr, None))
-        .collect();
-    ANCHOR_EMIT.with(|s| {
-        *s.borrow_mut() = Some(AnchorEmitState {
-            anchors,
-            counter: 0,
-        });
-    });
-}
-
-/// Clear the anchor state after serialising a document.
-fn clear_anchor_state() {
-    ANCHOR_EMIT.with(|s| {
-        *s.borrow_mut() = None;
-    });
-}
-
-/// RAII wrapper around the per-document anchor state.  Created when serialising
-/// a document, cleared when dropped — so the thread-local `ANCHOR_EMIT` is
-/// always reset even if extraction returns an error or panics mid-way.
-pub(crate) struct AnchorGuard;
-
-impl AnchorGuard {
-    pub(crate) fn new(doc: &Bound<'_, PyAny>) -> Self {
-        init_anchor_state(doc);
-        AnchorGuard
-    }
-}
-
-impl Drop for AnchorGuard {
-    fn drop(&mut self) {
-        clear_anchor_state();
-    }
-}
-
-/// Check whether *ptr* needs special anchor/alias treatment during emit.
-///
-/// Returns `(Some(alias_name), None)` if the object was already serialised
-/// and should be emitted as `*alias_name`.
-///
-/// Returns `(None, Some(anchor_name))` if this is the first encounter of a
-/// multi-ref object; the caller should attach `anchor_name` to the node.
-///
-/// Returns `(None, None)` if no anchor tracking is needed.
-fn check_anchor(ptr: usize) -> (Option<String>, Option<String>) {
-    ANCHOR_EMIT.with(|s| {
-        let mut borrow = s.borrow_mut();
-        if let Some(st) = borrow.as_mut()
-            && st.anchors.contains_key(&ptr)
-        {
-            // Clone the current slot value to avoid holding a borrow while
-            // we call `next_name` (which mutably borrows `st.counter`).
-            let current = st.anchors.get(&ptr).and_then(std::clone::Clone::clone);
-            if let Some(name) = current {
-                return (Some(name), None); // emit alias
-            }
-            // First encounter of a multi-ref object — assign anchor.
-            let name = st.next_name();
-            st.anchors.insert(ptr, Some(name.clone()));
-            return (None, Some(name));
-        }
-        (None, None)
-    })
 }
 
 // ─── Scalar conversion ────────────────────────────────────────────────────────
@@ -524,11 +488,23 @@ pub(crate) fn py_primitive_to_scalar(obj: &Bound<'_, PyAny>) -> Option<YamlNode>
     None
 }
 
-/// Convert a Python object to a `YamlNode`.
-#[allow(clippy::too_many_lines)] // single dispatch over Python types
+/// Convert a Python object to a `YamlNode`. Top-level wrapper that constructs
+/// a fresh [`EmitCtx`] for cycle detection — for recursion, call
+/// [`py_to_node_inner`] with the existing ctx.
 pub(crate) fn py_to_node(
     obj: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
+) -> PyResult<YamlNode> {
+    let mut ctx = EmitCtx::default();
+    py_to_node_inner(obj, schema, &mut ctx)
+}
+
+/// Recursive body of [`py_to_node`]. See `py_to_node` docs.
+#[allow(clippy::too_many_lines)] // single dispatch over Python types
+pub(crate) fn py_to_node_inner(
+    obj: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut EmitCtx,
 ) -> PyResult<YamlNode> {
     // Schema dumpers are checked first (before all built-in type handling).
     if let Some(schema_bound) = schema {
@@ -555,7 +531,7 @@ pub(crate) fn py_to_node(
                     "Schema dumper for {type_name} must return (tag, data) tuple: {e}"
                 ))
             })?;
-            let mut node = py_to_node(&data, schema)?;
+            let mut node = py_to_node_inner(&data, schema, ctx)?;
             match &mut node {
                 YamlNode::Scalar(s) => s.meta.tag = Some(tag),
                 YamlNode::Mapping(m) => m.meta.tag = Some(tag),
@@ -584,29 +560,39 @@ pub(crate) fn py_to_node(
     // collections being misinterpreted as Vec<u8> by PyO3's sequence extraction).
     if let Ok(t) = obj.cast::<PyTuple>() {
         let ptr = obj.as_ptr() as usize;
-        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "cannot serialize a recursive structure: self-referential tuple detected",
-            )
-        })?;
-        let mut seq = YamlSequence::new();
-        for item in t.iter() {
-            seq.items.push(py_to_node(&item, schema)?);
-        }
-        return Ok(YamlNode::Sequence(seq));
+        return ctx.with_cycle(
+            ptr,
+            || {
+                pyo3::exceptions::PyValueError::new_err(
+                    "cannot serialize a recursive structure: self-referential tuple detected",
+                )
+            },
+            |ctx| {
+                let mut seq = YamlSequence::new();
+                for item in t.iter() {
+                    seq.items.push(py_to_node_inner(&item, schema, ctx)?);
+                }
+                Ok(YamlNode::Sequence(seq))
+            },
+        );
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let ptr = obj.as_ptr() as usize;
-        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "cannot serialize a recursive structure: self-referential list detected",
-            )
-        })?;
-        let mut seq = YamlSequence::new();
-        for item in l.iter() {
-            seq.items.push(py_to_node(&item, schema)?);
-        }
-        return Ok(YamlNode::Sequence(seq));
+        return ctx.with_cycle(
+            ptr,
+            || {
+                pyo3::exceptions::PyValueError::new_err(
+                    "cannot serialize a recursive structure: self-referential list detected",
+                )
+            },
+            |ctx| {
+                let mut seq = YamlSequence::new();
+                for item in l.iter() {
+                    seq.items.push(py_to_node_inner(&item, schema, ctx)?);
+                }
+                Ok(YamlNode::Sequence(seq))
+            },
+        );
     }
     // bytes/bytearray → !!binary scalar (base64-encoded).
     // Check the Python type explicitly to avoid PyO3's Vec<u8> extraction
@@ -651,19 +637,25 @@ pub(crate) fn py_to_node(
     // Plain list is already handled above before the bytes check.
     if let Ok(d) = obj.cast::<PyDict>() {
         let ptr = obj.as_ptr() as usize;
-        let _guard = CycleGuard::enter(ptr).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "cannot serialize a recursive structure: self-referential dict detected",
-            )
-        })?;
-        let mut mapping = YamlMapping::new();
-        for (k, v) in d.iter() {
-            let key: String = k.extract()?;
-            mapping
-                .entries
-                .insert(MapKey::Scalar(key), plain_entry(py_to_node(&v, schema)?));
-        }
-        return Ok(YamlNode::Mapping(mapping));
+        return ctx.with_cycle(
+            ptr,
+            || {
+                pyo3::exceptions::PyValueError::new_err(
+                    "cannot serialize a recursive structure: self-referential dict detected",
+                )
+            },
+            |ctx| {
+                let mut mapping = YamlMapping::new();
+                for (k, v) in d.iter() {
+                    let key: String = k.extract()?;
+                    mapping.entries.insert(
+                        MapKey::Scalar(key),
+                        plain_entry(py_to_node_inner(&v, schema, ctx)?),
+                    );
+                }
+                Ok(YamlNode::Mapping(mapping))
+            },
+        );
     }
     // Abstract Mapping (collections.abc.Mapping) — covers OrderedDict-likes,
     // ChainMap, and any user type implementing the Mapping protocol that
@@ -678,9 +670,10 @@ pub(crate) fn py_to_node(
                 let pair = pair?;
                 let key: String = pair.get_item(0)?.extract()?;
                 let val = pair.get_item(1)?;
-                mapping
-                    .entries
-                    .insert(MapKey::Scalar(key), plain_entry(py_to_node(&val, schema)?));
+                mapping.entries.insert(
+                    MapKey::Scalar(key),
+                    plain_entry(py_to_node_inner(&val, schema, ctx)?),
+                );
             }
             return Ok(YamlNode::Mapping(mapping));
         }
@@ -692,7 +685,7 @@ pub(crate) fn py_to_node(
         let mut seq = YamlSequence::new();
         for item in obj.try_iter()? {
             let item = item?;
-            seq.items.push(py_to_node(&item, schema)?);
+            seq.items.push(py_to_node_inner(&item, schema, ctx)?);
         }
         return Ok(YamlNode::Sequence(seq));
     }
@@ -718,7 +711,19 @@ pub(crate) fn py_to_node_with_fallback(
     schema: Option<&Bound<'_, Schema>>,
     fallback_node: impl FnOnce() -> YamlNode,
 ) -> PyResult<(YamlNode, Py<PyAny>)> {
-    match py_to_node(value, schema) {
+    let mut ctx = EmitCtx::default();
+    py_to_node_with_fallback_inner(py, value, schema, fallback_node, &mut ctx)
+}
+
+/// Recursive body of [`py_to_node_with_fallback`].
+pub(crate) fn py_to_node_with_fallback_inner(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+    fallback_node: impl FnOnce() -> YamlNode,
+    ctx: &mut EmitCtx,
+) -> PyResult<(YamlNode, Py<PyAny>)> {
+    match py_to_node_inner(value, schema, ctx) {
         Ok(n) => {
             let pv = node_to_py(py, &n, schema)?;
             Ok((n, pv))
@@ -869,94 +874,121 @@ pub(crate) fn node_to_doc(
 /// ``__getitem__`` / ``node()`` are visible). Scalar values are taken from
 /// ``inner`` since there's no live Python object for them. Key ordering also
 /// comes from ``inner``.
-#[allow(clippy::too_many_lines)] // single dispatch over container/scalar types
+///
+/// Top-level wrapper that creates a fresh [`EmitCtx`] and initialises anchor
+/// tracking by walking *obj* once. For recursion, call [`extract_yaml_node_inner`]
+/// with the existing ctx.
 pub(crate) fn extract_yaml_node(
     obj: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<YamlNode> {
+    let mut ctx = EmitCtx::default();
+    ctx.init_anchors(obj);
+    extract_yaml_node_inner(obj, schema, &mut ctx)
+}
+
+/// Recursive body of [`extract_yaml_node`].
+#[allow(clippy::too_many_lines)] // single dispatch over container/scalar types
+pub(crate) fn extract_yaml_node_inner(
+    obj: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut EmitCtx,
+) -> PyResult<YamlNode> {
     if let Ok(bound_m) = obj.cast::<PyYamlMapping>() {
         let ptr = obj.as_ptr() as usize;
-        let _guard = CycleGuard::enter(ptr)
-            .ok_or_else(|| PyRuntimeError::new_err("self-referential structure detected"))?;
-        let borrow = bound_m.borrow();
-        let dict_part = bound_m.as_super();
-        let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
-        // Preserve all per-node metadata from the child's inner.
-        mapping.style = borrow.inner.style;
-        mapping.meta.tag.clone_from(&borrow.inner.meta.tag);
-        mapping.meta.anchor.clone_from(&borrow.inner.meta.anchor);
-        mapping.trailing_blank_lines = borrow.inner.trailing_blank_lines;
-        mapping
-            .meta
-            .comment_inline
-            .clone_from(&borrow.inner.meta.comment_inline);
-        mapping
-            .meta
-            .comment_before
-            .clone_from(&borrow.inner.meta.comment_before);
-        mapping.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
-        // Walk inner.entries for key order. For scalars, inner is the sole
-        // source of truth (no live Python object). For containers, re-extract
-        // from the live Python object — its `inner` is authoritative for
-        // every per-node field (style, tag, anchor, comments, blank lines).
-        for (k, e) in &borrow.inner.entries {
-            let value = match &e.value {
-                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => e.value.clone(),
-                _ => {
-                    let Some(py_val) = dict_part.get_item(k.python_key())? else {
-                        continue; // key was removed; skip
+        return ctx.with_cycle(
+            ptr,
+            || PyRuntimeError::new_err("self-referential structure detected"),
+            |ctx| {
+                let borrow = bound_m.borrow();
+                let dict_part = bound_m.as_super();
+                let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
+                // Preserve all per-node metadata from the child's inner.
+                mapping.style = borrow.inner.style;
+                mapping.meta.tag.clone_from(&borrow.inner.meta.tag);
+                mapping.meta.anchor.clone_from(&borrow.inner.meta.anchor);
+                mapping.trailing_blank_lines = borrow.inner.trailing_blank_lines;
+                mapping
+                    .meta
+                    .comment_inline
+                    .clone_from(&borrow.inner.meta.comment_inline);
+                mapping
+                    .meta
+                    .comment_before
+                    .clone_from(&borrow.inner.meta.comment_before);
+                mapping.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
+                // Walk inner.entries for key order. For scalars, inner is the sole
+                // source of truth (no live Python object). For containers, re-extract
+                // from the live Python object — its `inner` is authoritative for
+                // every per-node field (style, tag, anchor, comments, blank lines).
+                for (k, e) in &borrow.inner.entries {
+                    let value = match &e.value {
+                        YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => {
+                            e.value.clone()
+                        }
+                        _ => {
+                            let Some(py_val) = dict_part.get_item(k.python_key())? else {
+                                continue; // key was removed; skip
+                            };
+                            extract_yaml_node_inner(&py_val, schema, ctx)?
+                        }
                     };
-                    extract_yaml_node(&py_val, schema)?
+                    // Construct field-by-field instead of `..e.clone()` so the original
+                    // `e.value` subtree is not cloned (and then immediately dropped).
+                    mapping.entries.insert(
+                        k.clone(),
+                        YamlEntry {
+                            value,
+                            key_style: e.key_style,
+                            key_anchor: e.key_anchor.clone(),
+                            key_alias: e.key_alias.clone(),
+                            key_tag: e.key_tag.clone(),
+                            key_node: e.key_node.clone(),
+                        },
+                    );
                 }
-            };
-            // Construct field-by-field instead of `..e.clone()` so the original
-            // `e.value` subtree is not cloned (and then immediately dropped).
-            mapping.entries.insert(
-                k.clone(),
-                YamlEntry {
-                    value,
-                    key_style: e.key_style,
-                    key_anchor: e.key_anchor.clone(),
-                    key_alias: e.key_alias.clone(),
-                    key_tag: e.key_tag.clone(),
-                    key_node: e.key_node.clone(),
-                },
-            );
-        }
-        return Ok(YamlNode::Mapping(mapping));
+                Ok(YamlNode::Mapping(mapping))
+            },
+        );
     }
     if let Ok(bound_s) = obj.cast::<PyYamlSequence>() {
         let ptr = obj.as_ptr() as usize;
-        let _guard = CycleGuard::enter(ptr)
-            .ok_or_else(|| PyRuntimeError::new_err("self-referential structure detected"))?;
-        let borrow = bound_s.borrow();
-        let list_part = bound_s.as_super();
-        let inner_len = borrow.inner.items.len();
-        let mut seq = YamlSequence::with_capacity(inner_len);
-        // Preserve all per-node metadata from the child's inner.
-        seq.style = borrow.inner.style;
-        seq.meta.tag.clone_from(&borrow.inner.meta.tag);
-        seq.meta.anchor.clone_from(&borrow.inner.meta.anchor);
-        seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
-        seq.meta
-            .comment_inline
-            .clone_from(&borrow.inner.meta.comment_inline);
-        seq.meta
-            .comment_before
-            .clone_from(&borrow.inner.meta.comment_before);
-        seq.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
-        for i in 0..inner_len {
-            let item = &borrow.inner.items[i];
-            let value = match item {
-                YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => item.clone(),
-                _ => {
-                    let py_val = list_part.get_item(i)?;
-                    extract_yaml_node(&py_val, schema)?
+        return ctx.with_cycle(
+            ptr,
+            || PyRuntimeError::new_err("self-referential structure detected"),
+            |ctx| {
+                let borrow = bound_s.borrow();
+                let list_part = bound_s.as_super();
+                let inner_len = borrow.inner.items.len();
+                let mut seq = YamlSequence::with_capacity(inner_len);
+                // Preserve all per-node metadata from the child's inner.
+                seq.style = borrow.inner.style;
+                seq.meta.tag.clone_from(&borrow.inner.meta.tag);
+                seq.meta.anchor.clone_from(&borrow.inner.meta.anchor);
+                seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
+                seq.meta
+                    .comment_inline
+                    .clone_from(&borrow.inner.meta.comment_inline);
+                seq.meta
+                    .comment_before
+                    .clone_from(&borrow.inner.meta.comment_before);
+                seq.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
+                for i in 0..inner_len {
+                    let item = &borrow.inner.items[i];
+                    let value = match item {
+                        YamlNode::Scalar(_) | YamlNode::Null | YamlNode::Alias { .. } => {
+                            item.clone()
+                        }
+                        _ => {
+                            let py_val = list_part.get_item(i)?;
+                            extract_yaml_node_inner(&py_val, schema, ctx)?
+                        }
+                    };
+                    seq.items.push(value);
                 }
-            };
-            seq.items.push(value);
-        }
-        return Ok(YamlNode::Sequence(seq));
+                Ok(YamlNode::Sequence(seq))
+            },
+        );
     }
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
         return Ok(sc.inner);
@@ -966,11 +998,11 @@ pub(crate) fn extract_yaml_node(
         return Ok(node);
     }
     // Plain dict fallback — no comment/style metadata, but values are correct.
-    // Uses extract_yaml_node recursively so nested YamlMapping/YamlSequence
+    // Uses extract_yaml_node_inner recursively so nested YamlMapping/YamlSequence
     // objects inside the dict still preserve their metadata.
     if let Ok(d) = obj.cast::<PyDict>() {
         let ptr = obj.as_ptr() as usize;
-        let (alias, anchor) = check_anchor(ptr);
+        let (alias, anchor) = ctx.check_anchor(ptr);
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
@@ -986,14 +1018,14 @@ pub(crate) fn extract_yaml_node(
             let key: String = k.extract()?;
             mapping.entries.insert(
                 MapKey::Scalar(key),
-                plain_entry(extract_yaml_node(&v, schema)?),
+                plain_entry(extract_yaml_node_inner(&v, schema, ctx)?),
             );
         }
         return Ok(YamlNode::Mapping(mapping));
     }
     if let Ok(l) = obj.cast::<PyList>() {
         let ptr = obj.as_ptr() as usize;
-        let (alias, anchor) = check_anchor(ptr);
+        let (alias, anchor) = ctx.check_anchor(ptr);
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
@@ -1006,13 +1038,13 @@ pub(crate) fn extract_yaml_node(
             seq.meta.anchor = Some(name.clone());
         }
         for item in l.iter() {
-            seq.items.push(extract_yaml_node(&item, schema)?);
+            seq.items.push(extract_yaml_node_inner(&item, schema, ctx)?);
         }
         return Ok(YamlNode::Sequence(seq));
     }
     if let Ok(t) = obj.cast::<PyTuple>() {
         let ptr = obj.as_ptr() as usize;
-        let (alias, anchor) = check_anchor(ptr);
+        let (alias, anchor) = ctx.check_anchor(ptr);
         if let Some(name) = alias {
             return Ok(YamlNode::Alias {
                 name,
@@ -1025,13 +1057,13 @@ pub(crate) fn extract_yaml_node(
             seq.meta.anchor = Some(name.clone());
         }
         for item in t.iter() {
-            seq.items.push(extract_yaml_node(&item, schema)?);
+            seq.items.push(extract_yaml_node_inner(&item, schema, ctx)?);
         }
         return Ok(YamlNode::Sequence(seq));
     }
-    // Fall through to py_to_node for bytes, datetime, schema dumpers, and
+    // Fall through to py_to_node_inner for bytes, datetime, schema dumpers, and
     // abstract Mapping/Iterable types.
-    py_to_node(obj, schema)
+    py_to_node_inner(obj, schema, ctx)
 }
 
 // ─── Python object creation helpers ──────────────────────────────────────────

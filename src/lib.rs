@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use core::builder;
 use core::emitter::{emit_docs, emit_docs_to};
 use core::types::YamlNode;
-use py::convert::{AnchorGuard, DocMeta, extract_yaml_node, node_to_doc, parse_stream, parse_text};
+use py::convert::{DocMeta, extract_yaml_node, node_to_doc, parse_stream, parse_text};
 use py::py_iter::{PyYamlIter, YamlIterInner};
 use py::py_mapping::PyYamlMapping;
 use py::py_scalar::PyYamlScalar;
@@ -72,12 +72,12 @@ fn doc_meta_from_py(doc: &Bound<'_, PyAny>) -> builder::DocMetadata {
 }
 
 /// Extract a `YamlNode` plus its per-doc metadata from a Python doc object.
-/// Manages anchor state via [`AnchorGuard`].
+/// `extract_yaml_node` constructs its own per-call `EmitCtx` (anchor + cycle
+/// state), so no extra setup is needed here.
 fn extract_doc_and_meta(
     doc: &Bound<'_, PyAny>,
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<(YamlNode, builder::DocMetadata)> {
-    let _guard = AnchorGuard::new(doc);
     let node = extract_yaml_node(doc, schema)?;
     Ok((node, doc_meta_from_py(doc)))
 }
