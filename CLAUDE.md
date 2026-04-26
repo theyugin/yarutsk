@@ -1,114 +1,71 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## What this project is
 
-`yarutsk` is a Python YAML library that round-trips documents preserving comments, scalar styles, tags, anchors/aliases, blank lines, and explicit document markers. It is a PyO3 extension module written in Rust, built with Maturin.
+`yarutsk` is a Python YAML library (PyO3 + Maturin) that round-trips comments, scalar styles, tags, anchors/aliases, blank lines, and explicit doc markers. Scanner/parser are vendored from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2); the only modification is that `src/core/scanner.rs` emits `Comment` tokens instead of discarding them.
 
-The scanner and parser are vendored from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2) with one modification: the comment-skipping loop in `scanner.rs` emits `Comment` tokens instead of discarding them.
+## Build & test
 
-## Build and development commands
+**After any Rust change, use maturin directly — `uv run` clobbers the maturin build.**
 
-**After any Rust change**, build with maturin directly — do NOT use `uv run`:
 ```bash
-.venv/bin/maturin develop          # debug build
-.venv/bin/python -c "import yarutsk; ..."  # then test
-```
-
-Using `uv run` after Rust changes will clobber the maturin build.
-
-First-time setup:
-```bash
-uv sync --group dev
-.venv/bin/maturin develop
-```
-
-**Run tests:**
-```bash
-.venv/bin/pytest tests/ --ignore=tests/test_yaml_suite.py -v   # core tests
-.venv/bin/pytest tests/test_yaml_suite.py -q                    # yaml-test-suite compliance
-.venv/bin/pytest tests/test_roundtrip.py -v                     # round-trip tests only
-```
-
-**Lint / format:**
-```bash
-cargo fmt
-cargo clippy -- -D warnings   # treat all warnings as errors
-.venv/bin/ruff check .
-```
-
-Always run `cargo clippy -- -D warnings` after Rust changes and fix every diagnostic before considering the work done.
-
-**Type check (Python stubs):**
-```bash
+uv sync --group dev                              # first-time setup
+.venv/bin/maturin develop                        # debug rebuild after Rust changes
+.venv/bin/pytest tests/ --ignore=tests/test_yaml_suite.py -v
+.venv/bin/pytest tests/test_yaml_suite.py -q     # yaml-test-suite compliance
 .venv/bin/mypy
+cargo fmt && cargo clippy -- -D warnings         # clippy must be clean before done
+.venv/bin/ruff check .
 ```
 
 ## Architecture
 
-The pipeline is: scanner → parser → builder → Rust data model → PyO3 Python types → emitter.
+Pipeline: scanner → parser → builder → Rust data model → PyO3 Python types → emitter.
 
-### Rust source files
+Rust source lives under `src/core/` (parse/emit + data model) and `src/py/` (PyO3 layer):
 
-The Rust source is split into `src/lib.rs` plus two submodules: `src/core/` (parse/emit machinery and the Rust data model) and `src/py/` (the PyO3-facing layer).
+| File | Role |
+|---|---|
+| `src/lib.rs` | PyO3 module entry; exception hierarchy; `load*`/`dump*` wrappers; `doc_field!` macro |
+| `src/core/scanner.rs` | Vendored tokeniser, modified to emit `Comment` tokens |
+| `src/core/parser.rs` | Vendored event-based parser |
+| `src/core/builder.rs` | Builds `YamlNode` trees; associates comments with entries; resolves aliases; holds `TagPolicy` |
+| `src/core/types.rs` | Data model: `YamlNode`, `YamlMapping` (IndexMap), `YamlSequence`, `YamlScalar`, `ScalarStyle`, `ContainerStyle`, `ScalarValue` |
+| `src/core/emitter.rs` | Hand-written block-style serialiser; preserves styles/comments/blank-lines/tags/anchors |
+| `src/core/char_traits.rs`, `src/core/debug.rs` | Vendored helpers |
+| `src/py/py_mapping.rs` | `PyYamlMapping` (extends `dict`) |
+| `src/py/py_sequence.rs` | `PyYamlSequence` (extends `list`) |
+| `src/py/py_scalar.rs` | `PyYamlScalar` (plain pyclass) |
+| `src/py/py_iter.rs` | `PyYamlIter` for `iter_load_all*` |
+| `src/py/convert.rs` | Python ↔ `YamlNode` conversion; anchor state; `scalar_to_py_with_tag` |
+| `src/py/schema.rs` | `Schema`: per-call loader/dumper registry; built-ins for `!!binary`, `!!timestamp` |
+| `src/py/streaming.rs` | `PyStreamWriter` and char-source adapters for streaming I/O |
 
-- **`src/lib.rs`** — PyO3 module entry. Defines the exception hierarchy (`YarutskError`, `ParseError`, `LoaderError`, `DumperError`), registers the Python classes, and wraps each module-level function (`load`, `loads`, `load_all`, `loads_all`, `iter_load_all`, `iter_loads_all`, `dump`, `dumps`, `dump_all`, `dumps_all`). Holds the `doc_field!` macro which extracts doc-level metadata from any of the three Python node types, plus `emit_doc_to_string` / `emit_doc_to_stream` helpers.
-- **`src/core/char_traits.rs`** — vendored character classification helpers from yaml-rust2.
-- **`src/core/debug.rs`** — vendored debugging helpers. Output controlled by `YAMLRUST2_DEBUG` env var (debug builds only).
-- **`src/core/scanner.rs`** — tokeniser vendored from yaml-rust2. Modified to emit `Comment` tokens (inline and block) rather than discard them.
-- **`src/core/parser.rs`** — event-based parser vendored from yaml-rust2. Converts token stream to `Event` enum (MappingStart, ScalarToken, etc.).
-- **`src/core/types.rs`** — core Rust data model: `YamlNode` (Mapping/Sequence/Scalar/Null/Alias), `YamlMapping` (IndexMap-backed), `YamlSequence`, `YamlScalar`, `ScalarStyle`, `ContainerStyle`, `ScalarValue`.
-- **`src/core/builder.rs`** — walks the parser event stream and constructs `YamlNode` trees. Tracks a frame stack for nested containers, associates `Comment` tokens with mapping entries (inline vs. before-key), and resolves anchor/alias references. Holds `TagPolicy { raw_tags: HashSet<String> }` which controls which YAML tags bypass `ScalarValue` coercion — used by the Schema system to pass raw strings to custom loaders.
-- **`src/core/emitter.rs`** — hand-written block-style serialiser. Reproduces original styles, comments, blank lines, tags, and anchors. Exposes both `emit_docs` (→ `String`) and `emit_docs_to` (streaming to a writer).
-- **`src/py/py_mapping.rs`** — `PyYamlMapping` (extends Python `dict`). Read/write properties, style mutators, comment accessors, `sort_keys`, `copy` / `__copy__` / `__deepcopy__`.
-- **`src/py/py_sequence.rs`** — `PyYamlSequence` (extends Python `list`). Same surface as `PyYamlMapping`, keyed by integer index (`sort`, `index`).
-- **`src/py/py_scalar.rs`** — `PyYamlScalar` (plain pyclass). Holds a scalar value plus style/tag/anchor/doc-level metadata.
-- **`src/py/py_iter.rs`** — `PyYamlIter`, the streaming iterator returned by `iter_load_all` / `iter_loads_all`.
-- **`src/py/convert.rs`** — conversion between Python objects and `YamlNode`. Anchor-state management (`init_anchor_state` / `clear_anchor_state`), `extract_yaml_node`, `node_to_doc`, `parse_stream`, `parse_text`, and `DocMeta`. Also contains `scalar_to_py_with_tag()` which applies schema/built-in loaders before returning Python values.
-- **`src/py/schema.rs`** — `Schema` pyclass: a per-call registry of custom loaders/dumpers. Built-in handlers (always active) for `!!binary` (base64↔`bytes`) and `!!timestamp` (ISO 8601↔`datetime`/`date`).
-- **`src/py/streaming.rs`** — `PyStreamWriter` (adapts a Python IO object to a Rust writer), plus `CharsSource`, `StringCharsIter`, and `PyIoCharsIter` used by the streaming parse/emit paths.
+Python-visible class names are `YamlMapping` / `YamlSequence` / `YamlScalar`; the `PyYaml…` prefix is Rust-internal.
 
-Each PyO3 container type holds a Rust `inner` field with the full data model; the parent `dict`/`list` is kept in sync on every mutation. The Python-visible class names are `YamlMapping` / `YamlSequence` / `YamlScalar` — the `PyYaml…` prefix is Rust-internal only.
+## Exception hierarchy
 
-### Exception hierarchy
+`YarutskError` is the base. `ParseError`, `LoaderError`, `DumperError` extend it. All four are exported.
 
-`YarutskError` is the base exception; `ParseError`, `LoaderError`, and `DumperError` all extend it. All four are exported from the module.
+## Key design constraints
 
-### Key design constraints
+- `PyYamlMapping` extends `dict`, `PyYamlSequence` extends `list` — requires Python 3.12+ (PyO3 `extends = PyList`).
+- Aliases are stored as `YamlNode::Alias { name, resolved }`: `resolved` is the expanded value for Python access, `name` is preserved for round-trip emission as `*name`.
+- `ScalarValue::from_str` in `src/core/types.rs` implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`); the original spelling is preserved via `original: Option<String>` on `YamlScalar`.
+- **Dual mutation sync**: setting style on a nested container must update both the Rust `inner` and the Python-side parent `dict`/`list` — both must stay in sync on every mutation.
+- **Metadata lives on the node**: style, comments, blank lines are properties of the `YamlNode`. Reach them via `parent.node(key)` / `parent.node(index)` — there is no per-key/per-index accessor on the parent. `node(key)` returns a write-through handle (via `NodeParent` back-ref on `PyYamlScalar`; for container children it returns the live Python child already stored in the parent collection).
 
-- `PyYamlMapping` extends Python `dict`; `PyYamlSequence` extends Python `list`. This requires Python 3.12+ (PyO3's `extends = PyList` support).
-- Aliases are stored as `YamlNode::Alias { name, resolved }` — the `resolved` box holds the expanded value for Python access while `name` is preserved for round-trip emission as `*name`.
-- `ScalarValue::from_str` in `src/core/types.rs` implements YAML 1.1 boolean/null coercion (`yes`/`no`/`on`/`off`/`~`) which is preserved as-written via `original: Option<String>` on `YamlScalar`.
-- **Dual mutation sync**: setting style on a nested container requires updating both the Rust `inner` and the Python-side parent dict — both must stay in sync on every mutation.
-- **Metadata lives on the node**: every piece of node-level formatting (style, comments, blank lines) is a property of the `YamlNode` itself and is reached via `parent.node(key).<field>`. There is no per-key/per-index accessor on the parent container — the parent exposes `node(key)` / `nodes()` and that's the only way in. `node(key)` returns a write-through handle (via `NodeParent` back-reference on `PyYamlScalar`; for container children it returns the live Python object already stored in the parent `dict`/`list`), so setter calls propagate to the parent's `inner` automatically.
+## Public Python API
 
-### Style mutation API
+The full surface (read/write properties, `node`/`nodes`/`get_alias`/`set_alias`, `sort_keys`/`sort`/`index`, `copy`/`__copy__`/`__deepcopy__`, `to_python`, `format(...)`, `Schema`) is documented in **`docs/api.md`** — that file is the source of truth. Mirror any public-API change across:
 
-`YamlMapping`, `YamlSequence`, and `YamlScalar` expose read/write properties for controlling YAML formatting. The same property set lives on every node type (with kind-appropriate values for `style`):
+1. The Rust source.
+2. `python/yarutsk/__init__.pyi` (mypy stub).
+3. `docs/api.md` (and `docs/integrations.md` for Schema changes).
 
-- **Common properties** (read/write on all three node types): `tag`, `anchor`, `style`, `blank_lines_before`, `comment_inline`, `comment_before`
-  - `style` on `YamlScalar`: `"plain" | "single" | "double" | "literal" | "folded"`
-  - `style` on `YamlMapping` / `YamlSequence`: `"block" | "flow"`
-  - `blank_lines_before`: `int`, clamped 0–255 on write
-  - `comment_inline` / `comment_before`: `str | None` — assign `None` to clear
-- **Container-only properties**: `trailing_blank_lines`, `explicit_start`, `explicit_end`, `yaml_version`, `tag_directives` (top-level only)
-- **Container navigation**:
-  - `node(key)` — returns the live child node (write-through); used to reach any per-child metadata
-  - `nodes()` — mapping: `[(key, node)]` pairs; sequence: `[node, ...]` — all with metadata preserved
-- **Alias helpers on containers**: `get_alias(key)` / `set_alias(key, anchor_name)` — distinct from formatting metadata; stays on the parent because it replaces the child value with an alias reference.
-- **In-place ops**: `sort_keys(...)` (mapping), `sort(...)` / `index(...)` (sequence) — preserve per-entry metadata
-- **Copy**: `copy()` / `__copy__` / `__deepcopy__` — metadata-preserving
-- **`to_python()`** — collapse to a plain `dict`/`list`/primitive tree (loses all metadata)
-- **`format(*, styles=True, comments=True, blank_lines=True)`** — recursively resets cosmetic formatting to YAML defaults. `styles`: scalars → plain (multiline → literal), containers → block, `original` cleared. `comments`: clears `comment_before`/`comment_inline`. `blank_lines`: zeros `blank_lines_before` and `trailing_blank_lines`. Tags, anchors, and document-level markers are always preserved. Also available on `YamlScalar` with only `styles=True`.
+`README.md` is a short landing page — do not duplicate API details there.
 
-Typical usage: `doc.node("key").style = "double"`, `doc.node("key").comment_inline = "hi"`, `doc.node(0).blank_lines_before = 2`. Sequence variants use integer indices instead of string keys; otherwise the surface is identical.
-
-### Docs
-
-When adding, changing, or removing public API methods, **update `docs/api.md`** (and `docs/integrations.md` if Schema behaviour changes) to match, alongside the `python/yarutsk/__init__.pyi` stub and the Rust source. The mkdocs site at <https://theyugin.github.io/yarutsk/> is the authoritative user-facing reference; `README.md` is a short landing page that points at the docs and should not duplicate API details.
-
-### Schema / custom type handling
+## Schema (custom type handling)
 
 ```python
 schema = yarutsk.Schema()
@@ -117,24 +74,77 @@ schema.add_dumper(MyType, lambda obj: ("!mytag", str(obj)))
 doc = yarutsk.load(text, schema=schema)
 ```
 
-- Loaders receive the default-coerced Python value for the tagged scalar.
-- Dumpers return `(tag: str, data)` tuples.
-- Built-in handlers (always active): `!!binary` ↔ `bytes` (base64), `!!timestamp` ↔ `datetime.datetime` / `datetime.date`.
-- `TagPolicy` in `src/core/builder.rs` bypasses `ScalarValue` coercion for tags registered in the schema, so custom loaders receive the raw YAML string.
+Loaders receive the default-coerced value; dumpers return `(tag, data)`. Built-ins (always active): `!!binary` ↔ `bytes`, `!!timestamp` ↔ `datetime`/`date`. Tags registered in the schema bypass `ScalarValue` coercion via `TagPolicy` (`src/core/builder.rs`) so loaders see the raw YAML string.
 
-### Test files
+## Tests
 
-- `tests/test_roundtrip.py` — end-to-end load→dump fidelity
-- `tests/test_comments.py` — comment preservation and mutation
-- `tests/test_api.py` — Python API surface
-- `tests/test_constructors.py` — direct construction of `YamlMapping` / `YamlSequence` / `YamlScalar`
-- `tests/test_schema.py` — Schema and custom type handling
-- `tests/test_loading.py` — loading behaviour
-- `tests/test_types.py` — type coercion
-- `tests/test_serialization.py` — serialization edge cases
-- `tests/test_sort.py` — mapping sort behaviour
-- `tests/test_threading.py` — concurrent use from multiple threads
-- `tests/test_invalid_input.py` — error handling and validation
-- `tests/test_yaml_suite.py` — [yaml-test-suite](https://github.com/yaml/yaml-test-suite) compliance (requires `yaml-test-suite` submodule)
-- `tests/typing_check.py` — mypy strict type-checking of the public API
-- `python/yarutsk/__init__.pyi` — Python stub file for the extension module
+`tests/` covers round-trip, comments, API surface, constructors, schema, loading, type coercion, serialization, sort, threading, invalid input, and yaml-test-suite compliance (`tests/test_yaml_suite.py`, requires submodule). `tests/typing_check.py` runs strict mypy against the public stub.
+
+---
+
+# Behavioral guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
