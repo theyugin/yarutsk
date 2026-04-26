@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
 use super::types::{
-    Chomping, ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
     YamlScalar, YamlSequence,
 };
 
@@ -186,13 +186,13 @@ fn make_scalar(
     YamlNode::Scalar(YamlScalar {
         value,
         style,
-        tag,
         original,
         chomping,
-        anchor,
-        comment_inline: None,
-        comment_before: None,
-        blank_lines_before: 0,
+        meta: NodeMeta {
+            tag,
+            anchor,
+            ..NodeMeta::default()
+        },
     })
 }
 
@@ -434,8 +434,8 @@ impl Builder {
                 } else {
                     ContainerStyle::Block
                 };
-                mapping.tag = tag_to_string(tag);
-                mapping.anchor.clone_from(&anchor_name);
+                mapping.meta.tag = tag_to_string(tag);
+                mapping.meta.anchor.clone_from(&anchor_name);
                 self.stack.push(Frame::Mapping(Box::new(MappingFrame {
                     mapping,
                     pending: PendingKey::default(),
@@ -480,8 +480,8 @@ impl Builder {
                 } else {
                     ContainerStyle::Block
                 };
-                seq.tag = tag_to_string(tag);
-                seq.anchor.clone_from(&anchor_name);
+                seq.meta.tag = tag_to_string(tag);
+                seq.meta.anchor.clone_from(&anchor_name);
                 self.stack.push(Frame::Sequence(SequenceFrame {
                     seq,
                     current_comment_before: None,
@@ -745,9 +745,7 @@ impl Builder {
                 self.push_node(YamlNode::Alias {
                     name,
                     resolved: Box::new(resolved),
-                    comment_inline: None,
-                    comment_before: None,
-                    blank_lines_before: 0,
+                    meta: NodeMeta::default(),
                 });
             }
         }
@@ -1045,7 +1043,7 @@ mod tests {
         let node = parse_one("!!str hello\n");
         if let YamlNode::Scalar(s) = node {
             // tag:yaml.org,2002:str is the expanded form stored internally
-            assert!(s.tag.is_some());
+            assert!(s.meta.tag.is_some());
         } else {
             panic!("expected Scalar");
         }
@@ -1055,7 +1053,7 @@ mod tests {
     fn custom_tag_stored_on_sequence() {
         let node = parse_one("!!python/tuple [1, 2]\n");
         if let YamlNode::Sequence(s) = node {
-            assert!(s.tag.is_some());
+            assert!(s.meta.tag.is_some());
         } else {
             panic!("expected Sequence");
         }
@@ -1123,7 +1121,7 @@ mod tests {
     fn scalar_anchor_stored() {
         let node = parse_one("&myval 42\n");
         if let YamlNode::Scalar(s) = node {
-            assert_eq!(s.anchor.as_deref(), Some("myval"));
+            assert_eq!(s.meta.anchor.as_deref(), Some("myval"));
             assert!(matches!(s.value, ScalarValue::Int(42)));
         } else {
             panic!("expected Scalar");
@@ -1164,7 +1162,7 @@ mod tests {
     fn mapping_anchor_stored() {
         let node = parse_one("&m\na: 1\n");
         if let YamlNode::Mapping(m) = node {
-            assert_eq!(m.anchor.as_deref(), Some("m"));
+            assert_eq!(m.meta.anchor.as_deref(), Some("m"));
         } else {
             panic!("expected Mapping");
         }
@@ -1174,7 +1172,7 @@ mod tests {
     fn sequence_anchor_stored() {
         let node = parse_one("&s\n- 1\n- 2\n");
         if let YamlNode::Sequence(s) = node {
-            assert_eq!(s.anchor.as_deref(), Some("s"));
+            assert_eq!(s.meta.anchor.as_deref(), Some("s"));
         } else {
             panic!("expected Sequence");
         }
@@ -1189,7 +1187,7 @@ mod tests {
             let YamlNode::Scalar(s) = &m.entries["a"].value else {
                 panic!("expected Scalar");
             };
-            assert_eq!(s.comment_inline.as_deref(), Some("comment"));
+            assert_eq!(s.meta.comment_inline.as_deref(), Some("comment"));
         } else {
             panic!("expected Mapping");
         }
@@ -1202,7 +1200,7 @@ mod tests {
             let YamlNode::Scalar(s) = &m.entries["b"].value else {
                 panic!("expected Scalar");
             };
-            assert_eq!(s.comment_before.as_deref(), Some("before b"));
+            assert_eq!(s.meta.comment_before.as_deref(), Some("before b"));
         } else {
             panic!("expected Mapping");
         }

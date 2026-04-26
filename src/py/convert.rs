@@ -16,8 +16,8 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{ParseOutput, parse_iter, parse_str};
 use crate::core::types::{
-    ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
-    YamlSequence,
+    ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
 
@@ -352,12 +352,12 @@ pub(crate) fn scalar_to_py_with_tag(
     schema: Option<&Bound<'_, Schema>>,
 ) -> PyResult<Py<PyAny>> {
     // Schema loader takes priority over all built-in tag handlers.
-    if let Some(loader_fn) = lookup_loader(py, schema, s.tag.as_deref()) {
-        let tag_name = s.tag.as_deref().unwrap_or("?");
+    if let Some(loader_fn) = lookup_loader(py, schema, s.meta.tag.as_deref()) {
+        let tag_name = s.meta.tag.as_deref().unwrap_or("?");
         let default_val = scalar_to_py(py, &s.value)?;
         return call_loader(py, &loader_fn, tag_name, default_val);
     }
-    match s.tag.as_deref() {
+    match s.meta.tag.as_deref() {
         Some("!!binary" | "tag:yaml.org,2002:binary") => {
             use base64::{Engine, engine::general_purpose::STANDARD};
             use pyo3::types::PyBytes;
@@ -409,13 +409,9 @@ pub(crate) fn plain_scalar(value: ScalarValue) -> YamlNode {
     YamlNode::Scalar(YamlScalar {
         value,
         style: ScalarStyle::Plain,
-        tag: None,
         original: None,
         chomping: None,
-        anchor: None,
-        comment_inline: None,
-        comment_before: None,
-        blank_lines_before: 0,
+        meta: NodeMeta::default(),
     })
 }
 
@@ -479,12 +475,12 @@ pub(crate) fn node_to_py(
         YamlNode::Null => Ok(py.None()),
         YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s, schema),
         YamlNode::Mapping(m) => {
-            let tag = m.tag.clone();
+            let tag = m.meta.tag.clone();
             let py_obj = mapping_to_py_obj(py, m.clone(), DocMeta::none(), schema)?;
             apply_loader(py, schema, tag.as_deref(), py_obj)
         }
         YamlNode::Sequence(s) => {
-            let tag = s.tag.clone();
+            let tag = s.meta.tag.clone();
             let py_obj = sequence_to_py_obj(py, s.clone(), DocMeta::none(), schema)?;
             apply_loader(py, schema, tag.as_deref(), py_obj)
         }
@@ -561,9 +557,9 @@ pub(crate) fn py_to_node(
             })?;
             let mut node = py_to_node(&data, schema)?;
             match &mut node {
-                YamlNode::Scalar(s) => s.tag = Some(tag),
-                YamlNode::Mapping(m) => m.tag = Some(tag),
-                YamlNode::Sequence(s) => s.tag = Some(tag),
+                YamlNode::Scalar(s) => s.meta.tag = Some(tag),
+                YamlNode::Mapping(m) => m.meta.tag = Some(tag),
+                YamlNode::Sequence(s) => s.meta.tag = Some(tag),
                 _ => {}
             }
             return Ok(node);
@@ -624,13 +620,12 @@ pub(crate) fn py_to_node(
         return Ok(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Str(encoded),
             style: ScalarStyle::Plain,
-            tag: Some("!!binary".to_owned()),
             original: None,
             chomping: None,
-            anchor: None,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta {
+                tag: Some("!!binary".to_owned()),
+                ..NodeMeta::default()
+            },
         }));
     }
     // datetime.datetime / datetime.date → !!timestamp scalar
@@ -641,13 +636,12 @@ pub(crate) fn py_to_node(
             return Ok(YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str(iso),
                 style: ScalarStyle::Plain,
-                tag: Some("!!timestamp".to_owned()),
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta {
+                    tag: Some("!!timestamp".to_owned()),
+                    ..NodeMeta::default()
+                },
             }));
         }
     }
@@ -888,16 +882,18 @@ pub(crate) fn extract_yaml_node(
         let mut mapping = YamlMapping::with_capacity(borrow.inner.entries.len());
         // Preserve all per-node metadata from the child's inner.
         mapping.style = borrow.inner.style;
-        mapping.tag.clone_from(&borrow.inner.tag);
-        mapping.anchor.clone_from(&borrow.inner.anchor);
+        mapping.meta.tag.clone_from(&borrow.inner.meta.tag);
+        mapping.meta.anchor.clone_from(&borrow.inner.meta.anchor);
         mapping.trailing_blank_lines = borrow.inner.trailing_blank_lines;
         mapping
+            .meta
             .comment_inline
-            .clone_from(&borrow.inner.comment_inline);
+            .clone_from(&borrow.inner.meta.comment_inline);
         mapping
+            .meta
             .comment_before
-            .clone_from(&borrow.inner.comment_before);
-        mapping.blank_lines_before = borrow.inner.blank_lines_before;
+            .clone_from(&borrow.inner.meta.comment_before);
+        mapping.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
         // Walk inner.entries for key order. For scalars, inner is the sole
         // source of truth (no live Python object). For containers, re-extract
         // from the live Python object — its `inner` is authoritative for
@@ -938,12 +934,16 @@ pub(crate) fn extract_yaml_node(
         let mut seq = YamlSequence::with_capacity(inner_len);
         // Preserve all per-node metadata from the child's inner.
         seq.style = borrow.inner.style;
-        seq.tag.clone_from(&borrow.inner.tag);
-        seq.anchor.clone_from(&borrow.inner.anchor);
+        seq.meta.tag.clone_from(&borrow.inner.meta.tag);
+        seq.meta.anchor.clone_from(&borrow.inner.meta.anchor);
         seq.trailing_blank_lines = borrow.inner.trailing_blank_lines;
-        seq.comment_inline.clone_from(&borrow.inner.comment_inline);
-        seq.comment_before.clone_from(&borrow.inner.comment_before);
-        seq.blank_lines_before = borrow.inner.blank_lines_before;
+        seq.meta
+            .comment_inline
+            .clone_from(&borrow.inner.meta.comment_inline);
+        seq.meta
+            .comment_before
+            .clone_from(&borrow.inner.meta.comment_before);
+        seq.meta.blank_lines_before = borrow.inner.meta.blank_lines_before;
         for i in 0..inner_len {
             let item = &borrow.inner.items[i];
             let value = match item {
@@ -974,14 +974,12 @@ pub(crate) fn extract_yaml_node(
             return Ok(YamlNode::Alias {
                 name,
                 resolved: Box::new(YamlNode::Null),
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             });
         }
         let mut mapping = YamlMapping::new();
         if let Some(ref name) = anchor {
-            mapping.anchor = Some(name.clone());
+            mapping.meta.anchor = Some(name.clone());
         }
         for (k, v) in d.iter() {
             let key: String = k.extract()?;
@@ -998,14 +996,12 @@ pub(crate) fn extract_yaml_node(
             return Ok(YamlNode::Alias {
                 name,
                 resolved: Box::new(YamlNode::Null),
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             });
         }
         let mut seq = YamlSequence::new();
         if let Some(ref name) = anchor {
-            seq.anchor = Some(name.clone());
+            seq.meta.anchor = Some(name.clone());
         }
         for item in l.iter() {
             seq.items.push(extract_yaml_node(&item, schema)?);
@@ -1019,14 +1015,12 @@ pub(crate) fn extract_yaml_node(
             return Ok(YamlNode::Alias {
                 name,
                 resolved: Box::new(YamlNode::Null),
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             });
         }
         let mut seq = YamlSequence::new();
         if let Some(ref name) = anchor {
-            seq.anchor = Some(name.clone());
+            seq.meta.anchor = Some(name.clone());
         }
         for item in t.iter() {
             seq.items.push(extract_yaml_node(&item, schema)?);

@@ -6,7 +6,7 @@ use std::fmt::{self, Write as FmtWrite};
 use super::builder::DocMetadata;
 use super::char_traits::{is_tag_char, is_uri_char};
 use super::types::{
-    Chomping, ContainerStyle, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
+    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
     YamlScalar, YamlSequence,
 };
 
@@ -236,13 +236,13 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             let key_scalar = YamlScalar {
                 value: ScalarValue::Str(key.to_owned()),
                 style: entry.key_style,
-                tag: entry.key_tag.clone(),
                 original: None,
                 chomping: None,
-                anchor: entry.key_anchor.clone(),
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta {
+                    tag: entry.key_tag.clone(),
+                    anchor: entry.key_anchor.clone(),
+                    ..NodeMeta::default()
+                },
             };
             self.out.write_str("? ")?;
             self.emit_block_scalar(&key_scalar, indent + self.step, None)?;
@@ -272,8 +272,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                 // Block mapping value: anchor + tag (if any) + inline comment, then content below.
                 self.write_anchor_tag_block_suffix(
-                    nested.anchor.as_deref(),
-                    nested.tag.as_deref(),
+                    nested.meta.anchor.as_deref(),
+                    nested.meta.tag.as_deref(),
                 )?;
                 self.finish_inline_line(inline)?;
                 self.emit_mapping(nested, indent + self.step)?;
@@ -289,8 +289,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                 // Block sequence value: anchor + tag (if any) + inline comment, then content below.
                 self.write_anchor_tag_block_suffix(
-                    nested.anchor.as_deref(),
-                    nested.tag.as_deref(),
+                    nested.meta.anchor.as_deref(),
+                    nested.meta.tag.as_deref(),
                 )?;
                 self.finish_inline_line(inline)?;
                 self.emit_sequence(nested, indent + self.step)?;
@@ -333,7 +333,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         // Nested anchors are already emitted by emit_mapping_value / emit_sequence;
         // all non-top-level calls to emit_mapping pass indent > 0.
         if indent == 0
-            && let Some(anchor) = &m.anchor
+            && let Some(anchor) = &m.meta.anchor
         {
             self.out.write_char('&')?;
             self.out.write_str(anchor)?;
@@ -354,7 +354,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     }
 
     fn emit_mapping_flow(&mut self, m: &YamlMapping) -> fmt::Result {
-        self.write_anchor_tag_inline(m.anchor.as_deref(), m.tag.as_deref())?;
+        self.write_anchor_tag_inline(m.meta.anchor.as_deref(), m.meta.tag.as_deref())?;
         self.out.write_char('{')?;
         let mut first = true;
         for (key, entry) in &m.entries {
@@ -437,7 +437,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         // Top-level anchor: emit `&name` on its own line before the items.
         // All non-top-level calls to emit_sequence pass indent > 0.
         if indent == 0
-            && let Some(anchor) = &s.anchor
+            && let Some(anchor) = &s.meta.anchor
         {
             self.out.write_char('&')?;
             self.out.write_str(anchor)?;
@@ -463,8 +463,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 YamlNode::Mapping(nested) if !nested.entries.is_empty() => {
                     self.emit_nested_in_seq(
                         NestedKind::Mapping(nested),
-                        nested.anchor.as_deref(),
-                        nested.tag.as_deref(),
+                        nested.meta.anchor.as_deref(),
+                        nested.meta.tag.as_deref(),
                         inline,
                         indent + self.step,
                     )?;
@@ -479,8 +479,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 YamlNode::Sequence(nested) if !nested.items.is_empty() => {
                     self.emit_nested_in_seq(
                         NestedKind::Sequence(nested),
-                        nested.anchor.as_deref(),
-                        nested.tag.as_deref(),
+                        nested.meta.anchor.as_deref(),
+                        nested.meta.tag.as_deref(),
                         inline,
                         indent + self.step,
                     )?;
@@ -504,7 +504,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     }
 
     fn emit_sequence_flow(&mut self, s: &YamlSequence) -> fmt::Result {
-        self.write_anchor_tag_inline(s.anchor.as_deref(), s.tag.as_deref())?;
+        self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         self.out.write_char('[')?;
         let mut first = true;
         for item in &s.items {
@@ -727,7 +727,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             (0, indent)
         };
 
-        self.write_anchor_tag_inline(s.anchor.as_deref(), s.tag.as_deref())?;
+        self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         self.out.write_char(indicator)?;
         if explicit_indicator > 0 {
             // Digit before chomping (YAML spec allows either order; digit-first is conventional).
@@ -795,7 +795,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     /// `{ … }`; it widens the set of strings that need quoting (see
     /// [`needs_quoting`]).
     fn emit_scalar(&mut self, s: &YamlScalar, flow_context: bool) -> fmt::Result {
-        self.write_anchor_tag_inline(s.anchor.as_deref(), s.tag.as_deref())?;
+        self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         // Use preserved source text when available (e.g. float exponent form `1.5e10`,
         // non-canonical null/bool/int forms, tagged plain scalars).
         if let Some(orig) = &s.original {
@@ -1311,10 +1311,10 @@ pub fn emit_docs_to<W: FmtWrite>(
                 emitter.emit_comment_before(doc.comment_before(), 0)?;
                 if let YamlNode::Scalar(s) = doc {
                     if is_block_scalar(s) {
-                        emitter.emit_block_scalar(s, step, s.comment_inline.as_deref())?;
+                        emitter.emit_block_scalar(s, step, s.meta.comment_inline.as_deref())?;
                     } else {
                         emitter.emit_scalar(s, false)?;
-                        emitter.push_inline_comment(s.comment_inline.as_deref())?;
+                        emitter.push_inline_comment(s.meta.comment_inline.as_deref())?;
                     }
                 } else {
                     emitter.emit_node(doc, 0, false)?;
@@ -1350,13 +1350,9 @@ mod tests {
         YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Str(s.to_owned()),
             style: ScalarStyle::Plain,
-            tag: None,
             original: None,
             chomping: None,
-            anchor: None,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         })
     }
 
@@ -1364,13 +1360,9 @@ mod tests {
         YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Int(n),
             style: ScalarStyle::Plain,
-            tag: None,
             original: None,
             chomping: None,
-            anchor: None,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         })
     }
 
@@ -1400,13 +1392,13 @@ mod tests {
         YamlScalar {
             value,
             style,
-            tag: tag.map(std::borrow::ToOwned::to_owned),
             original: original.map(std::borrow::ToOwned::to_owned),
             chomping: None,
-            anchor: anchor.map(std::borrow::ToOwned::to_owned),
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta {
+                tag: tag.map(std::borrow::ToOwned::to_owned),
+                anchor: anchor.map(std::borrow::ToOwned::to_owned),
+                ..NodeMeta::default()
+            },
         }
     }
 
@@ -1730,9 +1722,7 @@ mod tests {
         let node = YamlNode::Alias {
             name: "myref".to_owned(),
             resolved: Box::new(YamlNode::Null),
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         };
         assert_eq!(node_emit(&node), "*myref");
     }
@@ -1924,13 +1914,9 @@ mod tests {
         let mut entry = make_entry(YamlNode::Scalar(YamlScalar {
             value: ScalarValue::Str("value".to_owned()),
             style: ScalarStyle::Plain,
-            tag: None,
             original: None,
             chomping: None,
-            anchor: None,
-            comment_inline: None,
-            comment_before: None,
-            blank_lines_before: 0,
+            meta: NodeMeta::default(),
         }));
         entry.key_node = Some(Box::new(YamlNode::Sequence(key_seq)));
         mapping.entries.insert(String::new(), entry);
@@ -1959,13 +1945,9 @@ mod tests {
             YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str("hello\nworld\n".to_owned()),
                 style: ScalarStyle::Literal,
-                tag: None,
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             }),
         )]);
         let mut out = String::new();
@@ -1987,13 +1969,9 @@ mod tests {
             YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str("hello world\n".to_owned()),
                 style: ScalarStyle::Folded,
-                tag: None,
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             }),
         )]);
         let mut out = String::new();
@@ -2013,13 +1991,9 @@ mod tests {
             let doc = YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str("#\n".to_owned()),
                 style,
-                tag: None,
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             });
             let out = emit_docs(
                 &[doc, YamlNode::Null],
@@ -2050,13 +2024,9 @@ mod tests {
                 YamlNode::Scalar(YamlScalar {
                     value: ScalarValue::Str((*content).to_owned()),
                     style: ScalarStyle::Folded,
-                    tag: None,
                     original: None,
                     chomping: None,
-                    anchor: None,
-                    comment_inline: None,
-                    comment_before: None,
-                    blank_lines_before: 0,
+                    meta: NodeMeta::default(),
                 }),
             )]);
             let mut out = String::new();
@@ -2083,13 +2053,9 @@ mod tests {
             YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str("no trailing newline".to_owned()),
                 style: ScalarStyle::Literal,
-                tag: None,
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             }),
         )]);
         let mut out = String::new();
@@ -2108,13 +2074,9 @@ mod tests {
             YamlNode::Scalar(YamlScalar {
                 value: ScalarValue::Str("two newlines\n\n".to_owned()),
                 style: ScalarStyle::Literal,
-                tag: None,
                 original: None,
                 chomping: None,
-                anchor: None,
-                comment_inline: None,
-                comment_before: None,
-                blank_lines_before: 0,
+                meta: NodeMeta::default(),
             }),
         )]);
         let mut out = String::new();
