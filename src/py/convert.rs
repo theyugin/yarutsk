@@ -429,8 +429,9 @@ pub(crate) fn resolve_seq_idx(idx: isize, len: usize) -> PyResult<usize> {
 }
 
 /// Convert a Python value into a `LiveNode` for storage in a pyclass entry/item.
-/// Containers are materialised into `Container(Py<…>)`; anything `py_to_node`
-/// can't convert lands as `OpaquePy(value)`.
+/// Containers are materialised into `LivePy(Py<PyYamlMapping|PyYamlSequence>)`;
+/// anything `py_to_node` can't convert lands as `LivePy(value)` (typed-vs-opaque
+/// is decided by downcast at access sites).
 pub(crate) fn py_to_stored_node(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -773,9 +774,11 @@ fn synthetic_alias(name: String) -> YamlNode {
     }
 }
 
-/// Visit every `Container(Py<…>)` child in *children*, casting each to its
-/// concrete pyclass and invoking *visit*.
-pub(crate) fn for_each_opaque_child<F>(
+/// Visit every typed yarutsk pyclass child in *children*, casting each to its
+/// concrete pyclass and invoking *visit*. Opaque (non-yarutsk) `LivePy` values
+/// are silently skipped — recursive container walks only descend into typed
+/// children.
+pub(crate) fn for_each_live_child<F>(
     py: Python<'_>,
     children: Vec<Py<PyAny>>,
     mut visit: F,
@@ -802,7 +805,7 @@ pub(crate) enum ChildContainer<'py, 'a> {
     Scalar(&'a Bound<'py, PyYamlScalar>),
 }
 
-pub(crate) fn collect_opaque_children_from_mapping(
+pub(crate) fn collect_live_children_from_mapping(
     m: &YamlMapping<LiveNode>,
     py: Python<'_>,
 ) -> Vec<Py<PyAny>> {
@@ -815,7 +818,7 @@ pub(crate) fn collect_opaque_children_from_mapping(
         .collect()
 }
 
-pub(crate) fn collect_opaque_children_from_sequence(
+pub(crate) fn collect_live_children_from_sequence(
     s: &YamlSequence<LiveNode>,
     py: Python<'_>,
 ) -> Vec<Py<PyAny>> {
@@ -1269,9 +1272,10 @@ pub(crate) fn sequence_to_py_obj_inner(
     Ok(obj.into_any())
 }
 
-/// Walk a live mapping; for any `Container(Py<…>)` slot, replace the wrapped
-/// Py with a freshly deep-copied one. Used by `__deepcopy__`.
-pub(crate) fn deep_clone_opaque(py: Python<'_>, slot: &mut LiveNode) -> PyResult<()> {
+/// Walk a live slot; for any `LivePy(Py<…>)` holding a typed yarutsk pyclass,
+/// replace the wrapped `Py` with a freshly deep-copied one. Opaque values
+/// are left in place. Used by `__deepcopy__`.
+pub(crate) fn deep_clone_live(py: Python<'_>, slot: &mut LiveNode) -> PyResult<()> {
     let LiveNode::LivePy(p) = slot else {
         return Ok(());
     };
