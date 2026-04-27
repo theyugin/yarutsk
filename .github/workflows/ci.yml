@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -156,10 +160,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: rustfmt
         run: cargo fmt --check
+
+      - name: cargo test
+        run: cargo test --no-fail-fast
 
   # ── cargo-deny (license + advisory audit) ────────────────────────────────
   deny:

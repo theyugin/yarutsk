@@ -7,10 +7,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    ChildContainer, LoadCtx, carry_metadata, collect_live_children_from_sequence, deep_clone_live,
-    extract_yaml_node, for_each_live_child, live_sequence_to_py_obj, live_sequence_to_python,
-    materialise_sequence, node_to_py, py_to_stored_node, read_metadata, resolve_seq_idx,
-    seq_child_node, sequence_repr,
+    ChildContainer, carry_metadata, collect_live_children_from_sequence, deep_clone_live,
+    for_each_live_child, init_live_sequence, live_sequence_to_py_obj, live_sequence_to_python,
+    node_to_py, py_to_stored_node, read_metadata, resolve_seq_idx, seq_child_node, sequence_repr,
 };
 use super::live::LiveNode;
 use super::macros::container_metadata_pymethods;
@@ -19,7 +18,7 @@ use super::py_node::PyYamlNode;
 use super::schema::Schema;
 use super::sort::py_compare;
 use super::style_parse::parse_container_style;
-use crate::core::types::{FormatOptions, NodeMeta, YamlNode, YamlSequence};
+use crate::core::types::{FormatOptions, NodeMeta, YamlSequence};
 
 /// A YAML sequence node. Standalone pyclass implementing the list protocol
 /// (`__getitem__`/`__setitem__`/`__iter__`/...).
@@ -63,31 +62,7 @@ impl PyYamlSequence {
     ) -> PyResult<()> {
         let _ = (style, tag); // already applied in __new__
         if let Some(it) = iterable {
-            let py = slf.py();
-            crate::py::schema::freeze_schema(py, schema.as_ref());
-            let sb = schema.as_ref().map(|s| s.bind(py));
-            // `extract_yaml_node` (not `py_to_node`) so self-referential
-            // lists round-trip via auto-anchor instead of erroring on the
-            // cycle guard.
-            let node = extract_yaml_node(it, sb.as_ref().copied())?;
-            match node {
-                YamlNode::Sequence(parsed) => {
-                    let mut ctx = LoadCtx::default();
-                    let mut live =
-                        materialise_sequence(py, parsed, sb.as_ref().copied(), &mut ctx)?;
-                    let mut borrow = slf.borrow_mut();
-                    let style = borrow.inner.style;
-                    let tag = std::mem::take(&mut borrow.inner.meta.tag);
-                    live.style = style;
-                    live.meta.tag = tag;
-                    borrow.inner = live;
-                }
-                _ => {
-                    return Err(pyo3::exceptions::PyTypeError::new_err(
-                        "YamlSequence requires a list or iterable object",
-                    ));
-                }
-            }
+            init_live_sequence(slf, it, schema.as_ref())?;
         }
         Ok(())
     }

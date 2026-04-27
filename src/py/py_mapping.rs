@@ -7,10 +7,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use super::convert::{
-    ChildContainer, LoadCtx, carry_metadata, collect_live_children_from_mapping,
-    collect_live_children_from_sequence, deep_clone_live, extract_yaml_node, for_each_live_child,
-    live_mapping_to_py_obj, live_mapping_to_python, map_child_node, mapping_repr,
-    materialise_mapping, node_to_py, plain_entry, py_to_stored_node, read_metadata,
+    ChildContainer, carry_metadata, collect_live_children_from_mapping,
+    collect_live_children_from_sequence, deep_clone_live, for_each_live_child, init_live_mapping,
+    live_mapping_to_py_obj, live_mapping_to_python, map_child_node, mapping_repr, node_to_py,
+    plain_entry, py_to_stored_node, read_metadata,
 };
 use super::live::LiveNode;
 use super::macros::container_metadata_pymethods;
@@ -19,7 +19,7 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use super::sort::sort_mapping;
 use super::style_parse::parse_container_style;
-use crate::core::types::{FormatOptions, MapKey, NodeMeta, YamlMapping, YamlNode};
+use crate::core::types::{FormatOptions, MapKey, NodeMeta, YamlMapping};
 
 /// A YAML mapping node. Standalone pyclass implementing the dict protocol
 /// (`__getitem__`/`__setitem__`/`__iter__`/...).
@@ -69,30 +69,7 @@ impl PyYamlMapping {
     ) -> PyResult<()> {
         let _ = (style, tag); // already applied in __new__
         if let Some(m) = mapping {
-            let py = slf.py();
-            crate::py::schema::freeze_schema(py, schema.as_ref());
-            let sb = schema.as_ref().map(|s| s.bind(py));
-            // `extract_yaml_node` (not `py_to_node`) so self-referential
-            // dicts round-trip via auto-anchor instead of erroring on the
-            // cycle guard.
-            let node = extract_yaml_node(m, sb.as_ref().copied())?;
-            match node {
-                YamlNode::Mapping(parsed) => {
-                    let mut ctx = LoadCtx::default();
-                    let mut live = materialise_mapping(py, parsed, sb.as_ref().copied(), &mut ctx)?;
-                    let mut borrow = slf.borrow_mut();
-                    let style = borrow.inner.style;
-                    let tag = std::mem::take(&mut borrow.inner.meta.tag);
-                    live.style = style;
-                    live.meta.tag = tag;
-                    borrow.inner = live;
-                }
-                _ => {
-                    return Err(pyo3::exceptions::PyTypeError::new_err(
-                        "YamlMapping requires a dict or mapping-like object",
-                    ));
-                }
-            }
+            init_live_mapping(slf, m, schema.as_ref())?;
         }
         Ok(())
     }
