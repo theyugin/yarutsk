@@ -42,7 +42,7 @@ pub(crate) fn py_compare<'py>(
 
 /// Sort the keys of a live mapping in place. Recursive descent into nested
 /// `Container` Pys happens in `py_mapping::sort_keys` via
-/// `for_each_opaque_child`; this function only reorders the entries of *m*.
+/// `for_each_live_child`; this function only reorders the entries of *m*.
 pub(crate) fn sort_mapping(
     py: Python<'_>,
     m: &mut YamlMapping<LiveNode>,

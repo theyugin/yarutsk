@@ -7,10 +7,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice};
 
 use super::convert::{
-    ChildContainer, LoadCtx, carry_metadata, collect_opaque_children_from_sequence,
-    deep_clone_opaque, extract_yaml_node, for_each_opaque_child, live_sequence_to_py_obj,
-    live_sequence_to_python, materialise_sequence, node_to_py, py_to_stored_node, read_metadata,
-    resolve_seq_idx, seq_child_node, sequence_repr,
+    ChildContainer, LoadCtx, carry_metadata, collect_live_children_from_sequence, deep_clone_live,
+    extract_yaml_node, for_each_live_child, live_sequence_to_py_obj, live_sequence_to_python,
+    materialise_sequence, node_to_py, py_to_stored_node, read_metadata, resolve_seq_idx,
+    seq_child_node, sequence_repr,
 };
 use super::live::LiveNode;
 use super::macros::container_metadata_pymethods;
@@ -444,8 +444,8 @@ impl PyYamlSequence {
         }
         slf.borrow_mut().inner.items = zipped.into_iter().map(|(_, item)| item).collect();
         if recursive {
-            let children = collect_opaque_children_from_sequence(&slf.borrow().inner, py);
-            for_each_opaque_child(py, children, |child| match child {
+            let children = collect_live_children_from_sequence(&slf.borrow().inner, py);
+            for_each_live_child(py, children, |child| match child {
                 ChildContainer::Mapping(m) => PyYamlMapping::sort_keys(m, py, None, reverse, true),
                 ChildContainer::Sequence(s) => PyYamlSequence::sort(
                     s,
@@ -458,19 +458,6 @@ impl PyYamlSequence {
             })?;
         }
         Ok(())
-    }
-
-    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
-    fn copy(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Self::__copy__(slf, py)
-    }
-
-    /// Shallow copy: container children share Py identity with the original
-    /// (matches `list.copy()`).
-    #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
-    fn __copy__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let meta = slf.as_super().doc_metadata().clone();
-        live_sequence_to_py_obj(py, slf.inner.clone(), meta)
     }
 
     #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 receivers are by-value
@@ -550,8 +537,8 @@ impl PyYamlSequence {
         };
         slf.borrow_mut().inner.format_with(opts);
         let py = slf.py();
-        let children = collect_opaque_children_from_sequence(&slf.borrow().inner, py);
-        for_each_opaque_child(py, children, |child| match child {
+        let children = collect_live_children_from_sequence(&slf.borrow().inner, py);
+        for_each_live_child(py, children, |child| match child {
             ChildContainer::Mapping(m) => PyYamlMapping::format(m, styles, comments, blank_lines),
             ChildContainer::Sequence(s) => PyYamlSequence::format(s, styles, comments, blank_lines),
             ChildContainer::Scalar(sc) => {
@@ -562,7 +549,7 @@ impl PyYamlSequence {
     }
 }
 
-container_metadata_pymethods!(PyYamlSequence);
+container_metadata_pymethods!(PyYamlSequence, live_sequence_to_py_obj);
 
 /// Deep-copy a sequence. Free-function variant of `__deepcopy__` so it's
 /// callable from Rust code (pymethods are not).
@@ -572,7 +559,7 @@ pub(crate) fn deep_copy_sequence(
 ) -> PyResult<Py<PyAny>> {
     let mut cloned = slf.inner.clone();
     for item in &mut cloned.items {
-        deep_clone_opaque(py, item)?;
+        deep_clone_live(py, item)?;
     }
     let meta = slf.as_super().doc_metadata().clone();
     live_sequence_to_py_obj(py, cloned, meta)
