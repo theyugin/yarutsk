@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-04-28
+
+### Internal
+- Collapsed `LiveNode::Container` and `LiveNode::OpaquePy` into a single `LivePy` variant; the typed-vs-opaque distinction now happens at access sites by downcast.
+- Flattened `ScalarRepr` enum into `value: ScalarValue, source: Option<String>` fields on `YamlScalar`; the demotion-on-mutation rule is visible in `set_value` instead of hidden in an enum transition.
+
 ## [0.8.1] - 2026-04-26
 
 ### Fixed

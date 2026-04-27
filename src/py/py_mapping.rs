@@ -9,9 +9,10 @@ use pyo3::types::{PyDict, PyList};
 use super::convert::{
     ChildContainer, LoadCtx, carry_metadata, collect_opaque_children_from_mapping,
     collect_opaque_children_from_sequence, deep_clone_opaque, extract_yaml_node,
-    for_each_opaque_child, map_child_node, mapping_repr, mapping_to_py_obj, mapping_to_python,
-    materialise_node, node_to_py, plain_entry, py_to_stored_node, read_metadata,
+    for_each_opaque_child, live_mapping_to_py_obj, live_mapping_to_python, map_child_node,
+    mapping_repr, materialise_mapping, node_to_py, plain_entry, py_to_stored_node, read_metadata,
 };
+use super::live::LiveNode;
 use super::macros::container_metadata_pymethods;
 use super::py_node::PyYamlNode;
 use super::py_sequence::PyYamlSequence;
@@ -23,7 +24,7 @@ use crate::core::types::{FormatOptions, MapKey, NodeMeta, YamlMapping, YamlNode}
 /// A YAML mapping node. Standalone pyclass implementing the dict protocol
 /// (`__getitem__`/`__setitem__`/`__iter__`/...).
 ///
-/// Container children are stored as `YamlNode::Container(Py<PyYamlMapping>)` /
+/// Container children are stored as `LiveNode::LivePy(Py<PyYamlMapping>)` /
 /// `Container(Py<PyYamlSequence>)` so `doc['a']` returns the same Py every time,
 /// mutations propagate, and aliases share identity. Scalars convert to
 /// Python primitives on each read.
@@ -33,7 +34,7 @@ use crate::core::types::{FormatOptions, MapKey, NodeMeta, YamlMapping, YamlNode}
 #[pyclass(name = "YamlMapping", extends = PyYamlNode, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlMapping {
-    pub(crate) inner: YamlMapping,
+    pub(crate) inner: YamlMapping<LiveNode>,
 }
 
 #[pymethods]
@@ -76,20 +77,15 @@ impl PyYamlMapping {
             // cycle guard.
             let node = extract_yaml_node(m, sb.as_ref().copied())?;
             match node {
-                YamlNode::Mapping(mut parsed) => {
-                    // Materialise children — Mapping/Sequence become Container,
-                    // Aliases (from auto-anchor) keep their structure for
-                    // round-trip.
+                YamlNode::Mapping(parsed) => {
                     let mut ctx = LoadCtx::default();
-                    for entry in parsed.entries.values_mut() {
-                        materialise_node(py, &mut entry.value, sb.as_ref().copied(), &mut ctx)?;
-                    }
+                    let mut live = materialise_mapping(py, parsed, sb.as_ref().copied(), &mut ctx)?;
                     let mut borrow = slf.borrow_mut();
                     let style = borrow.inner.style;
                     let tag = std::mem::take(&mut borrow.inner.meta.tag);
-                    borrow.inner = parsed;
-                    borrow.inner.style = style;
-                    borrow.inner.meta.tag = tag;
+                    live.style = style;
+                    live.meta.tag = tag;
+                    borrow.inner = live;
                 }
                 _ => {
                     return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -104,7 +100,7 @@ impl PyYamlMapping {
     fn __getitem__(slf: &Bound<'_, Self>, key: &str) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let mk = MapKey::scalar(key);
-        let value: YamlNode = {
+        let value: LiveNode = {
             let borrow = slf.borrow();
             match borrow.inner.entries.get(&mk) {
                 Some(entry) => entry.value.clone(),
@@ -251,7 +247,7 @@ impl PyYamlMapping {
     #[allow(clippy::needless_pass_by_value)] // pymethod: PyO3 requires Option<Py<T>> by value
     fn get(slf: &Bound<'_, Self>, key: &str, default: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
-        let value: Option<YamlNode> = {
+        let value: Option<LiveNode> = {
             let borrow = slf.borrow();
             borrow
                 .inner
@@ -351,7 +347,7 @@ impl PyYamlMapping {
         default: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let mk = MapKey::scalar(key);
-        let existing: Option<YamlNode> = {
+        let existing: Option<LiveNode> = {
             let borrow = slf.borrow();
             borrow.inner.entries.get(&mk).map(|e| e.value.clone())
         };
@@ -406,13 +402,14 @@ impl PyYamlMapping {
                 ChildContainer::Sequence(s) => {
                     descend_seq_for_sort_keys(s, py, key.as_ref(), reverse)
                 }
+                ChildContainer::Scalar(_) => Ok(()),
             })?;
         }
         Ok(())
     }
 
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        mapping_to_python(py, &self.inner)
+        live_mapping_to_python(py, &self.inner)
     }
 
     /// Return the YAML alias name if the value at *key* is an alias (``*name``), else ``None``.
@@ -420,7 +417,7 @@ impl PyYamlMapping {
     fn get_alias(&self, key: &str) -> PyResult<Option<&str>> {
         match self.inner.entries.get(&MapKey::scalar(key)) {
             Some(entry) => Ok(match &entry.value {
-                YamlNode::Alias { name, .. } => Some(name.as_str()),
+                LiveNode::Alias { name, .. } => Some(name.as_str()),
                 _ => None,
             }),
             None => Err(PyKeyError::new_err(key.to_owned())),
@@ -430,18 +427,18 @@ impl PyYamlMapping {
     /// Mark the value at *key* as a YAML alias that emits ``*anchor_name``.
     /// The current value is kept as the resolved node so Python reads still work.
     /// Raises ``KeyError`` if *key* is absent.
-    fn set_alias(&mut self, key: &str, anchor_name: &str) -> PyResult<()> {
+    fn set_alias(&mut self, py: Python<'_>, key: &str, anchor_name: &str) -> PyResult<()> {
         let entry = self
             .inner
             .entries
             .get_mut(&MapKey::scalar(key))
             .ok_or_else(|| PyKeyError::new_err(key.to_owned()))?;
-        let resolved = Arc::new(entry.value.clone());
-        entry.value = YamlNode::Alias {
+        let resolved = Arc::new(crate::py::convert::live_to_yamlnode(py, &entry.value)?);
+        entry.value = LiveNode::Alias {
             name: anchor_name.to_owned(),
             resolved,
-            meta: NodeMeta::default(),
             materialised: None,
+            meta: NodeMeta::default(),
         };
         Ok(())
     }
@@ -486,9 +483,18 @@ impl PyYamlMapping {
         slf.borrow_mut().inner.format_with(opts);
         let py = slf.py();
         let children = collect_opaque_children_from_mapping(&slf.borrow().inner, py);
+        let opts = FormatOptions {
+            styles,
+            comments,
+            blank_lines,
+        };
         for_each_opaque_child(py, children, |child| match child {
             ChildContainer::Mapping(m) => PyYamlMapping::format(m, styles, comments, blank_lines),
             ChildContainer::Sequence(s) => PyYamlSequence::format(s, styles, comments, blank_lines),
+            ChildContainer::Scalar(sc) => {
+                sc.borrow_mut().inner.format_with(opts);
+                Ok(())
+            }
         })
     }
 
@@ -526,7 +532,7 @@ impl PyYamlMapping {
         // `Container(Py<…>)` slots clone via Py refcount, so child containers are
         // shared with the source — same as `dict.copy()`.
         let meta = slf.as_super().doc_metadata().clone();
-        mapping_to_py_obj(py, slf.inner.clone(), meta, None)
+        live_mapping_to_py_obj(py, slf.inner.clone(), meta)
     }
 
     /// Deep copy: recursively reconstructs every nested container as a fresh
@@ -554,7 +560,7 @@ pub(crate) fn deep_copy_mapping(
         deep_clone_opaque(py, &mut entry.value)?;
     }
     let meta = slf.as_super().doc_metadata().clone();
-    mapping_to_py_obj(py, cloned, meta, None)
+    live_mapping_to_py_obj(py, cloned, meta)
 }
 
 /// Walk a `YamlSequence`'s items, syncing the order of every nested
@@ -572,5 +578,6 @@ pub(crate) fn descend_seq_for_sort_keys(
             PyYamlMapping::sort_keys(m, py, key.map(|k| k.clone_ref(py)), reverse, true)
         }
         ChildContainer::Sequence(s) => descend_seq_for_sort_keys(s, py, key, reverse),
+        ChildContainer::Scalar(_) => Ok(()),
     })
 }

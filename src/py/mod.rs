@@ -9,8 +9,9 @@
 //!   standalone pyclasses (not extending `dict`/`list`); the dict/list
 //!   protocol on the first two is implemented manually via dunder methods.
 //! - `convert` — the boundary between Python objects and `core::types::YamlNode`,
-//!   plus anchor/alias state. See its module docs for the `NodeParent`
-//!   write-through invariant.
+//!   plus anchor/alias state. Scalars accessed via `node()` are lazily
+//!   promoted into `LiveNode::LivePy(Py<PyYamlScalar>)` so subsequent
+//!   reads share identity and setters land directly on the borrowed pyclass.
 //! - `schema` — per-call loader/dumper registry for custom tag handling.
 //! - `streaming` — char-source adapters for `load_all*` over Python IO objects.
 //! - `py_iter` — backing iterator for `iter_load_all*`.
@@ -18,6 +19,7 @@
 //! - `macros` — small declarative macros shared by the pyclasses.
 
 pub(crate) mod convert;
+pub(crate) mod live;
 pub(crate) mod macros;
 pub(crate) mod py_iter;
 pub(crate) mod py_mapping;

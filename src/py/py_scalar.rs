@@ -2,25 +2,39 @@
 
 use pyo3::prelude::*;
 
-use super::convert::{
-    NodeParent, date_type, datetime_type, py_primitive_to_scalar, scalar_to_py_with_tag,
-};
+use super::convert::{date_type, datetime_type, py_primitive_to_scalar, scalar_to_py_with_tag};
 use super::py_node::PyYamlNode;
 use super::style_parse::parse_scalar_style;
-use crate::core::types::{
-    FormatOptions, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlNode, YamlScalar,
-};
+use crate::core::types::{FormatOptions, NodeMeta, ScalarStyle, ScalarValue, YamlNode, YamlScalar};
 
-/// A YAML scalar document node (int, float, bool, str, or null).
+/// A YAML scalar document node (int, float, bool, str, or null), or an alias
+/// resolving to a scalar.
+///
+/// Scalar children of a `PyYamlMapping`/`PyYamlSequence` are lazily promoted
+/// into the parent's tree as `LiveNode::LivePy(Py<PyYamlScalar>)` on the
+/// first `node()` access; alias-to-scalar slots are promoted the same way so
+/// the alias name and meta survive the round-trip.
+///
+/// `inner` is constrained to `YamlNode::Scalar` or `YamlNode::Alias` (whose
+/// `resolved` points at a scalar). Other `YamlNode` variants are not valid.
 #[pyclass(name = "YamlScalar", extends = PyYamlNode, from_py_object)]
 #[derive(Clone)]
 pub struct PyYamlScalar {
-    pub(crate) inner: YamlNode, // YamlNode::Scalar or YamlNode::Null
-    /// Back-reference to the containing mapping/sequence when this scalar was
-    /// obtained via `YamlMapping.node(key)` / `YamlSequence.node(idx)`. All
-    /// setters propagate mutations through this reference so that mutations
-    /// on `m.node(k)` land in the parent's `inner` instead of a dead clone.
-    pub(crate) parent: NodeParent,
+    pub(crate) inner: YamlNode,
+}
+
+impl PyYamlScalar {
+    /// Borrow the underlying `YamlScalar` (the resolved scalar for an alias).
+    fn scalar(&self) -> Option<&YamlScalar> {
+        match &self.inner {
+            YamlNode::Scalar(s) => Some(s),
+            YamlNode::Alias { resolved, .. } => match resolved.as_ref() {
+                YamlNode::Scalar(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 #[pymethods]
@@ -39,44 +53,39 @@ impl PyYamlScalar {
         tag: Option<&str>,
     ) -> PyResult<(Self, PyYamlNode)> {
         let scalar_style = parse_scalar_style(style)?;
-        // Try plain primitives first.
-        let inner = if let Some(node) = py_primitive_to_scalar(value) {
-            match node {
-                YamlNode::Scalar(mut s) => {
-                    s.style = scalar_style;
-                    s.meta.tag = tag.map(str::to_owned);
-                    YamlNode::Scalar(s)
-                }
-                other => other, // Null
-            }
+        let scalar = if let Some(mut s) = py_primitive_to_scalar(value) {
+            s.style = scalar_style;
+            s.meta.tag = tag.map(str::to_owned);
+            s
         } else if (value.is_instance_of::<pyo3::types::PyBytes>()
             || value.is_instance_of::<pyo3::types::PyByteArray>())
             && let Ok(b) = value.extract::<Vec<u8>>()
         {
             use base64::{Engine, engine::general_purpose::STANDARD};
-            YamlNode::Scalar(YamlScalar {
-                repr: ScalarRepr::Canonical(ScalarValue::Str(STANDARD.encode(&b))),
+            YamlScalar {
+                value: ScalarValue::Str(STANDARD.encode(&b)),
+                source: None,
                 style: scalar_style,
                 chomping: None,
                 meta: NodeMeta {
                     tag: Some(tag.unwrap_or("!!binary").to_owned()),
                     ..NodeMeta::default()
                 },
-            })
+            }
         } else {
-            // datetime.datetime / datetime.date
             let py = value.py();
             if value.is_instance(datetime_type(py)?)? || value.is_instance(date_type(py)?)? {
                 let iso: String = value.call_method0("isoformat")?.extract()?;
-                YamlNode::Scalar(YamlScalar {
-                    repr: ScalarRepr::Canonical(ScalarValue::Str(iso)),
+                YamlScalar {
+                    value: ScalarValue::Str(iso),
+                    source: None,
                     style: scalar_style,
                     chomping: None,
                     meta: NodeMeta {
                         tag: Some(tag.unwrap_or("!!timestamp").to_owned()),
                         ..NodeMeta::default()
                     },
-                })
+                }
             } else {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "YamlScalar value must be str, int, float, bool, None, bytes, bytearray, datetime, or date",
@@ -85,8 +94,7 @@ impl PyYamlScalar {
         };
         Ok((
             PyYamlScalar {
-                inner,
-                parent: NodeParent::None,
+                inner: YamlNode::Scalar(scalar),
             },
             PyYamlNode::default(),
         ))
@@ -99,9 +107,9 @@ impl PyYamlScalar {
     /// tags yield the raw primitive (``int | float | bool | str | None``).
     #[getter]
     fn value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
-            YamlNode::Scalar(s) => scalar_to_py_with_tag(py, s, None),
-            _ => Ok(py.None()),
+        match self.scalar() {
+            Some(s) => scalar_to_py_with_tag(py, s, None),
+            None => Ok(py.None()),
         }
     }
 
@@ -131,84 +139,71 @@ impl PyYamlScalar {
     /// non-canonical forms emit canonically. When *comments* is ``True``
     /// (the default), any inline or before-key comments attached to this
     /// scalar are cleared. ``blank_lines`` is accepted for signature parity
-    /// with the container `format()` methods but has no effect on scalars
-    /// (scalars carry no trailing-blank-line state of their own). Tags and
-    /// anchors are preserved.
+    /// with the container `format()` methods but has no effect on scalars.
+    /// Tags and anchors are preserved.
     #[pyo3(signature = (*, styles=true, comments=true, blank_lines=true))]
-    fn format(&mut self, py: Python<'_>, styles: bool, comments: bool, blank_lines: bool) {
-        let _ = blank_lines; // accepted for LSP-clean override of `YamlNode.format`
+    fn format(&mut self, styles: bool, comments: bool, blank_lines: bool) {
+        let _ = blank_lines;
         let opts = FormatOptions {
             styles,
             comments,
             blank_lines: false,
         };
-        self.propagate(py, |node| {
-            if let YamlNode::Scalar(s) = node {
-                s.format_with(opts);
-            }
-        });
+        self.inner.format_with(opts);
     }
 
     /// The inline comment on this scalar (appears after it on the same line),
     /// or ``None``. Assign ``None`` to clear.
     #[getter]
     fn get_comment_inline(&self) -> Option<&str> {
-        match &self.inner {
-            YamlNode::Scalar(s) => s.meta.comment_inline.as_deref(),
-            _ => None,
-        }
+        self.inner.comment_inline()
     }
 
     #[setter]
-    fn set_comment_inline(&mut self, py: Python<'_>, comment: Option<&str>) {
-        let owned = comment.map(str::to_owned);
-        self.propagate(py, |node| node.set_comment_inline(owned.clone()));
+    fn set_comment_inline(&mut self, comment: Option<&str>) {
+        self.inner.set_comment_inline(comment.map(str::to_owned));
     }
 
     /// The block comment on the lines preceding this scalar, or ``None``.
     /// Assign ``None`` to clear.
     #[getter]
     fn get_comment_before(&self) -> Option<&str> {
-        match &self.inner {
-            YamlNode::Scalar(s) => s.meta.comment_before.as_deref(),
-            _ => None,
-        }
+        self.inner.comment_before()
     }
 
     #[setter]
-    fn set_comment_before(&mut self, py: Python<'_>, comment: Option<&str>) {
-        let owned = comment.map(str::to_owned);
-        self.propagate(py, |node| node.set_comment_before(owned.clone()));
+    fn set_comment_before(&mut self, comment: Option<&str>) {
+        self.inner.set_comment_before(comment.map(str::to_owned));
     }
 
     /// The scalar style: ``"plain"``, ``"single"``, ``"double"``, ``"literal"``, or ``"folded"``.
     /// Newly created scalars use ``"plain"``.
     #[getter]
     fn style(&self) -> &'static str {
-        match &self.inner {
-            YamlNode::Scalar(s) => match s.style {
-                ScalarStyle::Plain => "plain",
-                ScalarStyle::SingleQuoted => "single",
-                ScalarStyle::DoubleQuoted => "double",
-                ScalarStyle::Literal => "literal",
-                ScalarStyle::Folded => "folded",
-            },
-            _ => "plain",
+        let style = match self.scalar() {
+            Some(s) => s.style,
+            None => return "plain",
+        };
+        match style {
+            ScalarStyle::Plain => "plain",
+            ScalarStyle::SingleQuoted => "single",
+            ScalarStyle::DoubleQuoted => "double",
+            ScalarStyle::Literal => "literal",
+            ScalarStyle::Folded => "folded",
         }
     }
 
     #[setter]
-    fn set_style(&mut self, py: Python<'_>, style: &str) -> PyResult<()> {
+    fn set_style(&mut self, style: &str) -> PyResult<()> {
         let new_style = parse_scalar_style(style)?;
-        self.propagate(py, |node| {
-            if let YamlNode::Scalar(s) = node {
-                s.style = new_style;
-            }
-        });
+        if let YamlNode::Scalar(s) = &mut self.inner {
+            s.style = new_style;
+        }
         Ok(())
     }
 
-    /// The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``.
+    /// The YAML tag on this scalar (e.g. ``"!!str"``), or ``None``. Aliases
+    /// can't carry their own tag.
     #[getter]
     fn get_tag(&self) -> Option<&str> {
         match &self.inner {
@@ -218,16 +213,14 @@ impl PyYamlScalar {
     }
 
     #[setter]
-    fn set_tag(&mut self, py: Python<'_>, tag: Option<&str>) {
-        let owned = tag.map(str::to_owned);
-        self.propagate(py, |node| {
-            if let YamlNode::Scalar(s) = node {
-                s.meta.tag.clone_from(&owned);
-            }
-        });
+    fn set_tag(&mut self, tag: Option<&str>) {
+        if let YamlNode::Scalar(s) = &mut self.inner {
+            s.meta.tag = tag.map(str::to_owned);
+        }
     }
 
     /// The anchor name declared on this scalar (``&name``), or ``None``.
+    /// Aliases can't carry their own anchor.
     #[getter]
     fn get_anchor(&self) -> Option<&str> {
         match &self.inner {
@@ -237,13 +230,10 @@ impl PyYamlScalar {
     }
 
     #[setter]
-    fn set_anchor(&mut self, py: Python<'_>, anchor: Option<&str>) {
-        let owned = anchor.map(str::to_owned);
-        self.propagate(py, |node| {
-            if let YamlNode::Scalar(s) = node {
-                s.meta.anchor.clone_from(&owned);
-            }
-        });
+    fn set_anchor(&mut self, anchor: Option<&str>) {
+        if let YamlNode::Scalar(s) = &mut self.inner {
+            s.meta.anchor = anchor.map(str::to_owned);
+        }
     }
 
     /// The number of blank lines emitted before this scalar (0–255).
@@ -253,21 +243,7 @@ impl PyYamlScalar {
     }
 
     #[setter]
-    fn set_blank_lines_before(&mut self, py: Python<'_>, n: u32) {
-        let clamped = n.min(255) as u8;
-        self.propagate(py, |node| node.set_blank_lines_before(clamped));
-    }
-}
-
-impl PyYamlScalar {
-    /// Apply *f* to both `self.inner` and the corresponding node slot in the
-    /// parent container (if any). Keeps the local wrapper and the parent's
-    /// `inner` in lock-step on every mutation.
-    fn propagate<F>(&mut self, py: Python<'_>, mut f: F)
-    where
-        F: FnMut(&mut YamlNode),
-    {
-        f(&mut self.inner);
-        self.parent.with_node_mut(py, f);
+    fn set_blank_lines_before(&mut self, n: u32) {
+        self.inner.set_blank_lines_before(n.min(255) as u8);
     }
 }

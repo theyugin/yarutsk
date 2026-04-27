@@ -9,7 +9,7 @@
 //! - `builder` consumes parser events and produces `YamlNode` trees, attaching
 //!   comments/blank-lines, resolving aliases, and applying `TagPolicy`.
 //! - `types` is the round-trip data model (`YamlNode`, `YamlMapping` (IndexMap),
-//!   `YamlSequence`, `YamlScalar` with `ScalarStyle`/`ScalarRepr`).
+//!   `YamlSequence`, `YamlScalar` with `ScalarStyle` + optional preserved `source`).
 //! - `emitter` is a hand-written block-style serialiser that preserves styles,
 //!   comments, blank lines, tags, and anchors.
 //! - `char_traits` and `debug` are vendored helpers.

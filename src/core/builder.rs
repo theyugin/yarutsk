@@ -15,8 +15,8 @@ use std::sync::Arc;
 use super::parser::{Event, Parser, Tag};
 use super::scanner::{Chomping as ScannerChomping, Marker, TScalarStyle};
 use super::types::{
-    Chomping, ContainerStyle, MapKey, NodeMeta, ScalarRepr, ScalarStyle, ScalarValue, YamlEntry,
-    YamlMapping, YamlNode, YamlScalar, YamlSequence,
+    Chomping, ContainerStyle, MapKey, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
+    YamlNode, YamlScalar, YamlSequence,
 };
 
 /// Translate the scanner's `Chomping` enum to the data-model enum stored on
@@ -187,10 +187,8 @@ fn make_scalar(
     chomping: Option<Chomping>,
 ) -> YamlNode {
     YamlNode::Scalar(YamlScalar {
-        repr: match original {
-            Some(source) => ScalarRepr::Preserved { value, source },
-            None => ScalarRepr::Canonical(value),
-        },
+        value,
+        source: original,
         style,
         chomping,
         meta: NodeMeta {
@@ -731,7 +729,7 @@ impl Builder {
                     .anchor_table
                     .get(&name)
                     .cloned()
-                    .unwrap_or_else(|| Arc::new(YamlNode::Null));
+                    .unwrap_or_else(|| Arc::new(YamlNode::Scalar(YamlScalar::null())));
                 // If the alias is in mapping key position, record it as an alias key.
                 if let Some(Frame::Mapping(mf)) = self.stack.last_mut()
                     && !mf.pending.has_key()
@@ -752,7 +750,6 @@ impl Builder {
                     name,
                     resolved,
                     meta: NodeMeta::default(),
-                    materialised: None,
                 });
             }
         }
@@ -863,10 +860,8 @@ mod tests {
     fn bool_true_canonical() {
         let node = parse_one("true\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(
-                s.repr,
-                ScalarRepr::Canonical(ScalarValue::Bool(true))
-            ));
+            assert!(matches!(s.value(), ScalarValue::Bool(true)));
+            assert_eq!(s.original(), None);
         } else {
             panic!("expected Scalar");
         }
@@ -898,10 +893,8 @@ mod tests {
     fn decimal_int_no_original() {
         let node = parse_one("42\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(
-                s.repr,
-                ScalarRepr::Canonical(ScalarValue::Int(42))
-            ));
+            assert!(matches!(s.value(), ScalarValue::Int(42)));
+            assert_eq!(s.original(), None);
         } else {
             panic!("expected Scalar");
         }
@@ -933,10 +926,8 @@ mod tests {
     fn float_with_dot_no_original() {
         let node = parse_one("3.14\n");
         if let YamlNode::Scalar(s) = node {
-            assert!(matches!(
-                s.repr,
-                ScalarRepr::Canonical(ScalarValue::Float(_))
-            ));
+            assert!(matches!(s.value(), ScalarValue::Float(_)));
+            assert_eq!(s.original(), None);
         } else {
             panic!("expected Scalar");
         }
