@@ -12,6 +12,7 @@ MKDOCS  := .venv/bin/mkdocs
         audit \
         docs docs-serve docs-build \
         fuzz-seed fuzz-scanner fuzz-parser fuzz-roundtrip \
+        vendor-refresh vendor-regen-patch \
         clean clean-all
 
 help:
@@ -56,6 +57,10 @@ help:
 	@echo "  fuzz-scanner    Fuzz the scanner for 30s"
 	@echo "  fuzz-parser     Fuzz the parser for 30s"
 	@echo "  fuzz-roundtrip  Fuzz the parse-emit-parse path for 30s"
+	@echo ""
+	@echo "Vendor (yaml-rust2)"
+	@echo "  vendor-refresh        Re-apply vendor/yarutsk.patch onto the submodule and copy into src/core/"
+	@echo "  vendor-regen-patch    Regenerate vendor/yarutsk.patch from current src/core/ vs the submodule"
 	@echo ""
 	@echo "Clean"
 	@echo "  clean           Remove Python caches and mkdocs build output"
@@ -145,6 +150,12 @@ fuzz-parser:
 
 fuzz-roundtrip:
 	cargo +nightly fuzz run roundtrip -- -max_total_time=30
+
+vendor-refresh:
+	./tools/refresh-vendor.sh
+
+vendor-regen-patch:
+	./tools/regen-patch.sh
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +

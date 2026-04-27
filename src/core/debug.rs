@@ -1,9 +1,3 @@
-// Vendored verbatim from yaml-rust2 (https://github.com/Ethiraric/yaml-rust2)
-// Copyright (c) 2015 Chen Yuheng, Copyright (c) 2023 Ethiraric
-// Licensed under MIT OR Apache-2.0 — see THIRD_PARTY_NOTICES
-
-#![allow(unexpected_cfgs, unused_macros)]
-
 //! Debugging helpers.
 //!
 //! Debugging is governed by two conditions:
@@ -11,6 +5,8 @@
 //!   2. The `YAMLALL_DEBUG` environment variable. If built in debug mode, the program must be fed
 //!      the `YAMLALL_DEBUG` variable in its environment. While debugging code is present in debug
 //!      build, debug helpers will only trigger if that variable is set when running the program.
+
+#![allow(unexpected_cfgs, unused_macros)]
 
 // If a debug build, use stuff in the debug submodule.
 #[cfg(feature = "debug_prints")]

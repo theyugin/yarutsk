@@ -7,6 +7,8 @@ This project incorporates source code from the following third-party libraries.
 yaml-rust2
 ----------
 Source:   https://github.com/Ethiraric/yaml-rust2
+Pinned:   v0.11.0 (commit 635ffd17f2bf3c095c8881b53441a7c3d968775f)
+          See vendor/yaml-rust2 (git submodule) and vendor/yarutsk.patch.
 Files:    src/scanner.rs, src/parser.rs, src/char_traits.rs, src/debug.rs
 License:  MIT OR Apache-2.0 (at your option)
 
@@ -36,14 +38,18 @@ SOFTWARE.
 
 Modifications
 -------------
-The vendored files have been modified as follows:
+The complete diff against the pinned upstream lives in vendor/yarutsk.patch.
+In summary:
 
-  scanner.rs  — Added `Comment(String)` variant to `TokenType`. Modified
-                `skip_to_next_token` and `skip_ws_to_eol` to emit Comment
-                tokens instead of discarding comment text.
+  scanner.rs  — Added `Comment(String)` variant to `TokenType`; emits Comment
+                tokens from comment-skipping sites instead of discarding the
+                text. `crate::char_traits` references rewritten to `super::`.
 
   parser.rs   — Added `pending_comments` field and `drain_comments()` method
-                to `Parser`. Modified `scan_next_token` to collect Comment
-                tokens into `pending_comments` rather than returning them.
+                to `Parser`. Extended `Event` variants with anchor names,
+                source-end-line, chomping indicator, and flow-style flags
+                that the round-trip emitter requires. `crate::scanner`
+                references rewritten to `super::`.
 
-  char_traits.rs, debug.rs — Vendored verbatim; no modifications.
+  char_traits.rs, debug.rs — Vendored verbatim aside from path rewrites and
+                module-level `#![allow(...)]` directives.

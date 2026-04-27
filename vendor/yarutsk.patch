@@ -1,0 +1,752 @@
+--- a/src/scanner.rs
++++ b/src/scanner.rs
+@@ -13,11 +13,15 @@
+ 
+ use arraydeque::ArrayDeque;
+ 
+-use crate::char_traits::{
++use super::char_traits::{
+     as_hex, is_alpha, is_anchor_char, is_blank, is_blank_or_breakz, is_break, is_breakz, is_digit,
+     is_flow, is_hex, is_tag_char, is_uri_char, is_z,
+ };
+ 
++macro_rules! debug_print {
++    ($($arg:tt)*) => {{}};
++}
++
+ /// The encoding of the input. Currently, only UTF-8 is supported.
+ #[derive(Clone, Copy, PartialEq, Debug, Eq)]
+ pub enum TEncoding {
+@@ -201,7 +205,22 @@
+         String,
+     ),
+     /// A regular YAML scalar.
+-    Scalar(TScalarStyle, String),
++    ///
++    /// - 3rd field — the 0-indexed line number of the scalar's last source
++    ///   line for block scalars (`|` / `>`). `None` for plain and flow-quoted
++    ///   scalars; those occupy a single source line, so the token's start mark
++    ///   already pins both endpoints. Block scalars span multiple lines and
++    ///   their folded/chomped value no longer carries that line count, so the
++    ///   builder needs the scanner's end position to advance its
++    ///   `last_content_line` correctly.
++    /// - 4th field — the source chomping indicator for block scalars only
++    ///   (`Strip`/`Clip`/`Keep` for `|-`/`|`/`|+` and `>-`/`>`/`>+`). The
++    ///   emitter uses this to round-trip `>+` / `|+` on values that happen
++    ///   to have exactly one trailing newline — without it, inference
++    ///   would downgrade them to `>` / `|`.
++    Scalar(TScalarStyle, String, Option<usize>, Option<Chomping>),
++    /// A YAML comment (text after `#`, stripped of leading whitespace and the `#` itself).
++    Comment(String),
+ }
+ 
+ /// A scanner token.
+@@ -855,9 +874,21 @@
+                     }
+                 }
+                 '#' => {
++                    let comment_mark = self.mark;
++                    // skip the '#'
++                    self.skip_non_blank();
++                    // skip optional single space after '#'
++                    if self.look_ch() == ' ' {
++                        self.skip_blank();
++                    }
++                    // collect comment text
++                    let mut comment = String::new();
+                     while !is_breakz(self.look_ch()) {
++                        comment.push(self.look_ch());
+                         self.skip_non_blank();
+                     }
++                    self.tokens
++                        .push_back(Token(comment_mark, TokenType::Comment(comment)));
+                 }
+                 _ => break,
+             }
+@@ -924,9 +955,21 @@
+                     ));
+                 }
+                 '#' => {
++                    let comment_mark = self.mark;
++                    // skip the '#'
++                    self.skip_non_blank();
++                    // skip optional single space after '#'
++                    if self.look_ch() == ' ' {
++                        self.skip_blank();
++                    }
++                    // collect comment text
++                    let mut comment = String::new();
+                     while !is_breakz(self.look_ch()) {
++                        comment.push(self.look_ch());
+                         self.skip_non_blank();
+                     }
++                    self.tokens
++                        .push_back(Token(comment_mark, TokenType::Comment(comment)));
+                 }
+                 _ => break,
+             }
+@@ -1380,7 +1423,10 @@
+         }
+ 
+         if string.is_empty() {
+-            return Err(ScanError::new(start_mark, "while scanning an anchor or alias, did not find expected alphabetic or numeric character"));
++            return Err(ScanError::new(
++                start_mark,
++                "while scanning an anchor or alias, did not find expected alphabetic or numeric character",
++            ));
+         }
+ 
+         if alias {
+@@ -1491,10 +1537,12 @@
+         }
+ 
+         // ???, fixes test G9HC.
+-        if let Some(Token(mark, TokenType::Anchor(..) | TokenType::Tag(..))) = self.tokens.back() {
+-            if self.mark.col == 0 && mark.col == 0 && self.indent > -1 {
+-                return Err(ScanError::new(*mark, "invalid indentation for anchor"));
+-            }
++        if let Some(Token(mark, TokenType::Anchor(..) | TokenType::Tag(..))) = self.tokens.back()
++            && self.mark.col == 0
++            && mark.col == 0
++            && self.indent > -1
++        {
++            return Err(ScanError::new(*mark, "invalid indentation for anchor"));
+         }
+ 
+         // Skip over the `-`.
+@@ -1665,7 +1713,10 @@
+                 // Otherwise, the newline after chomping is ignored.
+                 Chomping::Keep => trailing_breaks,
+             };
+-            return Ok(Token(start_mark, TokenType::Scalar(style, contents)));
++            return Ok(Token(
++                start_mark,
++                TokenType::Scalar(style, contents, Some(self.mark.line()), Some(chomping)),
++            ));
+         }
+ 
+         if self.mark.col < indent && (self.mark.col as isize) > self.indent {
+@@ -1731,7 +1782,10 @@
+             string.push_str(&trailing_breaks);
+         }
+ 
+-        Ok(Token(start_mark, TokenType::Scalar(style, string)))
++        Ok(Token(
++            start_mark,
++            TokenType::Scalar(style, string, Some(self.mark.line()), Some(chomping)),
++        ))
+     }
+ 
+     /// Retrieve the contents of the line, parsing it as a block scalar.
+@@ -2013,7 +2067,14 @@
+         } else {
+             TScalarStyle::DoubleQuoted
+         };
+-        Ok(Token(start_mark, TokenType::Scalar(style, string)))
++        // Quoted scalars are typically single-line; a multi-line quoted scalar
++        // folds to spaces like a folded block scalar, so its in-memory value
++        // loses the source line count. Leave `end_line` unset here for now —
++        // the builder falls back to `node_line` which matches prior behaviour.
++        Ok(Token(
++            start_mark,
++            TokenType::Scalar(style, string, None, None),
++        ))
+     }
+ 
+     /// Consume successive non-whitespace characters from a flow scalar.
+@@ -2106,7 +2167,7 @@
+                 return Err(ScanError::new(
+                     *start_mark,
+                     "while parsing a quoted scalar, found unknown escape character",
+-                ))
++                ));
+             }
+         }
+         self.skip_n_non_blank(2);
+@@ -2272,9 +2333,13 @@
+             self.allow_simple_key();
+         }
+ 
++        // Plain scalars can technically span lines (folded to spaces), but
++        // their scanner eats trailing whitespace including line breaks, so
++        // `self.mark.line()` here is not a reliable end-of-content marker.
++        // Leave `end_line` unset; the builder falls back to `node_line`.
+         Ok(Token(
+             start_mark,
+-            TokenType::Scalar(TScalarStyle::Plain, string),
++            TokenType::Scalar(TScalarStyle::Plain, string, None, None),
+         ))
+     }
+ 
+@@ -2412,13 +2477,12 @@
+         // If the last indent was a non-block indent, remove it.
+         // This means that we prepared an indent that we thought we wouldn't use, but realized just
+         // now that it is a block indent.
+-        if self.indent <= col as isize {
+-            if let Some(indent) = self.indents.last() {
+-                if !indent.needs_block_end {
+-                    self.indent = indent.indent;
+-                    self.indents.pop();
+-                }
+-            }
++        if self.indent <= col as isize
++            && let Some(indent) = self.indents.last()
++            && !indent.needs_block_end
++        {
++            self.indent = indent.indent;
++            self.indents.pop();
+         }
+ 
+         if self.indent < col as isize {
+@@ -2459,12 +2523,7 @@
+     /// An indentation is not added if we are inside a flow level or if the last indent is already
+     /// a non-block indent.
+     fn roll_one_col_indent(&mut self) {
+-        if self.flow_level == 0
+-            && self
+-                .indents
+-                .last()
+-                .map_or(false, |indent| indent.needs_block_end)
+-        {
++        if self.flow_level == 0 && self.indents.last().is_some_and(|x| x.needs_block_end) {
+             self.indents.push(Indent {
+                 indent: self.indent,
+                 needs_block_end: false,
+@@ -2582,7 +2641,7 @@
+ /// Chomping, how final line breaks and trailing empty lines are interpreted.
+ ///
+ /// See YAML spec 8.1.1.2.
+-#[derive(PartialEq, Eq)]
++#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+ pub enum Chomping {
+     /// The final line break and any trailing empty lines are excluded.
+     Strip,
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -4,9 +4,18 @@
+ //! compliance, and emits a stream of tokens that can be used by the [`crate::YamlLoader`] to
+ //! construct the [`crate::Yaml`] object.
+ 
+-use crate::scanner::{Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
++#![allow(dead_code)]
++
++use super::scanner::{Chomping, Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
+ use std::collections::HashMap;
+ 
++/// Return type of [`Parser::parser_process_directives`]: parsed YAML version and TAG directives.
++type DirectiveResult = Result<(Option<(u8, u8)>, Vec<(String, String)>), ScanError>;
++
++macro_rules! debug_print {
++    ($($arg:tt)*) => {{}};
++}
++
+ #[derive(Clone, Copy, PartialEq, Debug, Eq)]
+ enum State {
+     /// We await the start of the stream.
+@@ -48,32 +57,56 @@
+     StreamStart,
+     /// Last event that will be generated by the parser. Signals EOF.
+     StreamEnd,
+-    /// The YAML start document directive (`---`).
+-    DocumentStart,
++    /// The YAML start document directive.
++    /// - `bool` is `true` when the source contained an explicit `---` marker.
++    /// - `Option<(u8, u8)>` is the `%YAML major.minor` directive, if present.
++    /// - `Vec<(String, String)>` contains `%TAG handle prefix` pairs.
++    DocumentStart(bool, Option<(u8, u8)>, Vec<(String, String)>),
+     /// The YAML end document directive (`...`).
+-    DocumentEnd,
+-    /// A YAML Alias.
+-    Alias(
+-        /// The anchor ID the alias refers to.
+-        usize,
++    /// The bool is `true` when the source contained an explicit `...` marker.
++    DocumentEnd(bool),
++    /// A YAML Alias — carries the anchor name so the builder can reconstruct `*name`.
++    Alias(String),
++    /// Value, style, anchor name (None if no anchor), tag, end-line,
++    /// source chomping indicator.
++    ///
++    /// - `end_line` — 0-indexed line of the scalar's last source line when
++    ///   the scalar spans multiple lines (block `|` / `>`, or a wrapped
++    ///   quoted scalar). `None` for single-line scalars. The builder uses
++    ///   this to advance `last_content_line` correctly for folded/chomped
++    ///   values whose newline count no longer reflects the source.
++    /// - `chomping` — the chomping indicator for block scalars only
++    ///   (`Strip`/`Clip`/`Keep` for `|-`/`|`/`|+` and `>-`/`>`/`>+`). The
++    ///   emitter preserves this instead of re-inferring from trailing
++    ///   newlines — which would otherwise downgrade `>+` to `>` on values
++    ///   with exactly one trailing `\n`.
++    Scalar(
++        String,
++        TScalarStyle,
++        Option<String>,
++        Option<Tag>,
++        Option<usize>,
++        Option<Chomping>,
+     ),
+-    /// Value, style, anchor id, tag
+-    Scalar(String, TScalarStyle, usize, Option<Tag>),
+     /// The start of a YAML sequence (array).
+     SequenceStart(
+-        /// The anchor ID of the start of the sequence.
+-        usize,
++        /// The anchor name of the sequence, if any.
++        Option<String>,
+         /// An optional tag
+         Option<Tag>,
++        /// Whether the sequence uses flow style (`[…]`).
++        bool,
+     ),
+     /// The end of a YAML sequence (array).
+     SequenceEnd,
+     /// The start of a YAML mapping (object, hash).
+     MappingStart(
+-        /// The anchor ID of the start of the mapping.
+-        usize,
++        /// The anchor name of the mapping, if any.
++        Option<String>,
+         /// An optional tag
+         Option<Tag>,
++        /// Whether the mapping uses flow style (`{…}`).
++        bool,
+     ),
+     /// The end of a YAML mapping (object, hash).
+     MappingEnd,
+@@ -92,12 +125,12 @@
+     /// Create an empty scalar.
+     fn empty_scalar() -> Event {
+         // a null scalar
+-        Event::Scalar(String::new(), TScalarStyle::Plain, 0, None)
++        Event::Scalar(String::new(), TScalarStyle::Plain, None, None, None, None)
+     }
+ 
+-    /// Create an empty scalar with the given anchor.
+-    fn empty_scalar_with_anchor(anchor: usize, tag: Option<Tag>) -> Event {
+-        Event::Scalar(String::new(), TScalarStyle::Plain, anchor, tag)
++    /// Create an empty scalar with the given anchor name.
++    fn empty_scalar_with_anchor(anchor: Option<String>, tag: Option<Tag>) -> Event {
++        Event::Scalar(String::new(), TScalarStyle::Plain, anchor, tag, None, None)
+     }
+ }
+ 
+@@ -110,6 +143,8 @@
+     token: Option<Token>,
+     current: Option<(Event, Marker)>,
+     anchors: HashMap<String, usize>,
++    /// Reverse map: anchor ID → anchor name, so we can reconstruct `&name` in events.
++    anchor_names: HashMap<usize, String>,
+     anchor_id: usize,
+     /// The tag directives (`%TAG`) the parser has encountered.
+     ///
+@@ -117,6 +152,8 @@
+     tags: HashMap<String, String>,
+     /// Make tags global across all documents.
+     keep_tags: bool,
++    /// Comments collected since the last drain.
++    pub pending_comments: Vec<(Marker, String)>,
+ }
+ 
+ /// Trait to be implemented in order to use the low-level parsing API.
+@@ -164,7 +201,7 @@
+ /// ```
+ ///
+ /// # Example
+-/// ```
++/// ```ignore
+ /// # use yaml_rust2::parser::{Event, EventReceiver, Parser};
+ /// #
+ /// /// Sink of events. Collects them into an array.
+@@ -229,13 +266,20 @@
+             current: None,
+ 
+             anchors: HashMap::new(),
++            anchor_names: HashMap::new(),
+             // valid anchor_id starts from 1
+             anchor_id: 1,
+             tags: HashMap::new(),
+             keep_tags: false,
++            pending_comments: Vec::new(),
+         }
+     }
+ 
++    /// Drain and return all comments collected since the last call.
++    pub fn drain_comments(&mut self) -> Vec<(Marker, String)> {
++        std::mem::take(&mut self.pending_comments)
++    }
++
+     /// Whether to keep tags across multiple documents when parsing.
+     ///
+     /// This behavior is non-standard as per the YAML specification but can be encountered in the
+@@ -304,13 +348,23 @@
+     ///
+     /// This function does _not_ make use of `self.token`.
+     fn scan_next_token(&mut self) -> Result<Token, ScanError> {
+-        let token = self.scanner.next();
+-        match token {
+-            None => match self.scanner.get_error() {
+-                None => Err(ScanError::new(self.scanner.mark(), "unexpected eof")),
+-                Some(e) => Err(e),
+-            },
+-            Some(tok) => Ok(tok),
++        loop {
++            let token = self.scanner.next();
++            match token {
++                None => {
++                    return match self.scanner.get_error() {
++                        None => Err(ScanError::new(self.scanner.mark(), "unexpected eof")),
++                        Some(e) => Err(e),
++                    };
++                }
++                Some(tok) => {
++                    if let TokenType::Comment(ref text) = tok.1 {
++                        self.pending_comments.push((tok.0, text.clone()));
++                    } else {
++                        return Ok(tok);
++                    }
++                }
++            }
+         }
+     }
+ 
+@@ -323,7 +377,6 @@
+     /// Skip the next token from the scanner.
+     fn skip(&mut self) {
+         self.token = None;
+-        //self.peek_token();
+     }
+     /// Pops the top-most state and make it the current state.
+     fn pop_state(&mut self) {
+@@ -339,7 +392,6 @@
+             return Ok((Event::StreamEnd, self.scanner.mark()));
+         }
+         let (ev, mark) = self.state_machine()?;
+-        // println!("EV {:?}", ev);
+         Ok((ev, mark))
+     }
+ 
+@@ -395,7 +447,7 @@
+         mark: Marker,
+         recv: &mut R,
+     ) -> Result<(), ScanError> {
+-        if first_ev != Event::DocumentStart {
++        if !matches!(first_ev, Event::DocumentStart(..)) {
+             return Err(ScanError::new(
+                 mark,
+                 "did not find expected <document-start>",
+@@ -408,7 +460,7 @@
+ 
+         // DOCUMENT-END is expected.
+         let (ev, mark) = self.next_token()?;
+-        assert_eq!(ev, Event::DocumentEnd);
++        assert!(matches!(ev, Event::DocumentEnd(_)));
+         recv.on_event(ev, mark);
+ 
+         Ok(())
+@@ -434,8 +486,7 @@
+                 self.load_mapping(recv)
+             }
+             _ => {
+-                println!("UNREACHABLE EVENT: {first_ev:?}");
+-                unreachable!();
++                unreachable!("unexpected event in load_node: {first_ev:?}");
+             }
+         }
+     }
+@@ -474,8 +525,6 @@
+     }
+ 
+     fn state_machine(&mut self) -> ParseResult {
+-        // let next_tok = self.peek_token().cloned()?;
+-        // println!("cur_state {:?}, next tok: {:?}", self.state, next_tok);
+         debug_print!("\n\x1B[;33mParser state: {:?} \x1B[;0m", self.state);
+ 
+         match self.state {
+@@ -550,7 +599,7 @@
+                 self.parser_process_directives()?;
+                 self.push_state(State::DocumentEnd);
+                 self.state = State::BlockNode;
+-                Ok((Event::DocumentStart, mark))
++                Ok((Event::DocumentStart(false, None, vec![]), mark))
+             }
+             _ => {
+                 // explicit document
+@@ -559,44 +608,53 @@
+         }
+     }
+ 
+-    fn parser_process_directives(&mut self) -> Result<(), ScanError> {
+-        let mut version_directive_received = false;
++    fn parser_process_directives(&mut self) -> DirectiveResult {
++        let mut version: Option<(u8, u8)> = None;
++        let mut tag_directives: Vec<(String, String)> = Vec::new();
++        let mut tags = HashMap::new();
+         loop {
+-            let mut tags = HashMap::new();
+             match self.peek_token()? {
+-                Token(mark, TokenType::VersionDirective(_, _)) => {
+-                    // XXX parsing with warning according to spec
+-                    //if major != 1 || minor > 2 {
+-                    //    return Err(ScanError::new(tok.0,
+-                    //        "found incompatible YAML document"));
+-                    //}
+-                    if version_directive_received {
++                Token(mark, TokenType::VersionDirective(major, minor)) => {
++                    if version.is_some() {
+                         return Err(ScanError::new(*mark, "duplicate version directive"));
+                     }
+-                    version_directive_received = true;
++                    // YAML version components are single digits; truncation impossible in practice.
++                    #[allow(clippy::cast_possible_truncation)]
++                    {
++                        version = Some((*major as u8, *minor as u8));
++                    }
+                 }
+                 Token(mark, TokenType::TagDirective(handle, prefix)) => {
+-                    if tags.contains_key(handle) {
+-                        return Err(ScanError::new(*mark, "the TAG directive must only be given at most once per handle in the same document"));
++                    // The scanner emits an empty TagDirective("", "") as a sentinel for
++                    // unknown/reserved directives (e.g. `%FOO …`). Silently skip them.
++                    if handle.is_empty() && prefix.is_empty() {
++                        // fall through to skip()
++                    } else if tags.contains_key(handle) {
++                        return Err(ScanError::new(
++                            *mark,
++                            "the TAG directive must only be given at most once per handle in the same document",
++                        ));
++                    } else {
++                        tag_directives.push((handle.clone(), prefix.clone()));
++                        tags.insert(handle.clone(), prefix.clone());
+                     }
+-                    tags.insert(handle.clone(), prefix.clone());
+                 }
+                 _ => break,
+             }
+-            self.tags = tags;
+             self.skip();
+         }
+-        Ok(())
++        self.tags = tags;
++        Ok((version, tag_directives))
+     }
+ 
+     fn explicit_document_start(&mut self) -> ParseResult {
+-        self.parser_process_directives()?;
++        let (version, tag_directives) = self.parser_process_directives()?;
+         match *self.peek_token()? {
+             Token(mark, TokenType::DocumentStart) => {
+                 self.push_state(State::DocumentEnd);
+                 self.state = State::DocumentContent;
+                 self.skip();
+-                Ok((Event::DocumentStart, mark))
++                Ok((Event::DocumentStart(true, version, tag_directives), mark))
+             }
+             Token(mark, _) => Err(ScanError::new(
+                 mark,
+@@ -651,7 +709,7 @@
+             self.state = State::DocumentStart;
+         }
+ 
+-        Ok((Event::DocumentEnd, marker))
++        Ok((Event::DocumentEnd(explicit_end), marker))
+     }
+ 
+     fn register_anchor(&mut self, name: String, _: &Marker) -> usize {
+@@ -662,32 +720,37 @@
+         // }
+         let new_id = self.anchor_id;
+         self.anchor_id += 1;
++        self.anchor_names.insert(new_id, name.clone());
+         self.anchors.insert(name, new_id);
+         new_id
+     }
+ 
++    /// Look up the anchor name for a given integer ID.
++    fn anchor_name(&self, id: usize) -> Option<String> {
++        self.anchor_names.get(&id).cloned()
++    }
++
+     fn parse_node(&mut self, block: bool, indentless_sequence: bool) -> ParseResult {
+-        let mut anchor_id = 0;
++        let mut anchor_name: Option<String> = None;
+         let mut tag = None;
+         match *self.peek_token()? {
+             Token(_, TokenType::Alias(_)) => {
+                 self.pop_state();
+                 if let Token(mark, TokenType::Alias(name)) = self.fetch_token() {
+-                    match self.anchors.get(&name) {
+-                        None => {
+-                            return Err(ScanError::new(
+-                                mark,
+-                                "while parsing node, found unknown anchor",
+-                            ))
+-                        }
+-                        Some(id) => return Ok((Event::Alias(*id), mark)),
++                    if !self.anchors.contains_key(&name) {
++                        return Err(ScanError::new(
++                            mark,
++                            "while parsing node, found unknown anchor",
++                        ));
+                     }
++                    return Ok((Event::Alias(name), mark));
+                 }
+                 unreachable!()
+             }
+             Token(_, TokenType::Anchor(_)) => {
+                 if let Token(mark, TokenType::Anchor(name)) = self.fetch_token() {
+-                    anchor_id = self.register_anchor(name, &mark);
++                    self.register_anchor(name.clone(), &mark);
++                    anchor_name = Some(name);
+                     if let TokenType::Tag(..) = self.peek_token()?.1 {
+                         if let TokenType::Tag(handle, suffix) = self.fetch_token().1 {
+                             tag = Some(self.resolve_tag(mark, &handle, suffix)?);
+@@ -704,7 +767,8 @@
+                     tag = Some(self.resolve_tag(mark, &handle, suffix)?);
+                     if let TokenType::Anchor(_) = &self.peek_token()?.1 {
+                         if let Token(mark, TokenType::Anchor(name)) = self.fetch_token() {
+-                            anchor_id = self.register_anchor(name, &mark);
++                            self.register_anchor(name.clone(), &mark);
++                            anchor_name = Some(name);
+                         } else {
+                             unreachable!()
+                         }
+@@ -715,39 +779,45 @@
+             }
+             _ => {}
+         }
++        let has_anchor = anchor_name.is_some();
+         match *self.peek_token()? {
+             Token(mark, TokenType::BlockEntry) if indentless_sequence => {
+                 self.state = State::IndentlessSequenceEntry;
+-                Ok((Event::SequenceStart(anchor_id, tag), mark))
++                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
+             }
+             Token(_, TokenType::Scalar(..)) => {
+                 self.pop_state();
+-                if let Token(mark, TokenType::Scalar(style, v)) = self.fetch_token() {
+-                    Ok((Event::Scalar(v, style, anchor_id, tag), mark))
++                if let Token(mark, TokenType::Scalar(style, v, end_line, chomping)) =
++                    self.fetch_token()
++                {
++                    Ok((
++                        Event::Scalar(v, style, anchor_name, tag, end_line, chomping),
++                        mark,
++                    ))
+                 } else {
+                     unreachable!()
+                 }
+             }
+             Token(mark, TokenType::FlowSequenceStart) => {
+                 self.state = State::FlowSequenceFirstEntry;
+-                Ok((Event::SequenceStart(anchor_id, tag), mark))
++                Ok((Event::SequenceStart(anchor_name, tag, true), mark))
+             }
+             Token(mark, TokenType::FlowMappingStart) => {
+                 self.state = State::FlowMappingFirstKey;
+-                Ok((Event::MappingStart(anchor_id, tag), mark))
++                Ok((Event::MappingStart(anchor_name, tag, true), mark))
+             }
+             Token(mark, TokenType::BlockSequenceStart) if block => {
+                 self.state = State::BlockSequenceFirstEntry;
+-                Ok((Event::SequenceStart(anchor_id, tag), mark))
++                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
+             }
+             Token(mark, TokenType::BlockMappingStart) if block => {
+                 self.state = State::BlockMappingFirstKey;
+-                Ok((Event::MappingStart(anchor_id, tag), mark))
++                Ok((Event::MappingStart(anchor_name, tag, false), mark))
+             }
+             // ex 7.2, an empty scalar can follow a secondary tag
+-            Token(mark, _) if tag.is_some() || anchor_id > 0 => {
++            Token(mark, _) if tag.is_some() || has_anchor => {
+                 self.pop_state();
+-                Ok((Event::empty_scalar_with_anchor(anchor_id, tag), mark))
++                Ok((Event::empty_scalar_with_anchor(anchor_name, tag), mark))
+             }
+             Token(mark, _) => Err(ScanError::new(
+                 mark,
+@@ -829,10 +899,12 @@
+                     if !first {
+                         match *self.peek_token()? {
+                             Token(_, TokenType::FlowEntry) => self.skip(),
+-                            Token(mark, _) => return Err(ScanError::new(
+-                                mark,
+-                                "while parsing a flow mapping, did not find expected ',' or '}'",
+-                            )),
++                            Token(mark, _) => {
++                                return Err(ScanError::new(
++                                    mark,
++                                    "while parsing a flow mapping, did not find expected ',' or '}'",
++                                ));
++                            }
+                         }
+                     }
+ 
+@@ -931,7 +1003,7 @@
+             Token(mark, TokenType::Key) => {
+                 self.state = State::FlowSequenceEntryMappingKey;
+                 self.skip();
+-                Ok((Event::MappingStart(0, None), mark))
++                Ok((Event::MappingStart(None, None, true), mark))
+             }
+             _ => {
+                 self.push_state(State::FlowSequenceEntry);
+@@ -1091,7 +1163,6 @@
+ #[cfg(test)]
+ mod test {
+     use super::{Event, Parser};
+-    use crate::YamlLoader;
+ 
+     #[test]
+     fn test_peek_eq_parse() {
+@@ -1115,29 +1186,4 @@
+             event.0 != Event::StreamEnd
+         } {}
+     }
+-
+-    #[test]
+-    fn test_keep_tags_across_multiple_documents() {
+-        let text = r#"
+-%YAML 1.1
+-%TAG !t! tag:test,2024:
+---- !t!1 &1
+-foo: "bar"
+---- !t!2 &2
+-baz: "qux"
+-"#;
+-        let mut parser = Parser::new_from_str(text).keep_tags(true);
+-        let result = YamlLoader::load_from_parser(&mut parser);
+-        assert!(result.is_ok());
+-        let docs = result.unwrap();
+-        assert_eq!(docs.len(), 2);
+-        let yaml = &docs[0];
+-        assert_eq!(yaml["foo"].as_str(), Some("bar"));
+-        let yaml = &docs[1];
+-        assert_eq!(yaml["baz"].as_str(), Some("qux"));
+-
+-        let mut parser = Parser::new_from_str(text).keep_tags(false);
+-        let result = YamlLoader::load_from_parser(&mut parser);
+-        assert!(result.is_err());
+-    }
+ }
+--- a/src/char_traits.rs
++++ b/src/char_traits.rs
+@@ -1,5 +1,7 @@
+ //! Holds functions to determine if a character belongs to a specific character set.
+ 
++#![allow(dead_code)]
++
+ /// Check whether the character is nil (`\0`).
+ #[inline]
+ pub(crate) fn is_z(c: char) -> bool {
+--- a/src/debug.rs
++++ b/src/debug.rs
+@@ -6,6 +6,8 @@
+ //!      the `YAMLALL_DEBUG` variable in its environment. While debugging code is present in debug
+ //!      build, debug helpers will only trigger if that variable is set when running the program.
+ 
++#![allow(unexpected_cfgs, unused_macros)]
++
+ // If a debug build, use stuff in the debug submodule.
+ #[cfg(feature = "debug_prints")]
+ pub use debug::enabled;

@@ -2,7 +2,7 @@
 
 ## What this project is
 
-`yarutsk` is a Python YAML library (PyO3 + Maturin) that round-trips comments, scalar styles, tags, anchors/aliases, blank lines, and explicit doc markers. Scanner/parser are vendored from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2); the only modification is that `src/core/scanner.rs` emits `Comment` tokens instead of discarding them.
+`yarutsk` is a Python YAML library (PyO3 + Maturin) that round-trips comments, scalar styles, tags, anchors/aliases, blank lines, and explicit doc markers. `src/core/{scanner,parser,char_traits,debug}.rs` are derived from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2) — upstream lives as a git submodule at `vendor/yaml-rust2` (pinned to v0.11.0) and our diff is `vendor/yarutsk.patch`. The build reads the in-tree files directly; the patch + submodule exist for refresh workflow only. See [vendor/VENDORING.md](vendor/VENDORING.md).
 
 ## Build & test
 
@@ -27,8 +27,8 @@ Rust source lives under `src/core/` (parse/emit + data model) and `src/py/` (PyO
 | File | Role |
 |---|---|
 | `src/lib.rs` | PyO3 module entry; exception hierarchy; `load*`/`dump*` wrappers |
-| `src/core/scanner.rs` | Vendored tokeniser, modified to emit `Comment` tokens |
-| `src/core/parser.rs` | Vendored event-based parser |
+| `src/core/scanner.rs` | Vendored tokeniser; modified to emit `Comment` tokens |
+| `src/core/parser.rs` | Vendored event-based parser; `Event` variants extended with anchor names, end-line, chomping, flow-style flags; collects comment tokens into `pending_comments` |
 | `src/core/builder.rs` | Builds `YamlNode` trees; associates comments with entries; resolves aliases; holds `TagPolicy` |
 | `src/core/types.rs` | Data model: `YamlNode`, `YamlMapping` (IndexMap), `YamlSequence`, `YamlScalar`, `ScalarStyle`, `ContainerStyle`, `ScalarValue` |
 | `src/core/emitter.rs` | Hand-written block-style serialiser; preserves styles/comments/blank-lines/tags/anchors |
