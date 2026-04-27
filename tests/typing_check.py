@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 import yarutsk
-from yarutsk import Schema, YamlIter, YamlMapping, YamlScalar, YamlSequence
+from yarutsk import Schema, YamlIter, YamlMapping, YamlNode, YamlScalar, YamlSequence
 
 
 def check_schema_construction() -> None:
@@ -35,70 +35,64 @@ def check_schema_add_dumper() -> None:
 
 
 def check_load_from_stream() -> None:
-    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.StringIO("key: val"))
-    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(io.BytesIO(b"key: val"))
+    doc: YamlNode | None = yarutsk.load(io.StringIO("key: val"))
+    doc2: YamlNode | None = yarutsk.load(io.BytesIO(b"key: val"))
     _ = doc, doc2
 
 
 def check_loads_from_string() -> None:
-    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("key: val")
-    empty: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("")
+    doc: YamlNode | None = yarutsk.loads("key: val")
+    empty: YamlNode | None = yarutsk.loads("")
     _ = doc, empty
 
 
 def check_load_all() -> None:
-    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.load_all(
-        io.StringIO("---\na: 1\n---\nb: 2")
-    )
+    docs: list[YamlNode] = yarutsk.load_all(io.StringIO("---\na: 1\n---\nb: 2"))
     _ = docs
 
 
 def check_loads_all() -> None:
-    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all("---\na: 1\n---\nb: 2")
+    docs: list[YamlNode] = yarutsk.loads_all("---\na: 1\n---\nb: 2")
     _ = docs
 
 
 def check_load_with_schema() -> None:
     schema = yarutsk.Schema()
-    doc: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.load(
-        io.StringIO("key: val"), schema=schema
-    )
-    doc2: YamlMapping | YamlSequence | YamlScalar | None = yarutsk.loads("key: val", schema=schema)
+    doc: YamlNode | None = yarutsk.load(io.StringIO("key: val"), schema=schema)
+    doc2: YamlNode | None = yarutsk.loads("key: val", schema=schema)
     _ = doc, doc2
 
 
 def check_load_all_with_schema() -> None:
     schema = yarutsk.Schema()
-    docs: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.load_all(
-        io.StringIO("a: 1"), schema=schema
-    )
-    docs2: list[YamlMapping | YamlSequence | YamlScalar] = yarutsk.loads_all("a: 1", schema=schema)
+    docs: list[YamlNode] = yarutsk.load_all(io.StringIO("a: 1"), schema=schema)
+    docs2: list[YamlNode] = yarutsk.loads_all("a: 1", schema=schema)
     _ = docs, docs2
 
 
-def check_dump_to_stream(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
+def check_dump_to_stream(doc: YamlNode) -> None:
     yarutsk.dump(doc, io.StringIO())
 
 
-def check_dumps_to_string(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
+def check_dumps_to_string(doc: YamlNode) -> None:
     text: str = yarutsk.dumps(doc)
     _ = text
 
 
 def check_dump_all_to_stream(
-    docs: list[YamlMapping | YamlSequence | YamlScalar],
+    docs: list[YamlNode],
 ) -> None:
     yarutsk.dump_all(docs, io.StringIO())
 
 
 def check_dumps_all_to_string(
-    docs: list[YamlMapping | YamlSequence | YamlScalar],
+    docs: list[YamlNode],
 ) -> None:
     text: str = yarutsk.dumps_all(docs)
     _ = text
 
 
-def check_dump_with_schema(doc: YamlMapping | YamlSequence | YamlScalar) -> None:
+def check_dump_with_schema(doc: YamlNode) -> None:
     schema = yarutsk.Schema()
     yarutsk.dump(doc, io.StringIO(), schema=schema)
     text: str = yarutsk.dumps(doc, schema=schema)
@@ -106,7 +100,7 @@ def check_dump_with_schema(doc: YamlMapping | YamlSequence | YamlScalar) -> None
 
 
 def check_dump_all_with_schema(
-    docs: list[YamlMapping | YamlSequence | YamlScalar],
+    docs: list[YamlNode],
 ) -> None:
     schema = yarutsk.Schema()
     yarutsk.dump_all(docs, io.StringIO(), schema=schema)
@@ -118,7 +112,7 @@ def check_none_narrowing() -> str:
     doc = yarutsk.loads("key: val")
     if doc is None:
         return ""
-    # After the None check mypy knows doc: YamlMapping | YamlSequence | YamlScalar
+    # After the None check mypy knows doc: YamlNode
     return yarutsk.dumps(doc)
 
 
@@ -241,7 +235,7 @@ def check_mapping_tag_directives(m: YamlMapping) -> None:
 
 
 def check_mapping_node(m: YamlMapping) -> None:
-    node: YamlMapping | YamlSequence | YamlScalar = m.node("key")
+    node: YamlNode = m.node("key")
     _ = node
 
 
@@ -343,7 +337,7 @@ def check_mapping_constructor() -> None:
 
 
 def check_mapping_nodes(m: YamlMapping) -> None:
-    pairs: list[tuple[str, YamlMapping | YamlSequence | YamlScalar]] = m.nodes()
+    pairs: list[tuple[str, YamlNode]] = m.nodes()
     _ = pairs
 
 
@@ -386,7 +380,7 @@ def check_iter_load_all() -> None:
 
 def check_yaml_iter_protocol(it: YamlIter) -> None:
     same: YamlIter = iter(it)
-    doc: YamlMapping | YamlSequence | YamlScalar = next(it)
+    doc: YamlNode = next(it)
     _ = same, doc
 
 
@@ -395,8 +389,8 @@ def check_yaml_iter_is_iterator() -> None:
     from collections.abc import Iterator
 
     it = yarutsk.iter_loads_all("a: 1\n---\nb: 2\n")
-    as_iter: Iterator[YamlMapping | YamlSequence | YamlScalar] = it
-    head: list[YamlMapping | YamlSequence | YamlScalar] = list(itertools.islice(as_iter, 1))
+    as_iter: Iterator[YamlNode] = it
+    head: list[YamlNode] = list(itertools.islice(as_iter, 1))
     _ = head
 
 

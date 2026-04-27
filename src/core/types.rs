@@ -3,7 +3,24 @@
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use pyo3::{Py, PyAny, Python};
+
+/// Document-level metadata for one YAML document.
+///
+/// Lives on every node (held inside `PyYamlNode`); only the document root's
+/// values are honoured at emit time. Produced by the builder per parsed
+/// document and consumed by the emitter to render the right directives /
+/// markers.
+#[derive(Debug, Default, Clone)]
+pub struct DocMetadata {
+    /// Whether the doc had an explicit `---` marker.
+    pub explicit_start: bool,
+    /// Whether the doc had an explicit `...` end marker.
+    pub explicit_end: bool,
+    /// `%YAML major.minor` directive, if present.
+    pub yaml_version: Option<(u8, u8)>,
+    /// `%TAG handle prefix` pairs (empty if none).
+    pub tag_directives: Vec<(String, String)>,
+}
 
 /// Key into [`YamlMapping::entries`]. Scalar keys hold their string form;
 /// complex (non-scalar) keys carry only a positional id — the actual key
@@ -80,67 +97,30 @@ pub struct NodeMeta {
     pub anchor: Option<String>,
 }
 
-#[derive(Debug)]
+/// Pure Rust data model produced by the parser/builder and consumed by the
+/// emitter. Holds no `Py` references — Python identity sharing lives in the
+/// bridge layer's `LiveNode` (see [`crate::py::live`]).
+///
+/// `Null` is represented as a `YamlScalar` whose value is `ScalarValue::Null`;
+/// see [`YamlScalar::null`].
+#[derive(Debug, Clone)]
 pub enum YamlNode {
-    Mapping(YamlMapping),
-    Sequence(YamlSequence),
+    Mapping(YamlMapping<YamlNode>),
+    Sequence(YamlSequence<YamlNode>),
     Scalar(YamlScalar),
-    Null,
     /// An alias node (`*name`). `resolved` is a shared reference to the
     /// anchor's value — multiple aliases for the same anchor share storage.
-    /// On the Python side this also drives identity sharing: `*foo` and the
-    /// `&foo`-anchored container surface as the same Python object, so
-    /// mutations through one alias are visible through the others (the same
-    /// model as Python dicts/lists shared by reference). When the alias has
-    /// been materialised (load path or `set_alias` on a known anchor) the
-    /// shared Python object is cached in `materialised` so repeat
-    /// `__getitem__` calls return the same Py without re-conversion.
+    /// Identity-sharing for the Python wrapper is layered on top in
+    /// `LiveNode::Alias`, which adds a `materialised: Option<Py>` cache.
     Alias {
         name: String,
         resolved: Arc<YamlNode>,
-        materialised: Option<Py<PyAny>>,
         meta: NodeMeta,
     },
-    /// Opaque Python object: a value the user assigned that has no native
-    /// `YamlNode` representation (no schema dumper at assignment time, no
-    /// recognised primitive/container shape). The emitter calls
-    /// `py_to_node` again at dump time *with* the schema, so the
-    /// "set first, register schema later, then dump" workflow keeps working
-    /// without storing the value in a parallel parent-dict alongside `inner`.
-    Opaque(Py<PyAny>),
-}
-
-impl Clone for YamlNode {
-    fn clone(&self) -> Self {
-        match self {
-            YamlNode::Mapping(m) => YamlNode::Mapping(m.clone()),
-            YamlNode::Sequence(s) => YamlNode::Sequence(s.clone()),
-            YamlNode::Scalar(s) => YamlNode::Scalar(s.clone()),
-            YamlNode::Null => YamlNode::Null,
-            YamlNode::Alias {
-                name,
-                resolved,
-                materialised,
-                meta,
-            } => YamlNode::Alias {
-                name: name.clone(),
-                resolved: resolved.clone(),
-                materialised: materialised
-                    .as_ref()
-                    .map(|p| Python::attach(|py| p.clone_ref(py))),
-                meta: meta.clone(),
-            },
-            // `Py::clone_ref` requires the GIL — acquire it explicitly so the
-            // public `Clone` impl works in any context the rest of the model is
-            // cloned from (e.g. anchor table snapshots, alias resolved storage).
-            YamlNode::Opaque(p) => YamlNode::Opaque(Python::attach(|py| p.clone_ref(py))),
-        }
-    }
 }
 
 /// Generate paired getter/setter on `YamlNode` that delegate to `meta.<field>` on
-/// `Mapping`/`Sequence`/`Scalar`/`Alias` variants. `Null` returns the default and
-/// silently drops setters. The two arms differ only by reference vs. copy semantics.
+/// every variant (all four carry a `NodeMeta`).
 macro_rules! node_accessor {
     // Option<String> field: getter returns Option<&str>, setter takes Option<String>.
     ($field:ident, $get:ident, $set:ident, $doc:literal, optstr) => {
@@ -152,7 +132,6 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field.as_deref(),
                 YamlNode::Scalar(s) => s.meta.$field.as_deref(),
                 YamlNode::Alias { meta, .. } => meta.$field.as_deref(),
-                YamlNode::Null | YamlNode::Opaque(_) => None,
             }
         }
 
@@ -162,7 +141,6 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null | YamlNode::Opaque(_) => {}
             }
         }
     };
@@ -176,7 +154,6 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field,
                 YamlNode::Scalar(s) => s.meta.$field,
                 YamlNode::Alias { meta, .. } => meta.$field,
-                YamlNode::Null | YamlNode::Opaque(_) => <$ty>::default(),
             }
         }
 
@@ -186,7 +163,6 @@ macro_rules! node_accessor {
                 YamlNode::Sequence(s) => s.meta.$field = value,
                 YamlNode::Scalar(s) => s.meta.$field = value,
                 YamlNode::Alias { meta, .. } => meta.$field = value,
-                YamlNode::Null | YamlNode::Opaque(_) => {}
             }
         }
     };
@@ -251,53 +227,16 @@ pub enum Chomping {
     Keep,
 }
 
-/// How a scalar's value is represented for emission.
-///
-/// `Canonical` carries only the typed value — the emitter writes it back in
-/// canonical form. `Preserved` additionally carries the original source text,
-/// used when canonical re-emission would lose meaningful formatting (e.g. a
-/// float written `1.5e10` would round-trip as `15000000000` without preservation,
-/// or YAML 1.1 booleans `yes`/`no`/`on`/`off`).
-///
-/// Mutating a scalar's value drops `Preserved` → `Canonical` by construction:
-/// [`YamlScalar::set_value`] always assigns a fresh `Canonical`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ScalarRepr {
-    /// Emit by re-formatting `value` canonically.
-    Canonical(ScalarValue),
-    /// Emit `source` verbatim; `value` is the parsed-but-not-canonicalised form.
-    Preserved { value: ScalarValue, source: String },
-}
-
-impl ScalarRepr {
-    /// The typed value, regardless of variant.
-    #[must_use]
-    pub fn value(&self) -> &ScalarValue {
-        match self {
-            ScalarRepr::Canonical(v) | ScalarRepr::Preserved { value: v, .. } => v,
-        }
-    }
-
-    /// The preserved source spelling, if any.
-    #[must_use]
-    pub fn source(&self) -> Option<&str> {
-        match self {
-            ScalarRepr::Canonical(_) => None,
-            ScalarRepr::Preserved { source, .. } => Some(source),
-        }
-    }
-}
-
-impl From<ScalarValue> for ScalarRepr {
-    fn from(v: ScalarValue) -> Self {
-        ScalarRepr::Canonical(v)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct YamlScalar {
-    /// Value + optional preserved source spelling. See [`ScalarRepr`].
-    pub repr: ScalarRepr,
+    /// The typed value of the scalar.
+    pub value: ScalarValue,
+    /// Original source text, kept when canonical re-emission of `value`
+    /// would change the spelling (e.g. `1.5e10` → `15000000000.0`,
+    /// `yes` → `true`, `0xFF` → `255`). The emitter prefers `source` over a
+    /// canonical re-emission of `value`. Cleared on any value mutation —
+    /// see [`YamlScalar::set_value`].
+    pub source: Option<String>,
     /// The quoting style used in the source (or `Plain` for newly constructed scalars).
     pub style: ScalarStyle,
     /// Source chomping indicator for block scalars (`|-`/`|`/`|+` and
@@ -314,20 +253,40 @@ impl YamlScalar {
     /// Read the typed value.
     #[must_use]
     pub fn value(&self) -> &ScalarValue {
-        self.repr.value()
+        &self.value
     }
 
     /// Read the preserved source spelling, if any.
     #[must_use]
     pub fn original(&self) -> Option<&str> {
-        self.repr.source()
+        self.source.as_deref()
     }
 
-    /// Replace the value, demoting any preserved source. Also clears
+    /// Replace the value, dropping any preserved source. Also clears
     /// `chomping` since block-scalar indicators are tied to the source text.
     pub fn set_value(&mut self, v: ScalarValue) {
-        self.repr = ScalarRepr::Canonical(v);
+        self.value = v;
+        self.source = None;
         self.chomping = None;
+    }
+
+    /// A plain `null` scalar with default metadata. Used in lieu of the old
+    /// `YamlNode::Null` variant.
+    #[must_use]
+    pub fn null() -> Self {
+        YamlScalar {
+            value: ScalarValue::Null,
+            source: None,
+            style: ScalarStyle::Plain,
+            chomping: None,
+            meta: NodeMeta::default(),
+        }
+    }
+
+    /// `true` iff the underlying value is `ScalarValue::Null`.
+    #[must_use]
+    pub fn is_null(&self) -> bool {
+        matches!(self.value(), ScalarValue::Null)
     }
 }
 
@@ -405,9 +364,29 @@ impl ScalarValue {
     }
 }
 
+/// Anything that can fill a `YamlEntry::value` or `YamlSequence::items` slot.
+///
+/// Two implementors:
+/// - [`YamlNode`] — the pure Rust data model used by the parser/emitter.
+/// - `py::live::LiveNode` — the bridge type that adds `Py`-bearing variants
+///   for identity-shared Python wrappers and materialised aliases.
+///
+/// Genericising the containers over this trait keeps `core` Py-free while
+/// letting the same `YamlMapping` / `YamlSequence` / `YamlEntry` shapes carry
+/// either the parsed tree (builder output) or the live tree (pyclass `inner`).
+pub trait Node: Clone {
+    fn comment_inline(&self) -> Option<&str>;
+    fn set_comment_inline(&mut self, value: Option<String>);
+    fn comment_before(&self) -> Option<&str>;
+    fn set_comment_before(&mut self, value: Option<String>);
+    fn blank_lines_before(&self) -> u8;
+    fn set_blank_lines_before(&mut self, value: u8);
+    fn format_with(&mut self, opts: FormatOptions);
+}
+
 #[derive(Debug, Clone)]
-pub struct YamlMapping {
-    pub entries: IndexMap<MapKey, YamlEntry>,
+pub struct YamlMapping<N: Node = YamlNode> {
+    pub entries: IndexMap<MapKey, YamlEntry<N>>,
     /// Block (`key: value`) or flow (`{key: value}`) style.
     pub style: ContainerStyle,
     /// Blank lines at the end of this mapping before the closing context (capped at 255).
@@ -415,7 +394,7 @@ pub struct YamlMapping {
     pub meta: NodeMeta,
 }
 
-impl YamlMapping {
+impl<N: Node> YamlMapping<N> {
     #[must_use]
     pub fn new() -> Self {
         YamlMapping {
@@ -437,15 +416,15 @@ impl YamlMapping {
     }
 }
 
-impl Default for YamlMapping {
+impl<N: Node> Default for YamlMapping<N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct YamlEntry {
-    pub value: YamlNode,
+pub struct YamlEntry<N: Node = YamlNode> {
+    pub value: N,
     /// The quoting style the key was written with in the source.
     pub key_style: ScalarStyle,
     /// Anchor declared on the key scalar (`&name`), if any.
@@ -454,14 +433,14 @@ pub struct YamlEntry {
     pub key_alias: Option<String>,
     /// Tag on the key scalar (e.g. `!!str`), if any.
     pub key_tag: Option<String>,
-    /// For complex (non-scalar) keys: the original key node.
-    /// When set, the string key in the `IndexMap` is a synthetic placeholder.
+    /// For complex (non-scalar) keys: the original key node. Keys are always
+    /// pure (they never become `Container`/`OpaquePy`), so this is `YamlNode`.
     pub key_node: Option<Box<YamlNode>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct YamlSequence {
-    pub items: Vec<YamlNode>,
+pub struct YamlSequence<N: Node = YamlNode> {
+    pub items: Vec<N>,
     /// Block (`- item`) or flow (`[item]`) style.
     pub style: ContainerStyle,
     /// Blank lines at the end of this sequence before the closing context (capped at 255).
@@ -469,7 +448,7 @@ pub struct YamlSequence {
     pub meta: NodeMeta,
 }
 
-impl YamlSequence {
+impl<N: Node> YamlSequence<N> {
     #[must_use]
     pub fn new() -> Self {
         YamlSequence {
@@ -491,7 +470,7 @@ impl YamlSequence {
     }
 }
 
-impl Default for YamlSequence {
+impl<N: Node> Default for YamlSequence<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -511,7 +490,7 @@ pub struct FormatOptions {
 
 /// Apply `comments`/`blank_lines` resets to a `NodeMeta`. `tag`/`anchor` are
 /// semantic and always preserved.
-fn meta_format_with(meta: &mut NodeMeta, opts: FormatOptions) {
+pub fn meta_format_with(meta: &mut NodeMeta, opts: FormatOptions) {
     if opts.comments {
         meta.comment_inline = None;
         meta.comment_before = None;
@@ -534,16 +513,14 @@ impl YamlScalar {
             };
             // Drop any preserved source so non-canonical forms (hex, exponent)
             // re-emit canonically. Also clears chomping (tied to source).
-            if let ScalarRepr::Preserved { value, .. } = &self.repr {
-                self.repr = ScalarRepr::Canonical(value.clone());
-            }
+            self.source = None;
             self.chomping = None;
         }
         meta_format_with(&mut self.meta, opts);
     }
 }
 
-impl YamlMapping {
+impl<N: Node> YamlMapping<N> {
     pub fn format_with(&mut self, opts: FormatOptions) {
         if opts.styles {
             self.style = ContainerStyle::Block;
@@ -565,7 +542,7 @@ impl YamlMapping {
     }
 }
 
-impl YamlSequence {
+impl<N: Node> YamlSequence<N> {
     pub fn format_with(&mut self, opts: FormatOptions) {
         if opts.styles {
             self.style = ContainerStyle::Block;
@@ -587,8 +564,31 @@ impl YamlNode {
             YamlNode::Sequence(s) => s.format_with(opts),
             YamlNode::Scalar(s) => s.format_with(opts),
             YamlNode::Alias { meta, .. } => meta_format_with(meta, opts),
-            YamlNode::Null | YamlNode::Opaque(_) => {}
         }
+    }
+}
+
+impl Node for YamlNode {
+    fn comment_inline(&self) -> Option<&str> {
+        YamlNode::comment_inline(self)
+    }
+    fn set_comment_inline(&mut self, value: Option<String>) {
+        YamlNode::set_comment_inline(self, value);
+    }
+    fn comment_before(&self) -> Option<&str> {
+        YamlNode::comment_before(self)
+    }
+    fn set_comment_before(&mut self, value: Option<String>) {
+        YamlNode::set_comment_before(self, value);
+    }
+    fn blank_lines_before(&self) -> u8 {
+        YamlNode::blank_lines_before(self)
+    }
+    fn set_blank_lines_before(&mut self, value: u8) {
+        YamlNode::set_blank_lines_before(self, value);
+    }
+    fn format_with(&mut self, opts: FormatOptions) {
+        YamlNode::format_with(self, opts);
     }
 }
 

@@ -858,7 +858,7 @@ class TestSequenceScalarStyle:
         doc = yarutsk.loads("- hello\n")
         assert isinstance(doc, yarutsk.YamlSequence)
         with pytest.raises(ValueError):
-            doc.node(0).style = "bad"  # type: ignore[assignment]
+            doc.node(0).style = "bad"
 
     def test_out_of_range_raises(self) -> None:
         doc = yarutsk.loads("- hello\n")

@@ -24,9 +24,6 @@ type ScalarStyle = Literal["plain", "single", "double", "literal", "folded"]
 type ContainerStyle = Literal["block", "flow"]
 """The layout style of a YAML mapping or sequence."""
 
-type YamlNode = YamlMapping | YamlSequence | YamlScalar
-"""Any YAML document node (mapping, sequence, or scalar)."""
-
 # ── Internal aliases ──────────────────────────────────────────────────────────
 
 # The Python value of a scalar leaf after tag handling.
@@ -41,12 +38,58 @@ _ScalarInit = _Scalar | bytearray
 # bytes, or scalar primitive.
 type _Dumpable = YamlNode | _Mapping[str, Any] | Iterable[Any] | bytearray | _Scalar
 
-class _NodeBase:
-    """Shared metadata interface for ``YamlScalar``, ``YamlMapping``, and
-    ``YamlSequence`` stubs. Not exported and not inherited at runtime — this
-    class exists only so that the public node types share one type signature
-    for fields that exist on all of them.
+class YamlNode:
+    """Abstract base class shared by ``YamlMapping``, ``YamlSequence``, and
+    ``YamlScalar``. ``isinstance(x, YamlNode)`` is True for any document node.
+
+    Carries the metadata fields common to every node — document-level
+    settings (``explicit_start``/``explicit_end``/``yaml_version``/
+    ``tag_directives``) and per-node settings (``tag``/``anchor``/
+    ``blank_lines_before``/``comment_inline``/``comment_before``).
+
+    Constructing ``YamlNode`` directly raises ``TypeError``. Instantiate
+    one of the concrete subclasses instead.
     """
+
+    def __init__(self) -> None: ...
+    @property
+    def style(self) -> Any:
+        """Quoting/layout style of this node. Concrete subclasses narrow this
+        to specific literal types: ``YamlScalar.style`` is
+        ``"plain"``/``"single"``/``"double"``/``"literal"``/``"folded"``;
+        ``YamlMapping.style`` and ``YamlSequence.style`` are
+        ``"block"``/``"flow"``. The base property is ``Any``-typed so
+        each subclass can narrow both the getter and setter without LSP
+        violations.
+        """
+        ...
+
+    @style.setter
+    def style(self, value: Any) -> None: ...
+    def format(
+        self, *, styles: bool = True, comments: bool = True, blank_lines: bool = True
+    ) -> None:
+        """Strip cosmetic formatting metadata, resetting to clean YAML defaults.
+
+        On scalars ``blank_lines`` is accepted but has no effect (scalars
+        carry no trailing-blank-line state of their own); see the concrete
+        subclasses for full per-class semantics.
+        """
+        ...
+
+    def to_python(self) -> Any:
+        """Recursively convert to a plain Python value: ``dict`` for mappings,
+        ``list`` for sequences, primitive (or ``bytes``/``datetime``) for
+        scalars."""
+        ...
+
+    def __eq__(self, other: object) -> bool:
+        """Concrete subclasses compare by value (after recursive
+        ``to_python`` on containers, by primitive value on scalars), not by
+        identity. Declared here so ``loads(text) == 42`` typechecks even when
+        the static type is the abstract ``YamlNode``.
+        """
+        ...
 
     @property
     def explicit_start(self) -> bool:
@@ -144,7 +187,7 @@ class DumperError(YarutskError):
 
     ...
 
-class YamlScalar(_NodeBase):
+class YamlScalar(YamlNode):
     """A YAML scalar document node.
 
     Can be constructed directly to create a styled scalar for assignment or
@@ -195,14 +238,19 @@ class YamlScalar(_NodeBase):
 
     @style.setter
     def style(self, value: ScalarStyle) -> None: ...
-    def format(self, *, styles: bool = True, comments: bool = True) -> None:
+    def format(
+        self, *, styles: bool = True, comments: bool = True, blank_lines: bool = True
+    ) -> None:
         """Strip cosmetic scalar formatting, resetting to clean YAML defaults.
 
         When *styles* is ``True`` (the default), scalar quoting → plain (literal
         for multi-line strings) and ``original`` is cleared so non-canonical
         forms emit canonically. When *comments* is ``True`` (the default), any
         ``comment_inline`` or ``comment_before`` attached to this scalar is
-        cleared. Tags and anchors are always preserved.
+        cleared. ``blank_lines`` is accepted for signature parity with the
+        container ``format()`` methods but has no effect on scalars (scalars
+        carry no trailing-blank-line state of their own). Tags and anchors are
+        always preserved.
         """
         ...
 
@@ -213,7 +261,7 @@ class YamlScalar(_NodeBase):
     def __eq__(self, other: object) -> bool: ...
     def __repr__(self) -> str: ...
 
-class YamlMapping(_NodeBase):
+class YamlMapping(YamlNode):
     """A YAML mapping node. Standalone class implementing the dict protocol —
     ``isinstance(m, dict)`` is **False**; use ``m.to_python()`` to get a plain
     ``dict`` (recursively) when interop with dict-typed APIs is needed.
@@ -379,7 +427,7 @@ class YamlMapping(_NodeBase):
     def setdefault(self, key: str, default: _D) -> Any | _D: ...
     def __reduce__(self) -> tuple[type[YamlMapping], tuple[dict[str, Any]]]: ...
 
-class YamlSequence(_NodeBase):
+class YamlSequence(YamlNode):
     """A YAML sequence node. Standalone class implementing the list protocol —
     ``isinstance(s, list)`` is **False**; use ``s.to_python()`` to get a plain
     ``list`` (recursively) when interop with list-typed APIs is needed.
@@ -564,7 +612,24 @@ class Schema:
         out = yarutsk.dumps(doc, schema=schema)
     """
 
-    def __init__(self) -> None: ...
+    def __init__(
+        self,
+        *,
+        loaders: _Mapping[str, Callable[[Any], Any]] | None = None,
+        dumpers: Iterable[tuple[type, Callable[[Any], tuple[str, Any]]]] | None = None,
+    ) -> None:
+        """Construct a `Schema`, optionally pre-populated with *loaders* and *dumpers*.
+
+        *loaders* maps YAML tags to loader callables. *dumpers* is an iterable of
+        ``(type, callable)`` pairs (insertion order is preserved, matching the
+        ``isinstance`` dispatch order at dump time).
+
+        After construction `add_loader`/`add_dumper` may still be called until
+        the schema is bound to a load/dump call, after which the schema is
+        frozen and further mutations raise ``RuntimeError``.
+        """
+        ...
+
     def add_loader(self, tag: str, func: Callable[[Any], Any]) -> None:
         """Register a loader callable for *tag*.
 
