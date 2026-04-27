@@ -7,7 +7,7 @@ lifecycle and the `NodeParent` write-through invariant), see [INTERNALS.md](INTE
 ## Setup
 
 ```bash
-git submodule update --init --recursive   # yaml-test-suite
+git submodule update --init --recursive   # yaml-test-suite + yaml-rust2
 uv sync --group dev
 .venv/bin/maturin develop
 ```
@@ -80,6 +80,23 @@ cargo +nightly fuzz run roundtrip -- -max_total_time=30
 ```
 
 Fuzzing requires a nightly toolchain (libFuzzer integration).
+
+## Vendored scanner / parser
+
+The four files `src/core/{scanner,parser,char_traits,debug}.rs` are derived
+from [yaml-rust2](https://github.com/Ethiraric/yaml-rust2). The upstream
+source is a git submodule pinned in `vendor/yaml-rust2`; our diff against
+it is `vendor/yarutsk.patch`. Day-to-day you edit the files in `src/core/`
+directly — the build never reads the submodule or the patch.
+
+Refresh from upstream: `make vendor-refresh` (re-applies the current patch)
+or `tools/refresh-vendor.sh <commit>` (move to a new pin). After
+intentionally changing any of the four files, run `make vendor-regen-patch`
+and commit the patch update alongside the code change. Full procedure:
+[vendor/VENDORING.md](vendor/VENDORING.md).
+
+If a fix in our copy is also a bug in upstream, send the upstream PR first;
+when it lands in a release, refresh and the patch will shrink.
 
 ## Syncing docs
 

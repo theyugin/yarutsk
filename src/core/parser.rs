@@ -1,18 +1,10 @@
-// Vendored from yaml-rust2 (https://github.com/Ethiraric/yaml-rust2)
-// Copyright (c) 2015 Chen Yuheng, Copyright (c) 2023 Ethiraric
-// Licensed under MIT OR Apache-2.0 — see THIRD_PARTY_NOTICES
-//
-// Modifications by yarutsk authors:
-//   - Added `pending_comments` field and `drain_comments()` method to `Parser`
-//   - `scan_next_token` skips `Comment` tokens and accumulates them in `pending_comments`
-
-#![allow(dead_code)]
-
 //! Home to the YAML Parser.
 //!
 //! The parser takes input from the [`crate::scanner::Scanner`], performs final checks for YAML
 //! compliance, and emits a stream of tokens that can be used by the [`crate::YamlLoader`] to
 //! construct the [`crate::Yaml`] object.
+
+#![allow(dead_code)]
 
 use super::scanner::{Chomping, Marker, ScanError, Scanner, TScalarStyle, Token, TokenType};
 use std::collections::HashMap;

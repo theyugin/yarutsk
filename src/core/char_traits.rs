@@ -1,10 +1,6 @@
-// Vendored verbatim from yaml-rust2 (https://github.com/Ethiraric/yaml-rust2)
-// Copyright (c) 2015 Chen Yuheng, Copyright (c) 2023 Ethiraric
-// Licensed under MIT OR Apache-2.0 — see THIRD_PARTY_NOTICES
+//! Holds functions to determine if a character belongs to a specific character set.
 
 #![allow(dead_code)]
-
-//! Holds functions to determine if a character belongs to a specific character set.
 
 /// Check whether the character is nil (`\0`).
 #[inline]

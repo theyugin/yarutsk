@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Internal
+- Vendored yaml-rust2 sources now tracked as a `vendor/yaml-rust2` git submodule (pinned to v0.11.0) plus `vendor/yarutsk.patch`. `make vendor-refresh` / `make vendor-regen-patch` drive the refresh workflow. Build is unchanged.
+
 ## [0.8.2] - 2026-04-28
 
 ### Internal

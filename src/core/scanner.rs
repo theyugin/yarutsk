@@ -1,14 +1,3 @@
-// Vendored from yaml-rust2 (https://github.com/Ethiraric/yaml-rust2)
-// Copyright (c) 2015 Chen Yuheng, Copyright (c) 2023 Ethiraric
-// Licensed under MIT OR Apache-2.0 — see THIRD_PARTY_NOTICES
-//
-// Modifications by yarutsk authors:
-//   - Added `Comment(String)` variant to `TokenType`
-//   - `skip_to_next_token` and `skip_ws_to_eol` emit Comment tokens instead of
-//     discarding comment text
-
-#![allow(dead_code)]
-
 //! Home to the YAML Scanner.
 //!
 //! The scanner is the lowest-level parsing utility. It is the lexer / tokenizer, reading input a
