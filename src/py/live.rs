@@ -82,49 +82,49 @@ impl LiveNode {
             LiveNode::LivePy(_) => false,
         }
     }
+
+    /// Inline-meta accessor. `LivePy` slots own their metadata Python-side, so
+    /// the `Node` getters/setters are inert for that variant.
+    fn meta(&self) -> Option<&NodeMeta> {
+        match self {
+            LiveNode::Scalar(s) => Some(&s.meta),
+            LiveNode::Alias { meta, .. } => Some(meta),
+            LiveNode::LivePy(_) => None,
+        }
+    }
+
+    fn meta_mut(&mut self) -> Option<&mut NodeMeta> {
+        match self {
+            LiveNode::Scalar(s) => Some(&mut s.meta),
+            LiveNode::Alias { meta, .. } => Some(meta),
+            LiveNode::LivePy(_) => None,
+        }
+    }
 }
 
 impl Node for LiveNode {
     fn comment_inline(&self) -> Option<&str> {
-        match self {
-            LiveNode::Scalar(s) => s.meta.comment_inline.as_deref(),
-            LiveNode::Alias { meta, .. } => meta.comment_inline.as_deref(),
-            LiveNode::LivePy(_) => None,
-        }
+        self.meta().and_then(|m| m.comment_inline.as_deref())
     }
     fn set_comment_inline(&mut self, value: Option<String>) {
-        match self {
-            LiveNode::Scalar(s) => s.meta.comment_inline = value,
-            LiveNode::Alias { meta, .. } => meta.comment_inline = value,
-            LiveNode::LivePy(_) => {}
+        if let Some(m) = self.meta_mut() {
+            m.comment_inline = value;
         }
     }
     fn comment_before(&self) -> Option<&str> {
-        match self {
-            LiveNode::Scalar(s) => s.meta.comment_before.as_deref(),
-            LiveNode::Alias { meta, .. } => meta.comment_before.as_deref(),
-            LiveNode::LivePy(_) => None,
-        }
+        self.meta().and_then(|m| m.comment_before.as_deref())
     }
     fn set_comment_before(&mut self, value: Option<String>) {
-        match self {
-            LiveNode::Scalar(s) => s.meta.comment_before = value,
-            LiveNode::Alias { meta, .. } => meta.comment_before = value,
-            LiveNode::LivePy(_) => {}
+        if let Some(m) = self.meta_mut() {
+            m.comment_before = value;
         }
     }
     fn blank_lines_before(&self) -> u8 {
-        match self {
-            LiveNode::Scalar(s) => s.meta.blank_lines_before,
-            LiveNode::Alias { meta, .. } => meta.blank_lines_before,
-            LiveNode::LivePy(_) => 0,
-        }
+        self.meta().map_or(0, |m| m.blank_lines_before)
     }
     fn set_blank_lines_before(&mut self, value: u8) {
-        match self {
-            LiveNode::Scalar(s) => s.meta.blank_lines_before = value,
-            LiveNode::Alias { meta, .. } => meta.blank_lines_before = value,
-            LiveNode::LivePy(_) => {}
+        if let Some(m) = self.meta_mut() {
+            m.blank_lines_before = value;
         }
     }
     fn format_with(&mut self, opts: FormatOptions) {

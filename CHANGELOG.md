@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal
 - Vendored yaml-rust2 sources now tracked as a `vendor/yaml-rust2` git submodule (pinned to v0.11.0) plus `vendor/yarutsk.patch`. `make vendor-refresh` / `make vendor-regen-patch` drive the refresh workflow. Build is unchanged.
+- Deduplicated `LiveNode` `Node` impl, `carry_metadata` per-pyclass arms, and `PyYamlMapping`/`PyYamlSequence` `__init__` bodies via shared helpers in `convert.rs`.
+- CI now runs `cargo test` and cancels superseded PR runs.
 
 ## [0.8.2] - 2026-04-28
 

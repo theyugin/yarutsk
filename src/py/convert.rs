@@ -365,54 +365,67 @@ pub(crate) fn carry_metadata(
         Python::attach(|py| {
             let bound = p.bind(py);
             if let Ok(m) = bound.cast::<PyYamlMapping>() {
-                let mut m = m.borrow_mut();
-                if m.inner.meta.comment_inline.is_none() {
-                    m.inner.meta.comment_inline = old_inline;
-                }
-                if m.inner.meta.comment_before.is_none() {
-                    m.inner.meta.comment_before = old_before;
-                }
-                if m.inner.meta.blank_lines_before == 0 {
-                    m.inner.meta.blank_lines_before = old_blanks;
-                }
-                return;
-            }
-            if let Ok(s) = bound.cast::<PyYamlSequence>() {
-                let mut s = s.borrow_mut();
-                if s.inner.meta.comment_inline.is_none() {
-                    s.inner.meta.comment_inline = old_inline;
-                }
-                if s.inner.meta.comment_before.is_none() {
-                    s.inner.meta.comment_before = old_before;
-                }
-                if s.inner.meta.blank_lines_before == 0 {
-                    s.inner.meta.blank_lines_before = old_blanks;
-                }
-                return;
-            }
-            if let Ok(sc) = bound.cast::<PyYamlScalar>() {
-                let mut sc = sc.borrow_mut();
-                if sc.inner.comment_inline().is_none() {
-                    sc.inner.set_comment_inline(old_inline);
-                }
-                if sc.inner.comment_before().is_none() {
-                    sc.inner.set_comment_before(old_before);
-                }
-                if sc.inner.blank_lines_before() == 0 {
-                    sc.inner.set_blank_lines_before(old_blanks);
-                }
+                carry_into_meta(
+                    &mut m.borrow_mut().inner.meta,
+                    old_inline,
+                    old_before,
+                    old_blanks,
+                );
+            } else if let Ok(s) = bound.cast::<PyYamlSequence>() {
+                carry_into_meta(
+                    &mut s.borrow_mut().inner.meta,
+                    old_inline,
+                    old_before,
+                    old_blanks,
+                );
+            } else if let Ok(sc) = bound.cast::<PyYamlScalar>() {
+                carry_into_node(
+                    &mut sc.borrow_mut().inner,
+                    old_inline,
+                    old_before,
+                    old_blanks,
+                );
             }
         });
         return;
     }
+    carry_into_node(node, old_inline, old_before, old_blanks);
+}
+
+/// Apply the carry-rule (only fill missing slots) to a `NodeMeta`.
+fn carry_into_meta(
+    meta: &mut NodeMeta,
+    inline: Option<String>,
+    before: Option<String>,
+    blanks: u8,
+) {
+    if meta.comment_inline.is_none() {
+        meta.comment_inline = inline;
+    }
+    if meta.comment_before.is_none() {
+        meta.comment_before = before;
+    }
+    if meta.blank_lines_before == 0 {
+        meta.blank_lines_before = blanks;
+    }
+}
+
+/// Same carry-rule, applied through the `Node` trait so it works uniformly
+/// for `LiveNode`, `YamlNode`, and any other `Node` impl.
+fn carry_into_node<N: Node>(
+    node: &mut N,
+    inline: Option<String>,
+    before: Option<String>,
+    blanks: u8,
+) {
     if node.comment_inline().is_none() {
-        node.set_comment_inline(old_inline);
+        node.set_comment_inline(inline);
     }
     if node.comment_before().is_none() {
-        node.set_comment_before(old_before);
+        node.set_comment_before(before);
     }
     if node.blank_lines_before() == 0 {
-        node.set_blank_lines_before(old_blanks);
+        node.set_blank_lines_before(blanks);
     }
 }
 
@@ -1234,6 +1247,62 @@ pub(crate) fn materialise_sequence(
         live.items.push(materialise_node(py, item, schema, ctx)?);
     }
     Ok(live)
+}
+
+/// `__init__` body for `PyYamlMapping`: freeze the schema, extract the input,
+/// and replace `slf.inner` while carrying over the shell's `style` / `tag`
+/// (set in `__new__` from the constructor kwargs).
+pub(crate) fn init_live_mapping(
+    slf: &Bound<'_, PyYamlMapping>,
+    obj: &Bound<'_, PyAny>,
+    schema: Option<&Py<Schema>>,
+) -> PyResult<()> {
+    let py = slf.py();
+    crate::py::schema::freeze_schema(py, schema);
+    let sb = schema.map(|s| s.bind(py));
+    // `extract_yaml_node` (not `py_to_node`) so self-referential dicts
+    // round-trip via auto-anchor instead of erroring on the cycle guard.
+    let node = extract_yaml_node(obj, sb.as_ref().copied())?;
+    let YamlNode::Mapping(parsed) = node else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "YamlMapping requires a dict or mapping-like object",
+        ));
+    };
+    let mut ctx = LoadCtx::default();
+    let mut live = materialise_mapping(py, parsed, sb.as_ref().copied(), &mut ctx)?;
+    let mut borrow = slf.borrow_mut();
+    let style = borrow.inner.style;
+    let tag = std::mem::take(&mut borrow.inner.meta.tag);
+    live.style = style;
+    live.meta.tag = tag;
+    borrow.inner = live;
+    Ok(())
+}
+
+/// Sequence counterpart of [`init_live_mapping`].
+pub(crate) fn init_live_sequence(
+    slf: &Bound<'_, PyYamlSequence>,
+    obj: &Bound<'_, PyAny>,
+    schema: Option<&Py<Schema>>,
+) -> PyResult<()> {
+    let py = slf.py();
+    crate::py::schema::freeze_schema(py, schema);
+    let sb = schema.map(|s| s.bind(py));
+    let node = extract_yaml_node(obj, sb.as_ref().copied())?;
+    let YamlNode::Sequence(parsed) = node else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "YamlSequence requires a list or iterable object",
+        ));
+    };
+    let mut ctx = LoadCtx::default();
+    let mut live = materialise_sequence(py, parsed, sb.as_ref().copied(), &mut ctx)?;
+    let mut borrow = slf.borrow_mut();
+    let style = borrow.inner.style;
+    let tag = std::mem::take(&mut borrow.inner.meta.tag);
+    live.style = style;
+    live.meta.tag = tag;
+    borrow.inner = live;
+    Ok(())
 }
 
 pub(crate) fn mapping_to_py_obj_inner(
