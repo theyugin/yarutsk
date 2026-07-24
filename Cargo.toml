@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 indexmap = "2"
 pyo3 = { version = "0.28", features = ["indexmap", "multiple-pymethods"] }
 arraydeque = "0.5"
-base64 = "0.22"
+base64 = "0.23"
 
 [features]
 extension-module = ["pyo3/extension-module"]
