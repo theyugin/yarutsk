@@ -1,0 +1,48 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scanner, parser, roundtrip, idempotent_emit]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cargo-fuzz
+
+      - name: Seed corpus
+        run: ./fuzz/seed_corpus.sh
+
+      - name: Run bounded fuzz target
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
