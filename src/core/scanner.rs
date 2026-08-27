@@ -392,7 +392,10 @@ pub struct Scanner<T> {
     /// List of all block indentation levels we are in (except the current one).
     indents: Vec<Indent>,
     /// Level of nesting of flow sequences.
-    flow_level: u8,
+    /// Current flow-collection nesting. This is bookkeeping for an iterative
+    /// scanner, not a recursion counter; use `usize` so valid deeply nested
+    /// input is not rejected merely because an 8-bit counter overflowed.
+    flow_level: usize,
     /// The number of tokens that have been returned from the scanner.
     ///
     /// This excludes the tokens from [`Self::tokens`].

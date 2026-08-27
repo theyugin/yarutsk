@@ -37,7 +37,7 @@ def _point_schema() -> yarutsk.Schema:
 
 
 # Values outside i64 range are emitted as-is but re-parse as floats (see
-# CLAUDE.md: ScalarValue coercion). Keep ints inside i64 for a clean round-trip.
+# AGENTS.md: ScalarValue coercion). Keep ints inside i64 for a clean round-trip.
 I64_INTS = st.integers(min_value=-(2**63), max_value=2**63 - 1)
 
 

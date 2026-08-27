@@ -41,7 +41,19 @@
  }
  
  /// A scanner token.
-@@ -855,9 +874,21 @@
+@@ -373,7 +392,10 @@
+     /// List of all block indentation levels we are in (except the current one).
+     indents: Vec<Indent>,
+     /// Level of nesting of flow sequences.
+-    flow_level: u8,
++    /// Current flow-collection nesting. This is bookkeeping for an iterative
++    /// scanner, not a recursion counter; use `usize` so valid deeply nested
++    /// input is not rejected merely because an 8-bit counter overflowed.
++    flow_level: usize,
+     /// The number of tokens that have been returned from the scanner.
+     ///
+     /// This excludes the tokens from [`Self::tokens`].
+@@ -855,9 +877,21 @@
                      }
                  }
                  '#' => {
@@ -63,7 +75,7 @@
                  }
                  _ => break,
              }
-@@ -924,9 +955,21 @@
+@@ -924,9 +958,21 @@
                      ));
                  }
                  '#' => {
@@ -85,7 +97,7 @@
                  }
                  _ => break,
              }
-@@ -1380,7 +1423,10 @@
+@@ -1380,7 +1426,10 @@
          }
  
          if string.is_empty() {
@@ -97,7 +109,7 @@
          }
  
          if alias {
-@@ -1491,10 +1537,12 @@
+@@ -1491,10 +1540,12 @@
          }
  
          // ???, fixes test G9HC.
@@ -114,7 +126,7 @@
          }
  
          // Skip over the `-`.
-@@ -1665,7 +1713,10 @@
+@@ -1665,7 +1716,10 @@
                  // Otherwise, the newline after chomping is ignored.
                  Chomping::Keep => trailing_breaks,
              };
@@ -126,7 +138,7 @@
          }
  
          if self.mark.col < indent && (self.mark.col as isize) > self.indent {
-@@ -1731,7 +1782,10 @@
+@@ -1731,7 +1785,10 @@
              string.push_str(&trailing_breaks);
          }
  
@@ -138,7 +150,7 @@
      }
  
      /// Retrieve the contents of the line, parsing it as a block scalar.
-@@ -2013,7 +2067,14 @@
+@@ -2013,7 +2070,14 @@
          } else {
              TScalarStyle::DoubleQuoted
          };
@@ -154,7 +166,7 @@
      }
  
      /// Consume successive non-whitespace characters from a flow scalar.
-@@ -2106,7 +2167,7 @@
+@@ -2106,7 +2170,7 @@
                  return Err(ScanError::new(
                      *start_mark,
                      "while parsing a quoted scalar, found unknown escape character",
@@ -163,7 +175,7 @@
              }
          }
          self.skip_n_non_blank(2);
-@@ -2272,9 +2333,13 @@
+@@ -2272,9 +2336,13 @@
              self.allow_simple_key();
          }
  
@@ -178,7 +190,7 @@
          ))
      }
  
-@@ -2412,13 +2477,12 @@
+@@ -2412,13 +2480,12 @@
          // If the last indent was a non-block indent, remove it.
          // This means that we prepared an indent that we thought we wouldn't use, but realized just
          // now that it is a block indent.
@@ -198,7 +210,7 @@
          }
  
          if self.indent < col as isize {
-@@ -2459,12 +2523,7 @@
+@@ -2459,12 +2526,7 @@
      /// An indentation is not added if we are inside a flow level or if the last indent is already
      /// a non-block indent.
      fn roll_one_col_indent(&mut self) {
@@ -212,7 +224,7 @@
              self.indents.push(Indent {
                  indent: self.indent,
                  needs_block_end: false,
-@@ -2582,7 +2641,7 @@
+@@ -2582,7 +2644,7 @@
  /// Chomping, how final line breaks and trailing empty lines are interpreted.
  ///
  /// See YAML spec 8.1.1.2.

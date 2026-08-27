@@ -43,12 +43,12 @@ impl PyYamlSequence {
         style: &str,
         tag: Option<&str>,
         schema: Option<Py<Schema>>,
-    ) -> PyResult<(Self, PyYamlNode)> {
+    ) -> PyResult<PyClassInitializer<Self>> {
         let _ = (iterable, schema); // populated in __init__
         let mut inner = YamlSequence::new();
         inner.style = parse_container_style(style)?;
         inner.meta.tag = tag.map(str::to_owned);
-        Ok((PyYamlSequence { inner }, PyYamlNode::default()))
+        Ok(PyClassInitializer::from(PyYamlNode::default()).add_subclass(PyYamlSequence { inner }))
     }
 
     #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]

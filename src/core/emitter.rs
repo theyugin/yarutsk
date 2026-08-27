@@ -15,14 +15,14 @@
 use std::borrow::Cow;
 use std::fmt::{self, Write as FmtWrite};
 
+use super::arena::{ArenaDocument, ArenaEntry, ArenaNode, NodeId};
 use super::builder::DocMetadata;
 use super::char_traits::{is_tag_char, is_uri_char};
-#[cfg(test)]
-use super::types::MapKey;
 use super::types::{
-    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode,
-    YamlScalar, YamlSequence,
+    Chomping, ContainerStyle, NodeMeta, ScalarStyle, ScalarValue, YamlNode, YamlScalar,
 };
+#[cfg(test)]
+use super::types::{MapKey, YamlEntry, YamlMapping, YamlSequence};
 
 /// A `fmt::Write` wrapper that remembers the last character written.
 /// Used to check whether a trailing `\n` needs to be appended.
@@ -59,6 +59,7 @@ struct Emitter<'w, W: FmtWrite> {
 }
 
 /// Borrow target for `emit_nested_in_seq` — the two cases sequences nest into.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum NestedKind<'a> {
     Sequence(&'a YamlSequence),
@@ -89,6 +90,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     /// Emit the ` &anchor TAG` block-suffix prefix with a leading space before each
     /// component and no trailing space. Used to extend a key/value line (after `:`
     /// or `-`) with an anchor and/or tag before the newline that introduces the body.
+    #[cfg(test)]
     fn write_anchor_tag_block_suffix(
         &mut self,
         anchor: Option<&str>,
@@ -110,6 +112,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     /// `flow_context` is true once we are inside a `[ … ]` / `{ … }` collection;
     /// it propagates to scalar emission so plain values containing flow indicators
     /// (`,` `[` `]` `{` `}`) get quoted.
+    #[cfg(test)]
     fn emit_node(&mut self, node: &YamlNode, indent: usize, flow_context: bool) -> fmt::Result {
         match node {
             YamlNode::Mapping(m) => self.emit_mapping(m, indent)?,
@@ -178,6 +181,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     ///
     /// `flow_context` propagates the surrounding `[ … ]` / `{ … }` context
     /// downward so quoted-scalar decisions widen as needed.
+    #[cfg(test)]
     fn emit_node_inline(
         &mut self,
         node: &YamlNode,
@@ -206,6 +210,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
 
     /// Emit a mapping key (alias / complex / block-scalar / plain scalar).
     /// The caller is responsible for pushing any leading indentation before this call.
+    #[cfg(test)]
     fn emit_mapping_key(&mut self, key: &str, entry: &YamlEntry, indent: usize) -> fmt::Result {
         // Alias key: `? *name\n: value` — explicit form avoids ambiguity with
         // `*alias:` being misinterpreted in block context by some parsers.
@@ -265,6 +270,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     }
 
     /// Emit a mapping entry value (the part after the `:` on the key line).
+    #[cfg(test)]
     fn emit_mapping_value(&mut self, entry: &YamlEntry, indent: usize) -> fmt::Result {
         let inline = entry.value.comment_inline();
         match &entry.value {
@@ -332,6 +338,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn emit_mapping(&mut self, m: &YamlMapping, indent: usize) -> fmt::Result {
         if m.style == ContainerStyle::Flow {
             return self.emit_mapping_flow(m);
@@ -360,6 +367,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn emit_mapping_flow(&mut self, m: &YamlMapping) -> fmt::Result {
         self.write_anchor_tag_inline(m.meta.anchor.as_deref(), m.meta.tag.as_deref())?;
         self.out.write_char('{')?;
@@ -402,6 +410,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     ///
     /// `indent` is the indentation of the nested container's content (i.e. the
     /// caller has already added its `step`).
+    #[cfg(test)]
     fn emit_nested_in_seq(
         &mut self,
         kind: NestedKind<'_>,
@@ -441,6 +450,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         }
     }
 
+    #[cfg(test)]
     fn emit_sequence(&mut self, s: &YamlSequence, indent: usize) -> fmt::Result {
         if s.style == ContainerStyle::Flow {
             return self.emit_sequence_flow(s);
@@ -514,6 +524,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn emit_sequence_flow(&mut self, s: &YamlSequence) -> fmt::Result {
         self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         self.out.write_char('[')?;
@@ -539,6 +550,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     }
 
     /// Emit a sequence where the first item shares the line with the parent `-`.
+    #[cfg(test)]
     fn emit_sequence_inline_first(&mut self, s: &YamlSequence, indent: usize) -> fmt::Result {
         let mut first = true;
         for item in &s.items {
@@ -609,6 +621,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     }
 
     /// Emit a mapping where the first entry shares the line with the parent `-`.
+    #[cfg(test)]
     fn emit_mapping_inline_first(&mut self, m: &YamlMapping, indent: usize) -> fmt::Result {
         let mut first = true;
         for (key, entry) in &m.entries {
@@ -1182,15 +1195,667 @@ fn is_block_scalar(s: &YamlScalar) -> bool {
     if !matches!(s.style, ScalarStyle::Literal | ScalarStyle::Folded) {
         return false;
     }
-    if let ScalarValue::Str(text) = &s.value() {
-        if text
+    if let ScalarValue::Str(text) = &s.value()
+        && text
             .bytes()
             .any(|b| b == b'\r' || b == 0x7F || (b < 0x20 && b != b'\t' && b != b'\n'))
-        {
-            return false;
-        }
+    {
+        return false;
     }
     true
+}
+
+/// Explicit-stack emitter for the flat arena representation.
+struct ArenaEmitter<'a, 'w, W: FmtWrite> {
+    doc: &'a ArenaDocument,
+    out: &'w mut W,
+    step: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ArenaOp {
+    Node(NodeId, usize, bool),
+    NodeInline(NodeId, usize, bool),
+    Mapping(NodeId, usize),
+    MappingEntry(NodeId, usize, usize),
+    MappingValue(NodeId, usize, usize),
+    MappingFlow(NodeId),
+    MappingFlowEntry(NodeId, usize),
+    MappingInlineFirst(NodeId, usize, usize),
+    Sequence(NodeId, usize),
+    SequenceItem(NodeId, usize, usize),
+    SequenceFlow(NodeId),
+    SequenceFlowItem(NodeId, usize),
+    SequenceInlineFirst(NodeId, usize, usize),
+    FinishLine(NodeId),
+    Write(&'static str),
+}
+
+impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
+    fn new(doc: &'a ArenaDocument, out: &'w mut W, step: usize) -> Self {
+        Self { doc, out, step }
+    }
+
+    fn write_anchor_tag_inline(&mut self, meta: &NodeMeta) -> fmt::Result {
+        if let Some(anchor) = &meta.anchor {
+            write!(self.out, "&{anchor} ")?;
+        }
+        if let Some(tag) = &meta.tag {
+            write!(self.out, "{} ", format_tag(tag))?;
+        }
+        Ok(())
+    }
+
+    fn write_anchor_tag_suffix(&mut self, meta: &NodeMeta) -> fmt::Result {
+        if let Some(anchor) = &meta.anchor {
+            write!(self.out, " &{anchor}")?;
+        }
+        if let Some(tag) = &meta.tag {
+            write!(self.out, " {}", format_tag(tag))?;
+        }
+        Ok(())
+    }
+
+    fn finish_line(&mut self, id: NodeId) -> fmt::Result {
+        let comment = self.doc.node(id).meta().comment_inline.as_deref();
+        let mut helper = Emitter::new(self.out, self.step);
+        helper.finish_inline_line(comment)
+    }
+
+    fn before_node(&mut self, id: NodeId, indent: usize) -> fmt::Result {
+        let meta = self.doc.node(id).meta();
+        let mut helper = Emitter::new(self.out, self.step);
+        helper.write_blank_lines(meta.blank_lines_before)?;
+        helper.emit_comment_before(meta.comment_before.as_deref(), indent)
+    }
+
+    fn emit_scalar(
+        &mut self,
+        scalar: &YamlScalar,
+        indent: usize,
+        flow_context: bool,
+        inline_comment: Option<&str>,
+    ) -> fmt::Result {
+        let mut helper = Emitter::new(self.out, self.step);
+        if is_block_scalar(scalar) {
+            let effective = if indent == 0 { self.step } else { indent };
+            helper.emit_block_scalar(scalar, effective, inline_comment)
+        } else {
+            helper.emit_scalar(scalar, flow_context)
+        }
+    }
+
+    fn emit_key(&mut self, entry: &ArenaEntry, indent: usize) -> fmt::Result {
+        if let Some(alias) = &entry.key_alias {
+            write!(self.out, "? *{alias}\n{}:", indent_str(indent))
+        } else if entry.key_node.is_some() {
+            // The surrounding operation schedules the complex key node.
+            self.out.write_str("? ")
+        } else if matches!(entry.key_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+            let scalar = YamlScalar {
+                value: ScalarValue::Str(entry.key.as_scalar().unwrap_or("").to_owned()),
+                source: None,
+                style: entry.key_style,
+                chomping: None,
+                meta: NodeMeta {
+                    tag: entry.key_tag.clone(),
+                    anchor: entry.key_anchor.clone(),
+                    ..NodeMeta::default()
+                },
+            };
+            self.out.write_str("? ")?;
+            let mut helper = Emitter::new(self.out, self.step);
+            helper.emit_block_scalar(&scalar, indent + self.step, None)?;
+            write!(self.out, "{}:", indent_str(indent))
+        } else {
+            let meta = NodeMeta {
+                anchor: entry.key_anchor.clone(),
+                tag: entry.key_tag.clone(),
+                ..NodeMeta::default()
+            };
+            self.write_anchor_tag_inline(&meta)?;
+            self.out.write_str(&emit_key(
+                entry.key.as_scalar().unwrap_or(""),
+                entry.key_style,
+                false,
+            ))?;
+            self.out.write_char(':')
+        }
+    }
+
+    fn emit_inline_to_temp(
+        &self,
+        id: NodeId,
+        indent: usize,
+        flow_context: bool,
+    ) -> Result<String, fmt::Error> {
+        let mut tmp = String::new();
+        ArenaEmitter::new(self.doc, &mut tmp, self.step).run(id, indent, flow_context)?;
+        Ok(tmp.trim_end_matches('\n').to_owned())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn run(&mut self, root: NodeId, indent: usize, flow_context: bool) -> fmt::Result {
+        let mut ops = vec![ArenaOp::Node(root, indent, flow_context)];
+        while let Some(op) = ops.pop() {
+            match op {
+                ArenaOp::Write(text) => self.out.write_str(text)?,
+                ArenaOp::FinishLine(id) => self.finish_line(id)?,
+                ArenaOp::Node(id, indent, flow) => match self.doc.node(id) {
+                    ArenaNode::Mapping { .. } => ops.push(ArenaOp::Mapping(id, indent)),
+                    ArenaNode::Sequence { .. } => ops.push(ArenaOp::Sequence(id, indent)),
+                    ArenaNode::Scalar(scalar) => {
+                        self.emit_scalar(scalar, indent, flow, None)?;
+                    }
+                    ArenaNode::Alias { name, .. } => write!(self.out, "*{name}")?,
+                },
+                ArenaOp::NodeInline(id, indent, flow) => {
+                    let needs_strip = matches!(
+                        self.doc.node(id),
+                        ArenaNode::Scalar(s) if is_block_scalar(s)
+                    ) || matches!(
+                        self.doc.node(id),
+                        ArenaNode::Mapping {
+                            style: ContainerStyle::Block,
+                            ..
+                        } | ArenaNode::Sequence {
+                            style: ContainerStyle::Block,
+                            ..
+                        }
+                    );
+                    if needs_strip {
+                        let rendered = self.emit_inline_to_temp(id, indent, flow)?;
+                        self.out.write_str(&rendered)?;
+                    } else {
+                        ops.push(ArenaOp::Node(id, indent, flow));
+                    }
+                }
+                ArenaOp::Mapping(id, indent) => {
+                    let ArenaNode::Mapping {
+                        entries,
+                        style,
+                        trailing_blank_lines,
+                        meta,
+                    } = self.doc.node(id)
+                    else {
+                        unreachable!()
+                    };
+                    if *style == ContainerStyle::Flow {
+                        ops.push(ArenaOp::MappingFlow(id));
+                        continue;
+                    }
+                    if indent == 0
+                        && let Some(anchor) = &meta.anchor
+                    {
+                        writeln!(self.out, "&{anchor}")?;
+                    }
+                    if entries.is_empty() {
+                        self.out.write_str("{}\n")?;
+                    } else {
+                        for _ in 0..*trailing_blank_lines {
+                            ops.push(ArenaOp::Write("\n"));
+                        }
+                        ops.push(ArenaOp::MappingEntry(id, 0, indent));
+                    }
+                }
+                ArenaOp::MappingEntry(id, index, indent) => {
+                    let ArenaNode::Mapping { entries, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(entry) = entries.get(index) else {
+                        continue;
+                    };
+                    self.before_node(entry.value, indent)?;
+                    self.out.write_str(&indent_str(indent))?;
+                    ops.push(ArenaOp::MappingEntry(id, index + 1, indent));
+                    ops.push(ArenaOp::MappingValue(id, index, indent));
+                    if let Some(key_id) = entry.key_node {
+                        self.out.write_str("? ")?;
+                        let block = matches!(
+                            self.doc.node(key_id),
+                            ArenaNode::Mapping {
+                                style: ContainerStyle::Block,
+                                ..
+                            } | ArenaNode::Sequence {
+                                style: ContainerStyle::Block,
+                                ..
+                            }
+                        );
+                        if block {
+                            self.out.write_char('\n')?;
+                        }
+                        let rendered =
+                            self.emit_inline_to_temp(key_id, indent + self.step, false)?;
+                        self.out.write_str(&rendered)?;
+                        write!(self.out, "\n{}:", indent_str(indent))?;
+                    } else {
+                        self.emit_key(entry, indent)?;
+                    }
+                }
+                ArenaOp::MappingValue(id, index, indent) => {
+                    let ArenaNode::Mapping { entries, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let entry = &entries[index];
+                    let value = entry.value;
+                    match self.doc.node(value) {
+                        ArenaNode::Mapping {
+                            entries,
+                            style,
+                            meta,
+                            ..
+                        } if !entries.is_empty() && *style == ContainerStyle::Flow => {
+                            self.out.write_char(' ')?;
+                            ops.push(ArenaOp::FinishLine(value));
+                            ops.push(ArenaOp::MappingFlow(value));
+                        }
+                        ArenaNode::Mapping { entries, meta, .. } if !entries.is_empty() => {
+                            self.write_anchor_tag_suffix(meta)?;
+                            self.finish_line(value)?;
+                            ops.push(ArenaOp::Mapping(value, indent + self.step));
+                        }
+                        ArenaNode::Sequence {
+                            items, style, meta, ..
+                        } if !items.is_empty() && *style == ContainerStyle::Flow => {
+                            self.out.write_char(' ')?;
+                            ops.push(ArenaOp::FinishLine(value));
+                            ops.push(ArenaOp::SequenceFlow(value));
+                        }
+                        ArenaNode::Sequence { items, meta, .. } if !items.is_empty() => {
+                            self.write_anchor_tag_suffix(meta)?;
+                            self.finish_line(value)?;
+                            ops.push(ArenaOp::Sequence(value, indent + self.step));
+                        }
+                        ArenaNode::Mapping { .. } => {
+                            let mut helper = Emitter::new(self.out, self.step);
+                            helper.push_inline_comment(
+                                self.doc.node(value).meta().comment_inline.as_deref(),
+                            )?;
+                            self.out.write_str(" {}\n")?;
+                        }
+                        ArenaNode::Sequence { .. } => {
+                            let mut helper = Emitter::new(self.out, self.step);
+                            helper.push_inline_comment(
+                                self.doc.node(value).meta().comment_inline.as_deref(),
+                            )?;
+                            self.out.write_str(" []\n")?;
+                        }
+                        ArenaNode::Scalar(scalar) if is_block_scalar(scalar) => {
+                            self.out.write_char(' ')?;
+                            let comment = scalar.meta.comment_inline.as_deref();
+                            self.emit_scalar(scalar, indent + self.step, false, comment)?;
+                        }
+                        ArenaNode::Scalar(scalar) => {
+                            self.out.write_char(' ')?;
+                            self.emit_scalar(scalar, indent + self.step, false, None)?;
+                            self.finish_line(value)?;
+                        }
+                        ArenaNode::Alias { .. } => {
+                            self.out.write_char(' ')?;
+                            ops.push(ArenaOp::FinishLine(value));
+                            ops.push(ArenaOp::NodeInline(value, indent + self.step, false));
+                        }
+                    }
+                }
+                ArenaOp::MappingFlow(id) => {
+                    let ArenaNode::Mapping { meta, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    self.write_anchor_tag_inline(meta)?;
+                    self.out.write_char('{')?;
+                    ops.push(ArenaOp::Write("}"));
+                    ops.push(ArenaOp::MappingFlowEntry(id, 0));
+                }
+                ArenaOp::MappingFlowEntry(id, index) => {
+                    let ArenaNode::Mapping { entries, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(entry) = entries.get(index) else {
+                        continue;
+                    };
+                    if index > 0 {
+                        self.out.write_str(", ")?;
+                    }
+                    if let Some(key_node) = entry.key_node {
+                        let key = self.emit_inline_to_temp(key_node, 0, true)?;
+                        self.out.write_str(&key)?;
+                    } else if let Some(alias) = &entry.key_alias {
+                        write!(self.out, "*{alias} ")?;
+                    } else {
+                        let meta = NodeMeta {
+                            anchor: entry.key_anchor.clone(),
+                            tag: entry.key_tag.clone(),
+                            ..NodeMeta::default()
+                        };
+                        self.write_anchor_tag_inline(&meta)?;
+                        self.out.write_str(&emit_key(
+                            entry.key.as_scalar().unwrap_or(""),
+                            entry.key_style,
+                            true,
+                        ))?;
+                    }
+                    self.out.write_str(": ")?;
+                    ops.push(ArenaOp::MappingFlowEntry(id, index + 1));
+                    ops.push(ArenaOp::NodeInline(entry.value, 0, true));
+                }
+                ArenaOp::Sequence(id, indent) => {
+                    let ArenaNode::Sequence {
+                        items,
+                        style,
+                        trailing_blank_lines,
+                        meta,
+                    } = self.doc.node(id)
+                    else {
+                        unreachable!()
+                    };
+                    if *style == ContainerStyle::Flow {
+                        ops.push(ArenaOp::SequenceFlow(id));
+                        continue;
+                    }
+                    if indent == 0
+                        && let Some(anchor) = &meta.anchor
+                    {
+                        writeln!(self.out, "&{anchor}")?;
+                    }
+                    if items.is_empty() {
+                        self.out.write_str("[]\n")?;
+                    } else {
+                        for _ in 0..*trailing_blank_lines {
+                            ops.push(ArenaOp::Write("\n"));
+                        }
+                        ops.push(ArenaOp::SequenceItem(id, 0, indent));
+                    }
+                }
+                ArenaOp::SequenceItem(id, index, indent) => {
+                    let ArenaNode::Sequence { items, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(&item) = items.get(index) else {
+                        continue;
+                    };
+                    self.before_node(item, indent)?;
+                    write!(self.out, "{}- ", indent_str(indent))?;
+                    ops.push(ArenaOp::SequenceItem(id, index + 1, indent));
+                    match self.doc.node(item) {
+                        ArenaNode::Mapping {
+                            entries,
+                            style,
+                            meta,
+                            ..
+                        } if !entries.is_empty() && *style == ContainerStyle::Flow => {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::MappingFlow(item));
+                        }
+                        ArenaNode::Mapping { entries, meta, .. } if !entries.is_empty() => {
+                            if meta.anchor.is_some()
+                                || meta.tag.is_some()
+                                || meta.comment_inline.is_some()
+                            {
+                                self.write_anchor_tag_inline(meta)?;
+                                if let Some(comment) = &meta.comment_inline {
+                                    write!(self.out, "# {comment}")?;
+                                }
+                                self.out.write_char('\n')?;
+                                ops.push(ArenaOp::Mapping(item, indent + self.step));
+                            } else {
+                                ops.push(ArenaOp::MappingInlineFirst(item, 0, indent + self.step));
+                            }
+                        }
+                        ArenaNode::Sequence {
+                            items, style, meta, ..
+                        } if !items.is_empty() && *style == ContainerStyle::Flow => {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::SequenceFlow(item));
+                        }
+                        ArenaNode::Sequence { items, meta, .. } if !items.is_empty() => {
+                            if meta.anchor.is_some()
+                                || meta.tag.is_some()
+                                || meta.comment_inline.is_some()
+                            {
+                                self.write_anchor_tag_inline(meta)?;
+                                if let Some(comment) = &meta.comment_inline {
+                                    write!(self.out, "# {comment}")?;
+                                }
+                                self.out.write_char('\n')?;
+                                ops.push(ArenaOp::Sequence(item, indent + self.step));
+                            } else {
+                                ops.push(ArenaOp::SequenceInlineFirst(item, 0, indent + self.step));
+                            }
+                        }
+                        ArenaNode::Mapping { .. } => {
+                            self.out.write_str("{}")?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Sequence { .. } => {
+                            self.out.write_str("[]")?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Scalar(scalar) if is_block_scalar(scalar) => {
+                            self.emit_scalar(
+                                scalar,
+                                indent + self.step,
+                                false,
+                                scalar.meta.comment_inline.as_deref(),
+                            )?;
+                        }
+                        ArenaNode::Scalar(scalar) => {
+                            self.emit_scalar(scalar, indent + self.step, false, None)?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Alias { .. } => {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::NodeInline(item, indent + self.step, false));
+                        }
+                    }
+                }
+                ArenaOp::SequenceFlow(id) => {
+                    let ArenaNode::Sequence { meta, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    self.write_anchor_tag_inline(meta)?;
+                    self.out.write_char('[')?;
+                    ops.push(ArenaOp::Write("]"));
+                    ops.push(ArenaOp::SequenceFlowItem(id, 0));
+                }
+                ArenaOp::SequenceFlowItem(id, index) => {
+                    let ArenaNode::Sequence { items, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(&item) = items.get(index) else {
+                        continue;
+                    };
+                    if index > 0 {
+                        self.out.write_str(", ")?;
+                    }
+                    ops.push(ArenaOp::SequenceFlowItem(id, index + 1));
+                    match self.doc.node(item) {
+                        ArenaNode::Mapping {
+                            style: ContainerStyle::Block,
+                            ..
+                        } => ops.push(ArenaOp::MappingFlow(item)),
+                        ArenaNode::Sequence {
+                            style: ContainerStyle::Block,
+                            ..
+                        } => ops.push(ArenaOp::SequenceFlow(item)),
+                        _ => ops.push(ArenaOp::NodeInline(item, 0, true)),
+                    }
+                }
+                ArenaOp::MappingInlineFirst(id, index, indent) => {
+                    let ArenaNode::Mapping { entries, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(entry) = entries.get(index) else {
+                        continue;
+                    };
+                    if entry.value.0 > self.doc.nodes.len() {
+                        unreachable!()
+                    }
+                    let before = self.doc.node(entry.value).meta().comment_before.as_deref();
+                    if let Some(comment) = before {
+                        if index == 0 {
+                            self.out.write_char('\n')?;
+                        }
+                        let mut helper = Emitter::new(self.out, self.step);
+                        helper.emit_comment_before(Some(comment), indent)?;
+                        self.out.write_str(&indent_str(indent))?;
+                    } else if index > 0 {
+                        self.out.write_str(&indent_str(indent))?;
+                    }
+                    self.emit_key(entry, indent)?;
+                    ops.push(ArenaOp::MappingInlineFirst(id, index + 1, indent));
+                    ops.push(ArenaOp::MappingValue(id, index, indent));
+                }
+                ArenaOp::SequenceInlineFirst(id, index, indent) => {
+                    let ArenaNode::Sequence { items, .. } = self.doc.node(id) else {
+                        unreachable!()
+                    };
+                    let Some(&item) = items.get(index) else {
+                        continue;
+                    };
+                    let meta = self.doc.node(item).meta();
+                    if index > 0 {
+                        let mut helper = Emitter::new(self.out, self.step);
+                        helper.write_blank_lines(meta.blank_lines_before)?;
+                    }
+                    if let Some(before) = meta.comment_before.as_deref() {
+                        if index == 0 {
+                            self.out.write_char('\n')?;
+                        }
+                        let mut helper = Emitter::new(self.out, self.step);
+                        helper.emit_comment_before(Some(before), indent)?;
+                        self.out.write_str(&indent_str(indent))?;
+                    } else if index > 0 {
+                        self.out.write_str(&indent_str(indent))?;
+                    }
+                    self.out.write_str("- ")?;
+                    // Reuse the normal item operation in a temporary one-item
+                    // sequence would add indentation and metadata twice. Handle
+                    // the common inline-first container cases explicitly.
+                    ops.push(ArenaOp::SequenceInlineFirst(id, index + 1, indent));
+                    match self.doc.node(item) {
+                        ArenaNode::Mapping { entries, style, .. }
+                            if !entries.is_empty() && *style == ContainerStyle::Flow =>
+                        {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::MappingFlow(item));
+                        }
+                        ArenaNode::Mapping { entries, .. } if !entries.is_empty() => {
+                            if meta.comment_inline.is_some() {
+                                writeln!(
+                                    self.out,
+                                    "# {}",
+                                    meta.comment_inline.as_deref().unwrap()
+                                )?;
+                                ops.push(ArenaOp::Mapping(item, indent + self.step));
+                            } else {
+                                ops.push(ArenaOp::MappingInlineFirst(item, 0, indent + self.step));
+                            }
+                        }
+                        ArenaNode::Sequence { items, style, .. }
+                            if !items.is_empty() && *style == ContainerStyle::Flow =>
+                        {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::SequenceFlow(item));
+                        }
+                        ArenaNode::Sequence { items, .. } if !items.is_empty() => {
+                            if meta.comment_inline.is_some() {
+                                writeln!(
+                                    self.out,
+                                    "# {}",
+                                    meta.comment_inline.as_deref().unwrap()
+                                )?;
+                                ops.push(ArenaOp::Sequence(item, indent + self.step));
+                            } else {
+                                ops.push(ArenaOp::SequenceInlineFirst(item, 0, indent + self.step));
+                            }
+                        }
+                        ArenaNode::Mapping { .. } => {
+                            self.out.write_str("{}")?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Sequence { .. } => {
+                            self.out.write_str("[]")?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Scalar(scalar) if is_block_scalar(scalar) => {
+                            self.emit_scalar(
+                                scalar,
+                                indent + self.step,
+                                false,
+                                meta.comment_inline.as_deref(),
+                            )?;
+                        }
+                        ArenaNode::Scalar(scalar) => {
+                            self.emit_scalar(scalar, indent + self.step, false, None)?;
+                            self.finish_line(item)?;
+                        }
+                        ArenaNode::Alias { .. } => {
+                            ops.push(ArenaOp::FinishLine(item));
+                            ops.push(ArenaOp::NodeInline(item, indent + self.step, false));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Emit flat arena documents without recursive traversal.
+pub fn emit_arena_docs_to<W: FmtWrite>(
+    docs: &[ArenaDocument],
+    indent_step: usize,
+    out: &mut W,
+) -> fmt::Result {
+    let step = if indent_step == 0 { 2 } else { indent_step };
+    for doc in docs {
+        let meta = &doc.meta;
+        if meta.yaml_version.is_some()
+            || !meta.tag_directives.is_empty()
+            || docs.len() > 1
+            || meta.explicit_start
+        {
+            if let Some((major, minor)) = meta.yaml_version {
+                writeln!(out, "%YAML {major}.{minor}")?;
+            }
+            for (handle, prefix) in &meta.tag_directives {
+                writeln!(out, "%TAG {handle} {prefix}")?;
+            }
+            out.write_str("---\n")?;
+        }
+        let mut tracker = LastCharTracker::new(&mut *out);
+        {
+            let root_meta = doc.node(doc.root).meta();
+            let mut helper = Emitter::new(&mut tracker, step);
+            helper.write_blank_lines(root_meta.blank_lines_before)?;
+            helper.emit_comment_before(root_meta.comment_before.as_deref(), 0)?;
+        }
+        if let ArenaNode::Scalar(scalar) = doc.node(doc.root) {
+            let mut helper = Emitter::new(&mut tracker, step);
+            if is_block_scalar(scalar) {
+                helper.emit_block_scalar(scalar, step, scalar.meta.comment_inline.as_deref())?;
+            } else {
+                helper.emit_scalar(scalar, false)?;
+                helper.push_inline_comment(scalar.meta.comment_inline.as_deref())?;
+            }
+        } else {
+            ArenaEmitter::new(doc, &mut tracker, step).run(doc.root, 0, false)?;
+        }
+        if !tracker.ends_with_newline() {
+            tracker.write_char('\n')?;
+        }
+        if meta.explicit_end {
+            out.write_str("...\n")?;
+        }
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn emit_arena_docs(docs: &[ArenaDocument], indent_step: usize) -> String {
+    let mut out = String::with_capacity(256);
+    emit_arena_docs_to(docs, indent_step, &mut out).expect("writing to String is infallible");
+    out
 }
 
 /// Emit a full document list to any `fmt::Write` sink.
@@ -1205,55 +1870,14 @@ pub fn emit_docs_to<W: FmtWrite>(
     indent_step: usize,
     out: &mut W,
 ) -> fmt::Result {
-    let step = if indent_step == 0 { 2 } else { indent_step };
-    let empty_meta = DocMetadata::default();
-    for (i, doc) in docs.iter().enumerate() {
-        let m = meta.get(i).unwrap_or(&empty_meta);
-        let want_start = m.explicit_start;
-        let want_end = m.explicit_end;
-        let version = m.yaml_version;
-        let tags = m.tag_directives.as_slice();
-        let has_directives = version.is_some() || !tags.is_empty();
-        if has_directives || docs.len() > 1 || want_start {
-            if let Some((major, minor)) = version {
-                writeln!(out, "%YAML {major}.{minor}")?;
-            }
-            for (handle, prefix) in tags {
-                writeln!(out, "%TAG {handle} {prefix}")?;
-            }
-            out.write_str("---\n")?;
-        }
-        // Use LastCharTracker to detect whether the node ended with a newline.
-        {
-            let mut tracker = LastCharTracker::new(&mut *out);
-            {
-                let mut emitter = Emitter::new(&mut tracker, step);
-                // Root nodes have no parent to emit their blank_lines_before /
-                // comment_before, so surface them here. Container roots have no
-                // header line for comment_inline, so that is only handled for
-                // scalar roots below.
-                emitter.write_blank_lines(doc.blank_lines_before())?;
-                emitter.emit_comment_before(doc.comment_before(), 0)?;
-                if let YamlNode::Scalar(s) = doc {
-                    if is_block_scalar(s) {
-                        emitter.emit_block_scalar(s, step, s.meta.comment_inline.as_deref())?;
-                    } else {
-                        emitter.emit_scalar(s, false)?;
-                        emitter.push_inline_comment(s.meta.comment_inline.as_deref())?;
-                    }
-                } else {
-                    emitter.emit_node(doc, 0, false)?;
-                }
-            }
-            if !tracker.ends_with_newline() {
-                tracker.write_char('\n')?;
-            }
-        }
-        if want_end {
-            out.write_str("...\n")?;
-        }
-    }
-    Ok(())
+    let arenas: Vec<ArenaDocument> = docs
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            ArenaDocument::from_yaml(node, meta.get(index).cloned().unwrap_or_default())
+        })
+        .collect();
+    emit_arena_docs_to(&arenas, indent_step, out)
 }
 
 /// Emit a full document list to a `String`.
@@ -1937,14 +2561,14 @@ mod tests {
             let _ = Emitter::new(&mut out, 2).emit_node(&YamlNode::Mapping(m), 0, false);
             let re_parsed = crate::core::builder::parse_str(&out, None).expect("re-parse failed");
             let re_docs = re_parsed.docs;
-            if let YamlNode::Mapping(m2) = &re_docs[0] {
-                if let YamlNode::Scalar(s) = &m2.entries[&MapKey::scalar("text")].value {
-                    assert_eq!(
-                        s.value(),
-                        &ScalarValue::Str((*expected_value).to_owned()),
-                        "value mismatch for content={content:?}\nemitted:\n{out}"
-                    );
-                }
+            if let YamlNode::Mapping(m2) = &re_docs[0]
+                && let YamlNode::Scalar(s) = &m2.entries[&MapKey::scalar("text")].value
+            {
+                assert_eq!(
+                    s.value(),
+                    &ScalarValue::Str((*expected_value).to_owned()),
+                    "value mismatch for content={content:?}\nemitted:\n{out}"
+                );
             }
         }
     }

@@ -796,8 +796,44 @@ pub fn parse_iter<T: Iterator<Item = char>>(
     })
 }
 
+/// Parse at most the first document from an input iterator.
+///
+/// Parsing stops as soon as the first `DocumentEnd` event has been processed,
+/// so malformed or arbitrarily large trailing documents are not inspected.
+pub fn parse_first_iter<T: Iterator<Item = char>>(
+    src: T,
+    policy: Option<&TagPolicy>,
+) -> Result<ParseOutput, String> {
+    let mut parser = Parser::new(src);
+    let mut builder = Builder::new();
+
+    loop {
+        let (ev, mark) = parser
+            .next_token()
+            .map_err(|e| format!("YAML parse error: {e}"))?;
+        let comments = parser.drain_comments();
+        builder.absorb_comments(comments);
+
+        let stream_end = matches!(ev, Event::StreamEnd);
+        let ends_before = builder.doc_end_count;
+        builder.process_event(ev, mark, policy);
+        if stream_end || builder.doc_end_count > ends_before {
+            break;
+        }
+    }
+
+    Ok(ParseOutput {
+        docs: builder.docs,
+        docs_meta: builder.docs_meta,
+    })
+}
+
 pub fn parse_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
     parse_iter(input.chars(), policy)
+}
+
+pub fn parse_first_str(input: &str, policy: Option<&TagPolicy>) -> Result<ParseOutput, String> {
+    parse_first_iter(input.chars(), policy)
 }
 
 #[cfg(test)]

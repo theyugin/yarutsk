@@ -1,5 +1,6 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -117,6 +118,50 @@ pub enum YamlNode {
         resolved: Arc<YamlNode>,
         meta: NodeMeta,
     },
+}
+
+/// Consume a recursive node graph without recursively dropping owned children.
+///
+/// This is the compatibility teardown path while parser/live storage migrates
+/// to the flat arena. Alias targets retained elsewhere are simply decremented;
+/// uniquely owned targets are dismantled through the same explicit stack.
+pub fn drop_yaml_node_iterative(root: YamlNode) {
+    let mut pending = vec![root];
+    let mut alias_targets: HashMap<usize, Arc<YamlNode>> = HashMap::new();
+
+    loop {
+        while let Some(node) = pending.pop() {
+            match node {
+                YamlNode::Mapping(mapping) => {
+                    for (_, entry) in mapping.entries {
+                        pending.push(entry.value);
+                        if let Some(key) = entry.key_node {
+                            pending.push(*key);
+                        }
+                    }
+                }
+                YamlNode::Sequence(sequence) => pending.extend(sequence.items),
+                YamlNode::Scalar(_) => {}
+                YamlNode::Alias { resolved, .. } => {
+                    let ptr = Arc::as_ptr(&resolved) as usize;
+                    alias_targets.entry(ptr).or_insert(resolved);
+                }
+            }
+        }
+
+        if alias_targets.is_empty() {
+            break;
+        }
+        let targets = std::mem::take(&mut alias_targets);
+        for (_, target) in targets {
+            if let Ok(node) = Arc::try_unwrap(target) {
+                pending.push(node);
+            }
+        }
+        if pending.is_empty() {
+            break;
+        }
+    }
 }
 
 /// Generate paired getter/setter on `YamlNode` that delegate to `meta.<field>` on

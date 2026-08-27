@@ -2,7 +2,7 @@
 
 Orientation for contributors. The user-facing reference is the [mkdocs site](https://theyugin.github.io/yarutsk/) and [docs/api.md](docs/api.md); this file is for people working on the Rust source.
 
-For the file-by-file role of each Rust module, see [CLAUDE.md](CLAUDE.md) and the `//!` module docstrings at the top of each `src/**/*.rs` file.
+For the file-by-file role of each Rust module, see [AGENTS.md](AGENTS.md) and the `//!` module docstrings at the top of each `src/**/*.rs` file.
 
 ## Lifecycle of a call
 

@@ -1,11 +1,35 @@
 """Tests for YAML loading: basic parsing, type preservation, insertion order."""
 
 import io
+import subprocess
+import sys
 from textwrap import dedent
 
 import pytest
 
 import yarutsk
+
+
+def test_deep_flow_nesting_does_not_use_native_call_stack() -> None:
+    code = """
+import yarutsk
+depth = 5000
+doc = yarutsk.loads("[" * depth + "0" + "]" * depth)
+assert doc is not None
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_loads_stops_after_first_document() -> None:
+    doc = yarutsk.loads("first: valid\n---\n[malformed")
+    assert doc is not None
+    assert doc.to_python() == {"first": "valid"}
+
+
+def test_load_stops_after_first_document_without_reading_later_error() -> None:
+    doc = yarutsk.load(io.StringIO("first: valid\n---\n[malformed"))
+    assert doc is not None
+    assert doc.to_python() == {"first": "valid"}
 
 
 class TestBasicLoading:

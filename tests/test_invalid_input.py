@@ -12,12 +12,35 @@ Covers:
 """
 
 import io
+from collections.abc import Iterator
 from textwrap import dedent
 from typing import Any
 
 import pytest
 
 import yarutsk
+
+
+@pytest.mark.parametrize("tail", [b"\xc2", b"\xe2", b"\xe2\x82", b"\xf0\x9f\x92"])
+def test_binary_stream_rejects_truncated_utf8(tail: bytes) -> None:
+    with pytest.raises(UnicodeDecodeError):
+        yarutsk.load(io.BytesIO(b"value: abc" + tail))
+
+
+def test_binary_stream_rejects_invalid_utf8_as_unicode_error() -> None:
+    with pytest.raises(UnicodeDecodeError):
+        yarutsk.load(io.BytesIO(b"value: \xff"))
+
+
+def test_stream_rejects_switch_from_bytes_to_text() -> None:
+    class MixedStream:
+        chunks: Iterator[bytes | str] = iter([b"value: ", "one", ""])
+
+        def read(self, _size: int) -> bytes | str:
+            return next(self.chunks)
+
+    with pytest.raises(RuntimeError, match="switch"):
+        yarutsk.load(MixedStream())  # type: ignore[arg-type]
 
 
 class TestMalformedYaml:
@@ -266,7 +289,7 @@ class TestStreamEdgeCases:
 
     def test_load_non_utf8_bytes(self) -> None:
         stream = io.BytesIO(b"\xff\xfe invalid utf-8")
-        with pytest.raises(RuntimeError, match=r"[Uu][Tt][Ff]"):
+        with pytest.raises(UnicodeDecodeError):
             yarutsk.load(stream)
 
     def test_dump_no_write_method(self) -> None:

@@ -46,12 +46,12 @@ impl PyYamlMapping {
         style: &str,
         tag: Option<&str>,
         schema: Option<Py<Schema>>,
-    ) -> PyResult<(Self, PyYamlNode)> {
+    ) -> PyResult<PyClassInitializer<Self>> {
         let _ = (mapping, schema); // populated in __init__ once `slf` is available
         let mut inner = YamlMapping::new();
         inner.style = parse_container_style(style)?;
         inner.meta.tag = tag.map(str::to_owned);
-        Ok((PyYamlMapping { inner }, PyYamlNode::default()))
+        Ok(PyClassInitializer::from(PyYamlNode::default()).add_subclass(PyYamlMapping { inner }))
     }
 
     /// Populate from `mapping` once the pyclass exists. Splitting `__new__`
