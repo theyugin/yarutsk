@@ -4,11 +4,12 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-08-27
+## [0.9.0] - 2026-08-28
 
 ### Fixed
 - Binary streams ending in an incomplete UTF-8 codepoint now raise `UnicodeDecodeError` instead of silently dropping trailing bytes; all invalid binary UTF-8 uses the same exception.
 - Stream dumping preserves non-type `write()` failures and buffers small emitter fragments instead of issuing one Python call per fragment.
+- Deeply nested loaded documents are torn down iteratively, preventing native stack overflows on Windows and during interpreter shutdown.
 - PyO3 was upgraded to 0.29.2 to incorporate the fixes for RUSTSEC-2026-0176 and RUSTSEC-2026-0177; the deprecated tuple superclass initialisers were replaced with `PyClassInitializer`.
 
 ### Changed

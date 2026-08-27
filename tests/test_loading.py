@@ -16,6 +16,7 @@ import yarutsk
 depth = 5000
 doc = yarutsk.loads("[" * depth + "0" + "]" * depth)
 assert doc is not None
+del doc
 """
     subprocess.run([sys.executable, "-c", code], check=True)
 

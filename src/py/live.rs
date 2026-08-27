@@ -14,11 +14,75 @@
 //! the emitter consumes `YamlMapping<YamlNode>`. Conversion between the two
 //! happens in `convert.rs` (`materialise_*` for load, `extract_*` for dump).
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::core::types::{FormatOptions, Node, NodeMeta, YamlNode, YamlScalar, meta_format_with};
+use crate::core::types::{
+    FormatOptions, Node, NodeMeta, YamlNode, YamlScalar, drop_yaml_node_iterative, meta_format_with,
+};
+
+#[derive(Default)]
+struct LiveDropState {
+    pending: Vec<LiveNode>,
+    draining: bool,
+}
+
+thread_local! {
+    static LIVE_DROP_STATE: RefCell<LiveDropState> = RefCell::new(LiveDropState::default());
+}
+
+struct LiveDropGuard;
+
+impl Drop for LiveDropGuard {
+    fn drop(&mut self) {
+        LIVE_DROP_STATE.with(|state| state.borrow_mut().draining = false);
+    }
+}
+
+/// Drop live child nodes without recursively deallocating nested yarutsk
+/// pyclasses. Python reference-count teardown invokes each child's Rust
+/// `Drop` synchronously; those nested drops append their children to this
+/// thread-local worklist and return, leaving the outermost caller to drain the
+/// graph iteratively.
+pub(crate) fn drop_live_nodes_iterative(nodes: impl IntoIterator<Item = LiveNode>) {
+    let should_drain = LIVE_DROP_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.pending.extend(nodes);
+        if state.draining {
+            false
+        } else {
+            state.draining = true;
+            true
+        }
+    });
+    if !should_drain {
+        return;
+    }
+
+    let _guard = LiveDropGuard;
+    loop {
+        let node = LIVE_DROP_STATE.with(|state| state.borrow_mut().pending.pop());
+        let Some(node) = node else {
+            break;
+        };
+        match node {
+            LiveNode::Scalar(_) => {}
+            LiveNode::Alias {
+                resolved,
+                materialised,
+                ..
+            } => {
+                drop(materialised);
+                if let Ok(node) = Arc::try_unwrap(resolved) {
+                    drop_yaml_node_iterative(node);
+                }
+            }
+            LiveNode::LivePy(obj) => drop(obj),
+        }
+    }
+}
 
 /// Slot type for entries/items inside a live (pyclass-owned) tree.
 ///

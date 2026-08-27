@@ -11,7 +11,7 @@ use super::convert::{
     for_each_live_child, init_live_sequence, live_sequence_to_py_obj, live_sequence_to_python,
     node_to_py, py_to_stored_node, read_metadata, resolve_seq_idx, seq_child_node, sequence_repr,
 };
-use super::live::LiveNode;
+use super::live::{LiveNode, drop_live_nodes_iterative};
 use super::macros::container_metadata_pymethods;
 use super::py_mapping::PyYamlMapping;
 use super::py_node::PyYamlNode;
@@ -32,6 +32,12 @@ use crate::core::types::{FormatOptions, NodeMeta, YamlSequence};
 #[derive(Clone)]
 pub struct PyYamlSequence {
     pub(crate) inner: YamlSequence<LiveNode>,
+}
+
+impl Drop for PyYamlSequence {
+    fn drop(&mut self) {
+        drop_live_nodes_iterative(std::mem::take(&mut self.inner.items));
+    }
 }
 
 #[pymethods]

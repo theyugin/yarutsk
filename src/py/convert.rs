@@ -648,7 +648,7 @@ pub(crate) fn py_to_node_inner(
         return livenode_sequence_to_yamlnode(s, schema, ctx);
     }
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return Ok(sc.inner);
+        return Ok(sc.into_inner());
     }
     if let Some(scalar) = py_primitive_to_scalar(obj) {
         return Ok(YamlNode::Scalar(scalar));
@@ -1125,7 +1125,7 @@ fn extract_yaml_node_iterative(
                 }
 
                 if let Ok(scalar) = obj.extract::<PyYamlScalar>() {
-                    completed.push(scalar.inner);
+                    completed.push(scalar.into_inner());
                     continue;
                 }
                 if let Some(scalar) = py_primitive_to_scalar(obj) {
@@ -1378,7 +1378,7 @@ pub(crate) fn extract_yaml_node_inner(
         );
     }
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return Ok(sc.inner);
+        return Ok(sc.into_inner());
     }
     if let Some(scalar) = py_primitive_to_scalar(obj) {
         return Ok(YamlNode::Scalar(scalar));

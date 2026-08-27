@@ -13,6 +13,7 @@ use super::convert::{
     plain_entry, py_to_stored_node, read_metadata,
 };
 use super::live::LiveNode;
+use super::live::drop_live_nodes_iterative;
 use super::macros::container_metadata_pymethods;
 use super::py_node::PyYamlNode;
 use super::py_sequence::PyYamlSequence;
@@ -35,6 +36,20 @@ use crate::core::types::{FormatOptions, MapKey, NodeMeta, YamlMapping};
 #[derive(Clone)]
 pub struct PyYamlMapping {
     pub(crate) inner: YamlMapping<LiveNode>,
+}
+
+impl Drop for PyYamlMapping {
+    fn drop(&mut self) {
+        let entries = std::mem::take(&mut self.inner.entries);
+        let mut children = Vec::with_capacity(entries.len());
+        for (_, entry) in entries {
+            children.push(entry.value);
+            if let Some(key_node) = entry.key_node {
+                crate::core::types::drop_yaml_node_iterative(*key_node);
+            }
+        }
+        drop_live_nodes_iterative(children);
+    }
 }
 
 #[pymethods]
