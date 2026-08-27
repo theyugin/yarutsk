@@ -11,7 +11,7 @@ use super::convert::{
     for_each_live_child, init_live_sequence, live_sequence_to_py_obj, live_sequence_to_python,
     node_to_py, py_to_stored_node, read_metadata, resolve_seq_idx, seq_child_node, sequence_repr,
 };
-use super::live::LiveNode;
+use super::live::{LiveNode, drop_live_nodes_iterative};
 use super::macros::container_metadata_pymethods;
 use super::py_mapping::PyYamlMapping;
 use super::py_node::PyYamlNode;
@@ -34,6 +34,12 @@ pub struct PyYamlSequence {
     pub(crate) inner: YamlSequence<LiveNode>,
 }
 
+impl Drop for PyYamlSequence {
+    fn drop(&mut self) {
+        drop_live_nodes_iterative(std::mem::take(&mut self.inner.items));
+    }
+}
+
 #[pymethods]
 impl PyYamlSequence {
     #[new]
@@ -43,12 +49,12 @@ impl PyYamlSequence {
         style: &str,
         tag: Option<&str>,
         schema: Option<Py<Schema>>,
-    ) -> PyResult<(Self, PyYamlNode)> {
+    ) -> PyResult<PyClassInitializer<Self>> {
         let _ = (iterable, schema); // populated in __init__
         let mut inner = YamlSequence::new();
         inner.style = parse_container_style(style)?;
         inner.meta.tag = tag.map(str::to_owned);
-        Ok((PyYamlSequence { inner }, PyYamlNode::default()))
+        Ok(PyClassInitializer::from(PyYamlNode::default()).add_subclass(PyYamlSequence { inner }))
     }
 
     #[pyo3(signature = (iterable = None, *, style = "block", tag = None, schema = None))]

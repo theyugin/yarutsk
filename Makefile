@@ -11,7 +11,7 @@ MKDOCS  := .venv/bin/mkdocs
         lint lint-fix fmt fmt-check typecheck check \
         audit \
         docs docs-serve docs-build \
-        fuzz-seed fuzz-scanner fuzz-parser fuzz-roundtrip \
+        fuzz-seed fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-idempotent \
         vendor-refresh vendor-regen-patch \
         clean clean-all
 
@@ -57,6 +57,7 @@ help:
 	@echo "  fuzz-scanner    Fuzz the scanner for 30s"
 	@echo "  fuzz-parser     Fuzz the parser for 30s"
 	@echo "  fuzz-roundtrip  Fuzz the parse-emit-parse path for 30s"
+	@echo "  fuzz-idempotent Fuzz parse-emit fixed-point stability for 30s"
 	@echo ""
 	@echo "Vendor (yaml-rust2)"
 	@echo "  vendor-refresh        Re-apply vendor/yarutsk.patch onto the submodule and copy into src/core/"
@@ -67,14 +68,14 @@ help:
 	@echo "  clean-all       Also remove cargo and fuzz target directories"
 
 setup:
-	uv sync --group dev --group benchmark --group docs
-	$(MATURIN) develop
+	uv sync --frozen --group dev --group benchmark --group docs
+	$(MATURIN) develop --locked
 
 build:
-	$(MATURIN) develop
+	$(MATURIN) develop --locked
 
 build-release:
-	$(MATURIN) develop --release
+	$(MATURIN) develop --locked --release
 
 test:
 	$(PYTEST) tests/ --ignore=tests/test_yaml_suite.py -v
@@ -92,16 +93,16 @@ test-roundtrip:
 	$(PYTEST) tests/test_roundtrip.py -v
 
 bench:
-	uv sync --group benchmark
-	$(MATURIN) develop --release
+	uv sync --frozen --group benchmark
+	$(MATURIN) develop --locked --release
 	$(PYTEST) benchmarks/ --benchmark-only -q \
 	    --benchmark-group-by=group \
 	    --benchmark-sort=name \
 	    --override-ini="python_files=bench_*.py"
 
 bench-compare:
-	uv sync --group benchmark
-	$(MATURIN) develop --release
+	uv sync --frozen --group benchmark
+	$(MATURIN) develop --locked --release
 	$(PYTEST) benchmarks/ --benchmark-only \
 	    --benchmark-group-by=group \
 	    --benchmark-histogram=histograms/bench \
@@ -110,7 +111,7 @@ bench-compare:
 
 lint:
 	$(RUFF) check .
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --all-targets --locked -- -D warnings
 
 lint-fix:
 	$(RUFF) check --fix .
@@ -150,6 +151,9 @@ fuzz-parser:
 
 fuzz-roundtrip:
 	cargo +nightly fuzz run roundtrip -- -max_total_time=30
+
+fuzz-idempotent:
+	cargo +nightly fuzz run idempotent_emit -- -max_total_time=30
 
 vendor-refresh:
 	./tools/refresh-vendor.sh

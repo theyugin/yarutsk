@@ -14,6 +14,7 @@
 //!   comments, blank lines, tags, and anchors.
 //! - `char_traits` and `debug` are vendored helpers.
 
+pub mod arena;
 pub mod builder;
 pub mod char_traits;
 pub mod debug;

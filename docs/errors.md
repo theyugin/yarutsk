@@ -20,7 +20,7 @@ import yarutsk
 try:
     yarutsk.loads("key: [unclosed")
 except yarutsk.ParseError as e:
-    print(e)   # while parsing a flow sequence, expected ',' or ']' at byte ...
+    print(e)  # while parsing a flow sequence, expected ',' or ']' at byte ...
 
 # Catch any library error with the base class
 try:
@@ -40,7 +40,7 @@ schema.add_loader("!color", lambda s: s.split(","))  # expects str
 try:
     yarutsk.loads("bg: !color\n  r: 255\n  g: 0\n  b: 128\n", schema=schema)
 except yarutsk.LoaderError as e:
-    print(e)   # Schema loader for tag '!color' raised: AttributeError: ...
+    print(e)  # Schema loader for tag '!color' raised: AttributeError: ...
 ```
 
 ## DumperError
@@ -54,21 +54,21 @@ schema.add_dumper(MyType, lambda x: "not-a-tuple")  # must return (tag, data)
 try:
     yarutsk.dumps(doc, schema=schema)
 except yarutsk.DumperError as e:
-    print(e)   # Schema dumper for MyType must return (tag, data) tuple: ...
+    print(e)  # Schema dumper for MyType must return (tag, data) tuple: ...
 ```
 
 ## Standard Python errors
 
 ```python
 # Unsupported Python type (no schema dumper registered) → RuntimeError
-yarutsk.dumps(object())                # RuntimeError: Cannot convert ...
+yarutsk.dumps(object())  # RuntimeError: Cannot convert ...
 
 # Missing key → KeyError (standard dict behaviour)
 doc = yarutsk.loads("a: 1")
-doc["missing"]                         # KeyError: 'missing'
-doc.comment_inline("missing")          # KeyError: 'missing'
+doc["missing"]  # KeyError: 'missing'
+doc.comment_inline("missing")  # KeyError: 'missing'
 
 # Out-of-range index → IndexError (standard list behaviour)
 seq = yarutsk.loads("- 1\n- 2")
-seq[99]                                # IndexError
+seq[99]  # IndexError
 ```

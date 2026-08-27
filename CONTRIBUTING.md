@@ -8,8 +8,8 @@ lifecycle and the `NodeParent` write-through invariant), see [INTERNALS.md](INTE
 
 ```bash
 git submodule update --init --recursive   # yaml-test-suite + yaml-rust2
-uv sync --group dev
-.venv/bin/maturin develop
+uv sync --frozen --group dev
+.venv/bin/maturin develop --locked
 ```
 
 Python 3.12+ is required.
@@ -19,7 +19,7 @@ Python 3.12+ is required.
 After any change to `src/**/*.rs`, rebuild with **maturin directly**:
 
 ```bash
-.venv/bin/maturin develop
+.venv/bin/maturin develop --locked
 .venv/bin/python -c "import yarutsk; ..."
 ```
 
@@ -37,7 +37,7 @@ environment and clobber the freshly built extension. Always invoke the
 .venv/bin/pytest tests/test_yaml_suite.py -q
 
 # rust unit tests
-cargo test
+cargo test --locked
 ```
 
 ## Lint / format
@@ -46,7 +46,7 @@ Run these before sending a PR:
 
 ```bash
 cargo fmt
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/mypy
@@ -68,8 +68,9 @@ crate with an active security advisory.
 
 ## Fuzzing (optional)
 
-A `cargo-fuzz` scaffold lives in `fuzz/`. It is not run in CI (too slow for
-every PR) but is useful when touching the scanner, parser, or emitter.
+A `cargo-fuzz` scaffold lives in `fuzz/`. All targets run for a bounded period
+in scheduled weekly CI rather than on every PR. They are also useful locally
+when touching the scanner, parser, or emitter.
 
 ```bash
 cargo install cargo-fuzz     # one-time
@@ -77,6 +78,7 @@ cargo install cargo-fuzz     # one-time
 cargo +nightly fuzz run scanner -- -max_total_time=30
 cargo +nightly fuzz run parser  -- -max_total_time=30
 cargo +nightly fuzz run roundtrip -- -max_total_time=30
+cargo +nightly fuzz run idempotent_emit -- -max_total_time=30
 ```
 
 Fuzzing requires a nightly toolchain (libFuzzer integration).

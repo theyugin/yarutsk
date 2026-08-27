@@ -33,8 +33,8 @@ use super::py_sequence::PyYamlSequence;
 use super::schema::Schema;
 use crate::core::builder::{DocMetadata, ParseOutput, parse_iter, parse_str};
 use crate::core::types::{
-    MapKey, Node, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping, YamlNode, YamlScalar,
-    YamlSequence,
+    ContainerStyle, MapKey, Node, NodeMeta, ScalarStyle, ScalarValue, YamlEntry, YamlMapping,
+    YamlNode, YamlScalar, YamlSequence,
 };
 use crate::{DumperError, LoaderError, ParseError};
 
@@ -136,66 +136,64 @@ impl EmitCtx {
     }
 }
 
-/// Count object-identity occurrences across plain Python containers and
-/// our `PyYamlMapping` / `PyYamlSequence` trees. Objects seen more than
-/// once — including self-cycles — get an anchor on emit.
+/// Count object-identity occurrences across plain Python containers.
+///
+/// Typed yarutsk containers preserve their own YAML metadata and are emitted
+/// independently at each occurrence. We still walk through them so shared
+/// plain-Python descendants retain automatic anchor handling.
 fn prepass(obj: &Bound<'_, PyAny>, ref_count: &mut HashMap<usize, usize>) {
     let py = obj.py();
-    if let Ok(m_bound) = obj.cast::<PyYamlMapping>() {
+    let mut pending = vec![obj.clone().unbind()];
+    let mut walked_typed = HashSet::new();
+    while let Some(current) = pending.pop() {
+        let obj = current.bind(py);
         let ptr = obj.as_ptr() as usize;
-        if *ref_count.entry(ptr).or_insert(0) > 0 {
-            return;
-        }
-        *ref_count.entry(ptr).or_insert(0) = 1;
-        let m = m_bound.borrow();
-        for entry in m.inner.entries.values() {
-            if let LiveNode::LivePy(p) = &entry.value {
-                prepass(p.bind(py), ref_count);
+
+        if let Ok(m_bound) = obj.cast::<PyYamlMapping>() {
+            if !walked_typed.insert(ptr) {
+                continue;
             }
-        }
-        return;
-    }
-    if let Ok(s_bound) = obj.cast::<PyYamlSequence>() {
-        let ptr = obj.as_ptr() as usize;
-        if *ref_count.entry(ptr).or_insert(0) > 0 {
-            return;
-        }
-        *ref_count.entry(ptr).or_insert(0) = 1;
-        let s = s_bound.borrow();
-        for item in &s.inner.items {
-            if let LiveNode::LivePy(p) = item {
-                prepass(p.bind(py), ref_count);
+            let m = m_bound.borrow();
+            pending.extend(m.inner.entries.values().filter_map(|entry| {
+                if let LiveNode::LivePy(p) = &entry.value {
+                    Some(p.clone_ref(py))
+                } else {
+                    None
+                }
+            }));
+        } else if let Ok(s_bound) = obj.cast::<PyYamlSequence>() {
+            if !walked_typed.insert(ptr) {
+                continue;
             }
-        }
-        return;
-    }
-    let is_dict = obj.cast::<PyDict>().is_ok();
-    let is_list = !is_dict && obj.cast::<PyList>().is_ok();
-    let is_tuple = !is_dict && !is_list && obj.cast::<PyTuple>().is_ok();
-    if !is_dict && !is_list && !is_tuple {
-        return;
-    }
-    let ptr = obj.as_ptr() as usize;
-    let count = ref_count.entry(ptr).or_insert(0);
-    *count += 1;
-    if *count > 1 {
-        return;
-    }
-    if is_dict {
-        if let Ok(d) = obj.cast::<PyDict>() {
-            for (_, v) in d.iter() {
-                prepass(&v, ref_count);
+            let s = s_bound.borrow();
+            pending.extend(s.inner.items.iter().filter_map(|item| {
+                if let LiveNode::LivePy(p) = item {
+                    Some(p.clone_ref(py))
+                } else {
+                    None
+                }
+            }));
+        } else if let Ok(d) = obj.cast::<PyDict>() {
+            let count = ref_count.entry(ptr).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                continue;
             }
-        }
-    } else if is_list {
-        if let Ok(l) = obj.cast::<PyList>() {
-            for item in l.iter() {
-                prepass(&item, ref_count);
+            pending.extend(d.iter().map(|(_, value)| value.unbind()));
+        } else if let Ok(list) = obj.cast::<PyList>() {
+            let count = ref_count.entry(ptr).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                continue;
             }
-        }
-    } else if let Ok(t) = obj.cast::<PyTuple>() {
-        for item in t.iter() {
-            prepass(&item, ref_count);
+            pending.extend(list.iter().map(Bound::unbind));
+        } else if let Ok(tuple) = obj.cast::<PyTuple>() {
+            let count = ref_count.entry(ptr).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                continue;
+            }
+            pending.extend(tuple.iter().map(Bound::unbind));
         }
     }
 }
@@ -650,7 +648,7 @@ pub(crate) fn py_to_node_inner(
         return livenode_sequence_to_yamlnode(s, schema, ctx);
     }
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return Ok(sc.inner);
+        return Ok(sc.into_inner());
     }
     if let Some(scalar) = py_primitive_to_scalar(obj) {
         return Ok(YamlNode::Scalar(scalar));
@@ -962,7 +960,389 @@ pub(crate) fn extract_yaml_node(
 ) -> PyResult<YamlNode> {
     let mut ctx = EmitCtx::default();
     ctx.init_anchors(obj);
-    extract_yaml_node_inner(obj, schema, &mut ctx)
+    extract_yaml_node_iterative(obj, schema, &mut ctx)
+}
+
+#[allow(clippy::too_many_lines)]
+fn extract_yaml_node_iterative(
+    root: &Bound<'_, PyAny>,
+    schema: Option<&Bound<'_, Schema>>,
+    ctx: &mut EmitCtx,
+) -> PyResult<YamlNode> {
+    struct EntryTemplate {
+        key: MapKey,
+        key_style: ScalarStyle,
+        key_anchor: Option<String>,
+        key_alias: Option<String>,
+        key_tag: Option<String>,
+        key_node: Option<Box<YamlNode>>,
+    }
+
+    enum Task {
+        VisitPy(Py<PyAny>),
+        VisitLive(LiveNode),
+        FinishMapping {
+            templates: Vec<EntryTemplate>,
+            style: ContainerStyle,
+            trailing_blank_lines: u8,
+            meta: NodeMeta,
+        },
+        FinishSequence {
+            len: usize,
+            style: ContainerStyle,
+            trailing_blank_lines: u8,
+            meta: NodeMeta,
+        },
+        ApplyTag(String),
+    }
+
+    let py = root.py();
+    let mut tasks = vec![Task::VisitPy(root.clone().unbind())];
+    let mut completed = Vec::<YamlNode>::new();
+
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::ApplyTag(tag) => {
+                let node = completed
+                    .last_mut()
+                    .expect("tag application follows one completed node");
+                match node {
+                    YamlNode::Scalar(s) => s.meta.tag = Some(tag),
+                    YamlNode::Mapping(m) => m.meta.tag = Some(tag),
+                    YamlNode::Sequence(s) => s.meta.tag = Some(tag),
+                    YamlNode::Alias { .. } => {}
+                }
+            }
+            Task::VisitLive(LiveNode::Scalar(scalar)) => {
+                completed.push(YamlNode::Scalar(scalar));
+            }
+            Task::VisitLive(LiveNode::Alias {
+                name,
+                resolved,
+                meta,
+                ..
+            }) => completed.push(YamlNode::Alias {
+                name,
+                resolved,
+                meta,
+            }),
+            Task::VisitLive(LiveNode::LivePy(value)) => tasks.push(Task::VisitPy(value)),
+            Task::VisitPy(value) => {
+                let obj = value.bind(py);
+
+                if let Some(schema_bound) = schema {
+                    let dumper = {
+                        let sr = schema_bound.borrow();
+                        sr.dumpers.iter().find_map(|(py_type, function)| {
+                            obj.is_instance(py_type.bind(py))
+                                .ok()
+                                .filter(|matched| *matched)
+                                .map(|_| function.clone_ref(py))
+                        })
+                    };
+                    if let Some(dumper) = dumper {
+                        let type_name = obj
+                            .get_type()
+                            .qualname()
+                            .map_or_else(|_| "?".to_owned(), |name| name.to_string());
+                        let result = dumper.bind(py).call1((obj,)).map_err(|err| {
+                            DumperError::new_err(format!(
+                                "Schema dumper for {type_name} raised: {err}"
+                            ))
+                        })?;
+                        let (tag, data): (String, Py<PyAny>) = result.extract().map_err(|err| {
+                            DumperError::new_err(format!(
+                                "Schema dumper for {type_name} must return \
+                                     (tag, data) tuple: {err}"
+                            ))
+                        })?;
+                        tasks.push(Task::ApplyTag(tag));
+                        tasks.push(Task::VisitPy(data));
+                        continue;
+                    }
+                }
+
+                if let Ok(mapping) = obj.cast::<PyYamlMapping>() {
+                    let ptr = obj.as_ptr() as usize;
+                    let borrow = mapping.borrow();
+                    let explicit = borrow.inner.meta.anchor.clone();
+                    let (alias, assigned_anchor) = ctx.check_anchor(ptr, explicit.as_deref());
+                    if let Some(name) = alias {
+                        completed.push(synthetic_alias(name));
+                        continue;
+                    }
+                    let mut meta = borrow.inner.meta.clone();
+                    meta.anchor = assigned_anchor.or(explicit);
+                    let mut templates = Vec::with_capacity(borrow.inner.entries.len());
+                    let mut values = Vec::with_capacity(borrow.inner.entries.len());
+                    for (key, entry) in &borrow.inner.entries {
+                        templates.push(EntryTemplate {
+                            key: key.clone(),
+                            key_style: entry.key_style,
+                            key_anchor: entry.key_anchor.clone(),
+                            key_alias: entry.key_alias.clone(),
+                            key_tag: entry.key_tag.clone(),
+                            key_node: entry.key_node.clone(),
+                        });
+                        values.push(entry.value.clone());
+                    }
+                    tasks.push(Task::FinishMapping {
+                        templates,
+                        style: borrow.inner.style,
+                        trailing_blank_lines: borrow.inner.trailing_blank_lines,
+                        meta,
+                    });
+                    drop(borrow);
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitLive(child));
+                    }
+                    continue;
+                }
+
+                if let Ok(sequence) = obj.cast::<PyYamlSequence>() {
+                    let ptr = obj.as_ptr() as usize;
+                    let borrow = sequence.borrow();
+                    let explicit = borrow.inner.meta.anchor.clone();
+                    let (alias, assigned_anchor) = ctx.check_anchor(ptr, explicit.as_deref());
+                    if let Some(name) = alias {
+                        completed.push(synthetic_alias(name));
+                        continue;
+                    }
+                    let mut meta = borrow.inner.meta.clone();
+                    meta.anchor = assigned_anchor.or(explicit);
+                    let values = borrow.inner.items.clone();
+                    tasks.push(Task::FinishSequence {
+                        len: values.len(),
+                        style: borrow.inner.style,
+                        trailing_blank_lines: borrow.inner.trailing_blank_lines,
+                        meta,
+                    });
+                    drop(borrow);
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitLive(child));
+                    }
+                    continue;
+                }
+
+                if let Ok(scalar) = obj.extract::<PyYamlScalar>() {
+                    completed.push(scalar.into_inner());
+                    continue;
+                }
+                if let Some(scalar) = py_primitive_to_scalar(obj) {
+                    completed.push(YamlNode::Scalar(scalar));
+                    continue;
+                }
+
+                if let Ok(dict) = obj.cast::<PyDict>() {
+                    let ptr = obj.as_ptr() as usize;
+                    let (alias, anchor) = ctx.check_anchor(ptr, None);
+                    if let Some(name) = alias {
+                        completed.push(synthetic_alias(name));
+                        continue;
+                    }
+                    let mut templates = Vec::with_capacity(dict.len());
+                    let mut values = Vec::with_capacity(dict.len());
+                    for (key, value) in dict.iter() {
+                        templates.push(EntryTemplate {
+                            key: MapKey::Scalar(key.extract()?),
+                            key_style: ScalarStyle::Plain,
+                            key_anchor: None,
+                            key_alias: None,
+                            key_tag: None,
+                            key_node: None,
+                        });
+                        values.push(value.unbind());
+                    }
+                    tasks.push(Task::FinishMapping {
+                        templates,
+                        style: ContainerStyle::Block,
+                        trailing_blank_lines: 0,
+                        meta: NodeMeta {
+                            anchor,
+                            ..NodeMeta::default()
+                        },
+                    });
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitPy(child));
+                    }
+                    continue;
+                }
+
+                if let Ok(list) = obj.cast::<PyList>() {
+                    let ptr = obj.as_ptr() as usize;
+                    let (alias, anchor) = ctx.check_anchor(ptr, None);
+                    if let Some(name) = alias {
+                        completed.push(synthetic_alias(name));
+                        continue;
+                    }
+                    let values: Vec<Py<PyAny>> = list.iter().map(Bound::unbind).collect();
+                    tasks.push(Task::FinishSequence {
+                        len: values.len(),
+                        style: ContainerStyle::Block,
+                        trailing_blank_lines: 0,
+                        meta: NodeMeta {
+                            anchor,
+                            ..NodeMeta::default()
+                        },
+                    });
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitPy(child));
+                    }
+                    continue;
+                }
+
+                if let Ok(tuple) = obj.cast::<PyTuple>() {
+                    let ptr = obj.as_ptr() as usize;
+                    let (alias, anchor) = ctx.check_anchor(ptr, None);
+                    if let Some(name) = alias {
+                        completed.push(synthetic_alias(name));
+                        continue;
+                    }
+                    let values: Vec<Py<PyAny>> = tuple.iter().map(Bound::unbind).collect();
+                    tasks.push(Task::FinishSequence {
+                        len: values.len(),
+                        style: ContainerStyle::Block,
+                        trailing_blank_lines: 0,
+                        meta: NodeMeta {
+                            anchor,
+                            ..NodeMeta::default()
+                        },
+                    });
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitPy(child));
+                    }
+                    continue;
+                }
+
+                if (obj.is_instance_of::<pyo3::types::PyBytes>()
+                    || obj.is_instance_of::<pyo3::types::PyByteArray>())
+                    && let Ok(bytes) = obj.extract::<Vec<u8>>()
+                {
+                    use base64::{Engine, engine::general_purpose::STANDARD};
+                    completed.push(YamlNode::Scalar(YamlScalar {
+                        value: ScalarValue::Str(STANDARD.encode(bytes)),
+                        source: None,
+                        style: ScalarStyle::Plain,
+                        chomping: None,
+                        meta: NodeMeta {
+                            tag: Some("!!binary".to_owned()),
+                            ..NodeMeta::default()
+                        },
+                    }));
+                    continue;
+                }
+
+                if obj.is_instance(datetime_type(py)?)? || obj.is_instance(date_type(py)?)? {
+                    let iso: String = obj.call_method0("isoformat")?.extract()?;
+                    completed.push(YamlNode::Scalar(YamlScalar {
+                        value: ScalarValue::Str(iso),
+                        source: None,
+                        style: ScalarStyle::Plain,
+                        chomping: None,
+                        meta: NodeMeta {
+                            tag: Some("!!timestamp".to_owned()),
+                            ..NodeMeta::default()
+                        },
+                    }));
+                    continue;
+                }
+
+                let abc = py.import("collections.abc")?;
+                if obj.is_instance(&abc.getattr("Mapping")?)? {
+                    let mut templates = Vec::new();
+                    let mut values = Vec::new();
+                    for pair in obj.call_method0("items")?.try_iter()? {
+                        let pair = pair?;
+                        templates.push(EntryTemplate {
+                            key: MapKey::Scalar(pair.get_item(0)?.extract()?),
+                            key_style: ScalarStyle::Plain,
+                            key_anchor: None,
+                            key_alias: None,
+                            key_tag: None,
+                            key_node: None,
+                        });
+                        values.push(pair.get_item(1)?.unbind());
+                    }
+                    tasks.push(Task::FinishMapping {
+                        templates,
+                        style: ContainerStyle::Block,
+                        trailing_blank_lines: 0,
+                        meta: NodeMeta::default(),
+                    });
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitPy(child));
+                    }
+                    continue;
+                }
+
+                if let Ok(iter) = obj.try_iter() {
+                    let values: Vec<Py<PyAny>> = iter
+                        .map(|item| item.map(Bound::unbind))
+                        .collect::<PyResult<_>>()?;
+                    tasks.push(Task::FinishSequence {
+                        len: values.len(),
+                        style: ContainerStyle::Block,
+                        trailing_blank_lines: 0,
+                        meta: NodeMeta::default(),
+                    });
+                    for child in values.into_iter().rev() {
+                        tasks.push(Task::VisitPy(child));
+                    }
+                    continue;
+                }
+
+                return Err(PyRuntimeError::new_err(format!(
+                    "Cannot convert {obj} to a YAML node"
+                )));
+            }
+            Task::FinishMapping {
+                templates,
+                style,
+                trailing_blank_lines,
+                meta,
+            } => {
+                let start = completed.len() - templates.len();
+                let values: Vec<YamlNode> = completed.drain(start..).collect();
+                let mut mapping = YamlMapping::<YamlNode>::with_capacity(templates.len());
+                mapping.style = style;
+                mapping.trailing_blank_lines = trailing_blank_lines;
+                mapping.meta = meta;
+                for (template, value) in templates.into_iter().zip(values) {
+                    mapping.entries.insert(
+                        template.key,
+                        YamlEntry {
+                            value,
+                            key_style: template.key_style,
+                            key_anchor: template.key_anchor,
+                            key_alias: template.key_alias,
+                            key_tag: template.key_tag,
+                            key_node: template.key_node,
+                        },
+                    );
+                }
+                completed.push(YamlNode::Mapping(mapping));
+            }
+            Task::FinishSequence {
+                len,
+                style,
+                trailing_blank_lines,
+                meta,
+            } => {
+                let start = completed.len() - len;
+                let items: Vec<YamlNode> = completed.drain(start..).collect();
+                let mut sequence = YamlSequence::<YamlNode>::with_capacity(len);
+                sequence.style = style;
+                sequence.trailing_blank_lines = trailing_blank_lines;
+                sequence.meta = meta;
+                sequence.items = items;
+                completed.push(YamlNode::Sequence(sequence));
+            }
+        }
+    }
+
+    Ok(completed
+        .pop()
+        .expect("extracting one Python object produces one YAML node"))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -998,7 +1378,7 @@ pub(crate) fn extract_yaml_node_inner(
         );
     }
     if let Ok(sc) = obj.extract::<PyYamlScalar>() {
-        return Ok(sc.inner);
+        return Ok(sc.into_inner());
     }
     if let Some(scalar) = py_primitive_to_scalar(obj) {
         return Ok(YamlNode::Scalar(scalar));
@@ -1370,64 +1750,171 @@ pub(crate) fn deep_clone_live(py: Python<'_>, slot: &mut LiveNode) -> PyResult<(
 /// `LiveNode::Scalar` so their style metadata round-trips losslessly. Aliases
 /// get a `materialised: Some(p)` cache populated from the anchor's resolved
 /// Py so identity is preserved across separate `__getitem__` calls.
+#[allow(clippy::too_many_lines)] // Explicit-stack materialisation keeps frame transitions local.
 pub(crate) fn materialise_node(
     py: Python<'_>,
     node: YamlNode,
     schema: Option<&Bound<'_, Schema>>,
     ctx: &mut LoadCtx,
 ) -> PyResult<LiveNode> {
-    match node {
-        YamlNode::Mapping(m) => {
-            let tag = m.meta.tag.clone();
-            let anchor = m.meta.anchor.clone();
-            let py_obj = mapping_to_py_obj_inner(py, m, DocMetadata::default(), schema, ctx)?;
-            let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
-            if let Some(name) = anchor {
-                ctx.register(name, &final_obj, py);
-            }
-            Ok(LiveNode::LivePy(final_obj))
-        }
-        YamlNode::Sequence(s) => {
-            let tag = s.meta.tag.clone();
-            let anchor = s.meta.anchor.clone();
-            let py_obj = sequence_to_py_obj_inner(py, s, DocMetadata::default(), schema, ctx)?;
-            let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
-            if let Some(name) = anchor {
-                ctx.register(name, &final_obj, py);
-            }
-            Ok(LiveNode::LivePy(final_obj))
-        }
-        YamlNode::Scalar(s) => {
-            // Custom-tagged scalars: collapse to `OpaquePy(loaded_py)`.
-            if let Some(loader_fn) = lookup_loader(py, schema, s.meta.tag.as_deref()) {
-                let tag = s.meta.tag.as_deref().unwrap_or("?").to_owned();
-                let default_val = scalar_to_py(py, s.value())?;
-                let py_obj = call_loader(py, &loader_fn, &tag, default_val)?;
-                if let Some(name) = s.meta.anchor.clone() {
-                    ctx.register(name, &py_obj, py);
+    struct EntryTemplate {
+        key: MapKey,
+        key_style: ScalarStyle,
+        key_anchor: Option<String>,
+        key_alias: Option<String>,
+        key_tag: Option<String>,
+        key_node: Option<Box<YamlNode>>,
+    }
+
+    enum Task {
+        Visit(YamlNode),
+        FinishMapping {
+            templates: Vec<EntryTemplate>,
+            style: ContainerStyle,
+            trailing_blank_lines: u8,
+            meta: NodeMeta,
+        },
+        FinishSequence {
+            len: usize,
+            style: ContainerStyle,
+            trailing_blank_lines: u8,
+            meta: NodeMeta,
+        },
+    }
+
+    let mut tasks = vec![Task::Visit(node)];
+    let mut completed = Vec::<LiveNode>::new();
+
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Visit(YamlNode::Scalar(s)) => {
+                if let Some(loader_fn) = lookup_loader(py, schema, s.meta.tag.as_deref()) {
+                    let tag = s.meta.tag.as_deref().unwrap_or("?").to_owned();
+                    let default_val = scalar_to_py(py, s.value())?;
+                    let py_obj = call_loader(py, &loader_fn, &tag, default_val)?;
+                    if let Some(name) = s.meta.anchor.clone() {
+                        ctx.register(name, &py_obj, py);
+                    }
+                    completed.push(LiveNode::LivePy(py_obj));
+                } else {
+                    completed.push(LiveNode::Scalar(s));
                 }
-                return Ok(LiveNode::LivePy(py_obj));
             }
-            Ok(LiveNode::Scalar(s))
-        }
-        YamlNode::Alias {
-            name,
-            resolved,
-            meta,
-        } => {
-            let materialised = if let Some(cached) = ctx.lookup(&name, py) {
-                Some(cached)
-            } else {
-                Some(yamlnode_to_py_inner(py, &resolved, schema, ctx)?)
-            };
-            Ok(LiveNode::Alias {
+            Task::Visit(YamlNode::Alias {
                 name,
                 resolved,
-                materialised,
                 meta,
-            })
+            }) => {
+                let materialised = if let Some(cached) = ctx.lookup(&name, py) {
+                    Some(cached)
+                } else {
+                    Some(yamlnode_to_py_inner(py, &resolved, schema, ctx)?)
+                };
+                completed.push(LiveNode::Alias {
+                    name,
+                    resolved,
+                    materialised,
+                    meta,
+                });
+            }
+            Task::Visit(YamlNode::Mapping(mapping)) => {
+                let mut templates = Vec::with_capacity(mapping.entries.len());
+                let mut values = Vec::with_capacity(mapping.entries.len());
+                for (key, entry) in mapping.entries {
+                    templates.push(EntryTemplate {
+                        key,
+                        key_style: entry.key_style,
+                        key_anchor: entry.key_anchor,
+                        key_alias: entry.key_alias,
+                        key_tag: entry.key_tag,
+                        key_node: entry.key_node,
+                    });
+                    values.push(entry.value);
+                }
+                tasks.push(Task::FinishMapping {
+                    templates,
+                    style: mapping.style,
+                    trailing_blank_lines: mapping.trailing_blank_lines,
+                    meta: mapping.meta,
+                });
+                for value in values.into_iter().rev() {
+                    tasks.push(Task::Visit(value));
+                }
+            }
+            Task::Visit(YamlNode::Sequence(sequence)) => {
+                let len = sequence.items.len();
+                tasks.push(Task::FinishSequence {
+                    len,
+                    style: sequence.style,
+                    trailing_blank_lines: sequence.trailing_blank_lines,
+                    meta: sequence.meta,
+                });
+                for item in sequence.items.into_iter().rev() {
+                    tasks.push(Task::Visit(item));
+                }
+            }
+            Task::FinishMapping {
+                templates,
+                style,
+                trailing_blank_lines,
+                meta,
+            } => {
+                let start = completed.len() - templates.len();
+                let values: Vec<LiveNode> = completed.drain(start..).collect();
+                let tag = meta.tag.clone();
+                let anchor = meta.anchor.clone();
+                let mut live = YamlMapping::<LiveNode>::with_capacity(templates.len());
+                live.style = style;
+                live.trailing_blank_lines = trailing_blank_lines;
+                live.meta = meta;
+                for (template, value) in templates.into_iter().zip(values) {
+                    live.entries.insert(
+                        template.key,
+                        YamlEntry {
+                            value,
+                            key_style: template.key_style,
+                            key_anchor: template.key_anchor,
+                            key_alias: template.key_alias,
+                            key_tag: template.key_tag,
+                            key_node: template.key_node,
+                        },
+                    );
+                }
+                let py_obj = live_mapping_to_py_obj(py, live, DocMetadata::default())?;
+                let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
+                if let Some(name) = anchor {
+                    ctx.register(name, &final_obj, py);
+                }
+                completed.push(LiveNode::LivePy(final_obj));
+            }
+            Task::FinishSequence {
+                len,
+                style,
+                trailing_blank_lines,
+                meta,
+            } => {
+                let start = completed.len() - len;
+                let items: Vec<LiveNode> = completed.drain(start..).collect();
+                let tag = meta.tag.clone();
+                let anchor = meta.anchor.clone();
+                let mut live = YamlSequence::<LiveNode>::with_capacity(len);
+                live.style = style;
+                live.trailing_blank_lines = trailing_blank_lines;
+                live.meta = meta;
+                live.items = items;
+                let py_obj = live_sequence_to_py_obj(py, live, DocMetadata::default())?;
+                let final_obj = apply_loader(py, schema, tag.as_deref(), py_obj)?;
+                if let Some(name) = anchor {
+                    ctx.register(name, &final_obj, py);
+                }
+                completed.push(LiveNode::LivePy(final_obj));
+            }
         }
     }
+
+    Ok(completed
+        .pop()
+        .expect("materialising one YAML node produces one live node"))
 }
 
 /// Repr of a stored live slot.
@@ -1578,6 +2065,12 @@ pub(crate) fn parse_text(text: &str, schema: Option<&Schema>) -> PyResult<ParseO
     parse_str(text, policy.as_ref()).map_err(|e| ParseError::new_err(e.clone()))
 }
 
+pub(crate) fn parse_text_first(text: &str, schema: Option<&Schema>) -> PyResult<ParseOutput> {
+    let policy = schema.and_then(Schema::tag_policy);
+    crate::core::builder::parse_first_str(text, policy.as_ref())
+        .map_err(|e| ParseError::new_err(e.clone()))
+}
+
 pub(crate) fn parse_stream(
     stream: &Bound<'_, PyAny>,
     schema: Option<&Schema>,
@@ -1590,6 +2083,26 @@ pub(crate) fn parse_stream(
     let iter = PyIoCharsIter::new(stream.clone().unbind(), error_slot.clone());
     let src = CharsSource::PyIo(iter);
     let result = parse_iter(src, policy.as_ref());
+    if let Ok(mut guard) = error_slot.lock()
+        && let Some(err) = guard.take()
+    {
+        return Err(err);
+    }
+    result.map_err(ParseError::new_err)
+}
+
+pub(crate) fn parse_stream_first(
+    stream: &Bound<'_, PyAny>,
+    schema: Option<&Schema>,
+) -> PyResult<ParseOutput> {
+    use std::sync::{Arc, Mutex};
+
+    use super::streaming::{CharsSource, PyIoCharsIter};
+    let policy = schema.and_then(Schema::tag_policy);
+    let error_slot: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
+    let iter = PyIoCharsIter::new(stream.clone().unbind(), error_slot.clone());
+    let src = CharsSource::PyIo(iter);
+    let result = crate::core::builder::parse_first_iter(src, policy.as_ref());
     if let Ok(mut guard) = error_slot.lock()
         && let Some(err) = guard.take()
     {

@@ -23,7 +23,18 @@ pub struct PyYamlScalar {
     pub(crate) inner: YamlNode,
 }
 
+impl Drop for PyYamlScalar {
+    fn drop(&mut self) {
+        let inner = std::mem::replace(&mut self.inner, YamlNode::Scalar(YamlScalar::null()));
+        crate::core::types::drop_yaml_node_iterative(inner);
+    }
+}
+
 impl PyYamlScalar {
+    pub(crate) fn into_inner(mut self) -> YamlNode {
+        std::mem::replace(&mut self.inner, YamlNode::Scalar(YamlScalar::null()))
+    }
+
     /// Borrow the underlying `YamlScalar` (the resolved scalar for an alias).
     fn scalar(&self) -> Option<&YamlScalar> {
         match &self.inner {
@@ -51,7 +62,7 @@ impl PyYamlScalar {
         value: &Bound<'_, PyAny>,
         style: &str,
         tag: Option<&str>,
-    ) -> PyResult<(Self, PyYamlNode)> {
+    ) -> PyResult<PyClassInitializer<Self>> {
         let scalar_style = parse_scalar_style(style)?;
         let scalar = if let Some(mut s) = py_primitive_to_scalar(value) {
             s.style = scalar_style;
@@ -92,12 +103,11 @@ impl PyYamlScalar {
                 ));
             }
         };
-        Ok((
-            PyYamlScalar {
+        Ok(
+            PyClassInitializer::from(PyYamlNode::default()).add_subclass(PyYamlScalar {
                 inner: YamlNode::Scalar(scalar),
-            },
-            PyYamlNode::default(),
-        ))
+            }),
+        )
     }
 
     /// The Python value of this scalar.

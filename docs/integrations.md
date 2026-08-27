@@ -28,9 +28,11 @@ endpoints:
 import yarutsk
 from pydantic import BaseModel
 
+
 class Endpoint(BaseModel):
     host: str
     port: int
+
 
 schema = yarutsk.Schema()
 schema.add_loader("!endpoint", lambda d: Endpoint.model_validate(d.to_python()))
@@ -43,9 +45,11 @@ schema.add_dumper(Endpoint, lambda e: ("!endpoint", e.model_dump()))
 import msgspec
 import yarutsk
 
+
 class Endpoint(msgspec.Struct):
     host: str
     port: int
+
 
 schema = yarutsk.Schema()
 schema.add_loader("!endpoint", lambda d: msgspec.convert(d.to_python(), Endpoint))
@@ -59,10 +63,12 @@ import attrs
 import cattrs
 import yarutsk
 
+
 @attrs.define
 class Endpoint:
     host: str
     port: int
+
 
 schema = yarutsk.Schema()
 schema.add_loader("!endpoint", lambda d: cattrs.structure(d.to_python(), Endpoint))
@@ -83,6 +89,7 @@ print(yarutsk.dumps(config.model_dump()))
 # pydantic — for list-rooted documents, BaseModel doesn't apply.
 # Use TypeAdapter:
 from pydantic import TypeAdapter
+
 adapter = TypeAdapter(list[Endpoint])
 endpoints = adapter.validate_python(yarutsk.loads(text).to_python())
 print(yarutsk.dumps(adapter.dump_python(endpoints)))
@@ -90,13 +97,13 @@ print(yarutsk.dumps(adapter.dump_python(endpoints)))
 
 ```python
 # msgspec — generic types work directly for both root shapes
-config    = msgspec.convert(yarutsk.loads(text).to_python(), Config)
+config = msgspec.convert(yarutsk.loads(text).to_python(), Config)
 endpoints = msgspec.convert(yarutsk.loads(text).to_python(), list[Endpoint])
 ```
 
 ```python
 # cattrs — same; generic types work directly for both root shapes
-config    = cattrs.structure(yarutsk.loads(text).to_python(), Config)
+config = cattrs.structure(yarutsk.loads(text).to_python(), Config)
 endpoints = cattrs.structure(yarutsk.loads(text).to_python(), list[Endpoint])
 ```
 

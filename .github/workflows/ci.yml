@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -19,10 +22,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13", "3.14", "3.14t"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -31,10 +34,12 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          key: python-${{ matrix.python-version }}
 
       - name: Set up Python ${{ matrix.python-version }}
         id: python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "${{ matrix.python-version }}"
 
@@ -44,7 +49,7 @@ jobs:
           enable-cache: true
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
         env:
           UV_PYTHON_PREFERENCE: only-system
 
@@ -68,10 +73,59 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "LIB=$base\libs;$env:LIB"
 
       - name: Build extension
-        run: maturin develop
+        run: maturin develop --locked
+
+      - name: Verify free-threaded runtime stays GIL-free
+        if: matrix.python-version == '3.14t'
+        env:
+          PYTHON_GIL: "0"
+        run: python -c "import sys, yarutsk; assert not sys._is_gil_enabled()"
 
       - name: Core tests
         run: pytest tests/ --ignore=tests/test_yaml_suite.py -v
+
+      - name: yaml-test-suite compliance
+        run: pytest tests/test_yaml_suite.py -q --tb=short
+
+  # ── Upcoming Python compatibility (informational) ──────────────────────────
+  test-prerelease:
+    name: Test (ubuntu-latest, Python 3.15-dev, experimental)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python 3.15 prerelease
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15-dev"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --frozen --group dev
+        env:
+          UV_PYTHON_PREFERENCE: only-system
+
+      - name: Add venv to PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build extension
+        run: maturin develop --locked
+
+      - name: Core tests
+        run: pytest tests/ --ignore=tests/test_yaml_suite.py -q
 
       - name: yaml-test-suite compliance
         run: pytest tests/test_yaml_suite.py -q --tb=short
@@ -81,7 +135,7 @@ jobs:
     name: mypy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -90,7 +144,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -100,7 +154,7 @@ jobs:
           enable-cache: true
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
         env:
           UV_PYTHON_PREFERENCE: only-system
 
@@ -108,7 +162,7 @@ jobs:
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
       - name: Build extension
-        run: maturin develop
+        run: maturin develop --locked
 
       - name: mypy
         run: mypy
@@ -118,10 +172,10 @@ jobs:
     name: ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -131,7 +185,7 @@ jobs:
           enable-cache: true
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
         env:
           UV_PYTHON_PREFERENCE: only-system
 
@@ -149,7 +203,7 @@ jobs:
     name: Rust lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -160,20 +214,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: rustfmt
         run: cargo fmt --check
 
       - name: cargo test
-        run: cargo test --no-fail-fast
+        run: cargo test --locked --no-fail-fast
 
   # ── cargo-deny (license + advisory audit) ────────────────────────────────
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           log-level: warn
@@ -184,7 +238,7 @@ jobs:
     name: sdist build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -194,85 +248,128 @@ jobs:
         with:
           command: sdist
           args: --out dist
+          maturin-version: v1.15.0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install and smoke-test sdist
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall dist/*.tar.gz
+          python tools/smoke-wheel.py
 
       - name: List sdist
         run: ls -la dist/
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
   # ── Build release wheels ───────────────────────────────────────────────────
   build-wheels:
-    name: Wheels (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Wheels (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, lint, ruff, typecheck]
-    runs-on: ${{ matrix.os }}
+    needs: [test, lint, ruff, typecheck, deny, sdist]
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13", "3.14", "3.14t"]
+        platform: [linux-x64, linux-arm64, macos-universal2, windows-x64, windows-arm64]
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            python-arch: x64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            python-arch: arm64
+          - platform: macos-universal2
+            runner: macos-latest
+            python-arch: arm64
+          - platform: windows-x64
+            runner: windows-latest
+            python-arch: x64
+          - platform: windows-arm64
+            runner: windows-11-arm
+            python-arch: arm64
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - name: Set version from tag
+      - name: Verify tag matches package version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          rm -f Cargo.toml.bak
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PACKAGE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$TAG_VERSION" = "$PACKAGE_VERSION"
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          key: wheel-${{ matrix.platform }}-python-${{ matrix.python-version }}
 
       - name: Set up Python ${{ matrix.python-version }}
         id: python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "${{ matrix.python-version }}"
+          architecture: "${{ matrix.python-arch }}"
 
       # Linux builds run inside a manylinux Docker container, so the host
-      # python-path is not accessible; pass the version number instead.
+      # python-path is not accessible; use the manylinux interpreter name.
       - name: Build wheels (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.platform, 'linux-')
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --interpreter ${{ matrix.python-version }}
-          manylinux: auto
+          args: >-
+            --release --locked --compatibility pypi --out dist
+            --interpreter python${{ matrix.python-version }}
+          manylinux: "2_17"
+          maturin-version: v1.15.0
           rust-toolchain: stable
 
       - name: Build wheels (macOS)
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'macos-universal2'
         uses: PyO3/maturin-action@v1
         with:
           command: build
           args: >-
-            --release --out dist
+            --release --locked --compatibility pypi --out dist
             --interpreter ${{ steps.python.outputs.python-path }}
             --target universal2-apple-darwin
+          maturin-version: v1.15.0
           rust-toolchain: stable
 
       - name: Build wheels (Windows)
-        if: matrix.os == 'windows-latest'
+        if: startsWith(matrix.platform, 'windows-')
         uses: PyO3/maturin-action@v1
         with:
           command: build
           args: >-
-            --release --out dist
+            --release --locked --compatibility pypi --out dist
             --interpreter ${{ steps.python.outputs.python-path }}
+            ${{ matrix.platform == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '' }}
+          maturin-version: v1.15.0
           rust-toolchain: stable
 
-      - name: Build sdist
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
+      - name: Install and smoke-test wheel
+        shell: bash
+        env:
+          YARUTSK_EXPECT_FREE_THREADED: ${{ matrix.python-version == '3.14t' && '1' || '0' }}
+        run: |
+          "${{ steps.python.outputs.python-path }}" -m pip install --force-reinstall dist/*.whl
+          "${{ steps.python.outputs.python-path }}" tools/smoke-wheel.py
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          name: wheels-${{ matrix.platform }}-${{ matrix.python-version }}
           path: dist/
 
   # ── Publish to PyPI ────────────────────────────────────────────────────────
@@ -290,6 +387,11 @@ jobs:
         with:
           pattern: wheels-*
           merge-multiple: true
+          path: dist/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
           path: dist/
 
       - name: Publish

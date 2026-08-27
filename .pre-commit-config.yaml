@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.10
+    rev: v0.16.4
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -24,7 +24,7 @@ repos:
 
       - id: clippy
         name: clippy
-        entry: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings
         language: system
         pass_filenames: false
         always_run: true

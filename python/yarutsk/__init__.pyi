@@ -3,7 +3,6 @@
 import datetime as _datetime
 from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Mapping as _Mapping
-from collections.abc import Sequence as _Sequence
 from typing import (
     IO,
     Any,
@@ -776,7 +775,7 @@ def dumps(
     ...
 
 def dump_all(
-    docs: _Sequence[_Dumpable],
+    docs: Iterable[_Dumpable],
     stream: IO[str] | IO[bytes],
     *,
     schema: Schema | None = None,
@@ -789,7 +788,7 @@ def dump_all(
     ...
 
 def dumps_all(
-    docs: _Sequence[_Dumpable],
+    docs: Iterable[_Dumpable],
     *,
     schema: Schema | None = None,
     indent: int = 2,

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.15.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -71,19 +72,21 @@ indent-style = "space"
 
 [dependency-groups]
 dev = [
-    "hypothesis>=6.100",
-    "maturin>=1.13.1",
-    "mypy>=1.19.1",
-    "pre-commit>=4.0.0",
-    "pytest>=9.0.3",
-    "ruff>=0.15.10",
+    "hypothesis>=6.165.10",
+    "maturin>=1.15.0",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pyyaml>=6.0.3",
+    "ruff>=0.16.4",
+    "types-pyyaml>=6.0.12.20260815",
 ]
 benchmark = [
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.3",
     "ruamel.yaml>=0.18",
-    "pytest-benchmark[histogram]>=5.0",
+    "pytest-benchmark[histogram]>=5.3.0",
 ]
 docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
 ]

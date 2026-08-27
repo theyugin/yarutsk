@@ -4,7 +4,7 @@
 [![Python 3.12+](https://img.shields.io/pypi/pyversions/yarutsk)](https://pypi.org/project/yarutsk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **⚠ AI-authored.** This library — design, implementation, tests, and documentation — was written by [Claude Code](https://claude.ai/code) (Anthropic) under human direction.
+> **⚠ LLM-assisted.** This library — including its design, implementation, tests, and documentation — was developed with extensive assistance from large language models under human direction.
 
 A Python YAML library that round-trips documents while preserving **comments**, **insertion order**, **scalar styles**, **tags**, **anchors and aliases**, **blank lines**, and **explicit document markers**.
 
@@ -20,11 +20,13 @@ pip install yarutsk
 import io
 import yarutsk
 
-doc = yarutsk.load(io.StringIO("""
+doc = yarutsk.load(
+    io.StringIO("""
 # database config
 host: localhost  # primary
 port: 5432
-"""))
+""")
+)
 
 doc["port"] = 5433
 
@@ -38,7 +40,8 @@ print(out.getvalue())
 
 `YamlMapping` and `YamlSequence` implement the dict/list protocols (subscript, iteration, `len`, `in`, etc.) but are not `dict`/`list` subclasses. Call `doc.to_python()` (recursive) for a plain `dict`/`list` — needed for `json.dumps`, pydantic, msgspec, cattrs, and other libraries that type-check input strictly.
 
-Python 3.12+ required. Pre-built wheels for Linux / macOS / Windows on x86_64 and aarch64.
+Python 3.12+ required. Pre-built wheels cover Linux, macOS, and Windows on
+x86_64 and ARM64, including free-threaded CPython 3.14t.
 
 ## What's preserved
 

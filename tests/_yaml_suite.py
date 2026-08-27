@@ -17,9 +17,8 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from _pytest.mark.structures import ParameterSet
-
-import yarutsk
 
 SUITE_DIR = Path(__file__).parent.parent / "yaml-test-suite"
 SRC_DIR = SUITE_DIR / "src"
@@ -84,20 +83,13 @@ def load_test_cases() -> list[ParameterSet]:
 
     cases = []
     for yaml_file in sorted(SRC_DIR.glob("*.yaml")):
+        raw = yaml_file.read_text(encoding="utf-8")
         try:
-            raw = yaml_file.read_text(encoding="utf-8")
-            loaded = yarutsk.loads(raw)
-            assert loaded is not None
-            # Convert to plain Python so the `isinstance(..., list/dict)` checks
-            # below work — `YamlMapping`/`YamlSequence` are no longer dict/list
-            # subclasses post-C2, but the test runner only cares about the
-            # *value* shape of each test case (`yaml`, `json`, `fail`, etc.).
-            tests = loaded.to_python() if hasattr(loaded, "to_python") else loaded
-        except Exception:
-            continue
-
+            tests = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise RuntimeError(f"cannot decode yaml-test-suite fixture {yaml_file}") from exc
         if not isinstance(tests, list):
-            continue
+            raise RuntimeError(f"yaml-test-suite fixture {yaml_file} is not a list")
 
         # A file-level skip note propagates to every case in that file.
         file_skip = next(

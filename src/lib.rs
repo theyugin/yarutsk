@@ -22,8 +22,10 @@ use std::sync::{Arc, Mutex};
 
 use core::builder::{self, DocMetadata};
 use core::emitter::{emit_docs, emit_docs_to};
-use core::types::YamlNode;
-use py::convert::{extract_yaml_node, node_to_doc, parse_stream, parse_text};
+use core::types::{YamlNode, drop_yaml_node_iterative};
+use py::convert::{
+    extract_yaml_node, node_to_doc, parse_stream, parse_stream_first, parse_text, parse_text_first,
+};
 use py::py_iter::{PyYamlIter, YamlIterInner};
 use py::py_mapping::PyYamlMapping;
 use py::py_node::PyYamlNode;
@@ -33,7 +35,7 @@ use py::schema::{Schema, freeze_schema};
 use py::streaming::PyStreamWriter;
 use py::streaming::{CharsSource, PyIoCharsIter, StringCharsIter};
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyBool, PyList};
 
 pyo3::create_exception!(yarutsk, YarutskError, pyo3::exceptions::PyException);
 pyo3::create_exception!(yarutsk, ParseError, YarutskError);
@@ -89,6 +91,27 @@ fn coerce_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     ))
 }
 
+struct Indent(usize);
+
+impl FromPyObject<'_, '_> for Indent {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, Self::Error> {
+        let invalid = || {
+            pyo3::exceptions::PyValueError::new_err("indent must be an integer from 1 through 128")
+        };
+        if obj.cast::<PyBool>().is_ok() {
+            return Err(invalid());
+        }
+        let value = obj.extract::<i128>().map_err(|_| invalid())?;
+        let value = usize::try_from(value).map_err(|_| invalid())?;
+        if !(1..=128).contains(&value) {
+            return Err(invalid());
+        }
+        Ok(Indent(value))
+    }
+}
+
 /// Source for `do_load` — either a Python stream-like object or owned text.
 enum LoadSource<'py> {
     Stream(Bound<'py, PyAny>),
@@ -107,9 +130,11 @@ fn do_load(
     freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
     let sb_borrow = sb.map(|s| s.borrow());
-    let out = match src {
-        LoadSource::Stream(s) => parse_stream(&s, sb_borrow.as_deref())?,
-        LoadSource::Text(t) => parse_text(&t, sb_borrow.as_deref())?,
+    let out = match (src, all) {
+        (LoadSource::Stream(s), true) => parse_stream(&s, sb_borrow.as_deref())?,
+        (LoadSource::Text(t), true) => parse_text(&t, sb_borrow.as_deref())?,
+        (LoadSource::Stream(s), false) => parse_stream_first(&s, sb_borrow.as_deref())?,
+        (LoadSource::Text(t), false) => parse_text_first(&t, sb_borrow.as_deref())?,
     };
     if out.docs.is_empty() && !all {
         return Ok(py.None());
@@ -169,17 +194,17 @@ fn do_dump(
 ) -> PyResult<Option<String>> {
     let (node, meta) = extract_doc_and_meta(doc, schema)?;
     match sink {
-        EmitSink::String => Ok(Some(emit_docs(
-            std::slice::from_ref(&node),
-            &[meta],
-            indent,
-        ))),
+        EmitSink::String => {
+            let output = emit_docs(std::slice::from_ref(&node), &[meta], indent);
+            drop_yaml_node_iterative(node);
+            Ok(Some(output))
+        }
         EmitSink::Stream(stream) => {
             let mut writer = PyStreamWriter::new(stream.unbind());
             let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
-            if let Some(err) = writer.take_error() {
-                return Err(err);
-            }
+            let result = writer.finish();
+            drop_yaml_node_iterative(node);
+            result?;
             Ok(None)
         }
     }
@@ -193,29 +218,68 @@ fn do_dump_all(
     schema: Option<&Bound<'_, Schema>>,
     indent: usize,
 ) -> PyResult<Option<String>> {
-    let items: Vec<Bound<'_, PyAny>> = docs.try_iter()?.collect::<PyResult<_>>()?;
+    let mut items = docs.try_iter()?;
+    let Some(first) = items.next().transpose()? else {
+        return Ok(match sink {
+            EmitSink::String => Some(String::new()),
+            EmitSink::Stream(_) => None,
+        });
+    };
+    let second = items.next().transpose()?;
+    let multiple = second.is_some();
+
     match sink {
         EmitSink::String => {
-            let (nodes, meta): (Vec<YamlNode>, Vec<DocMetadata>) = items
-                .iter()
-                .map(|i| extract_doc_and_meta(i, schema))
-                .collect::<PyResult<Vec<_>>>()?
-                .into_iter()
-                .unzip();
-            Ok(Some(emit_docs(&nodes, &meta, indent)))
+            let mut out = String::with_capacity(256);
+            let (node, mut meta) = extract_doc_and_meta(&first, schema)?;
+            meta.explicit_start |= multiple;
+            emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut out)
+                .expect("writing to String is infallible");
+            drop_yaml_node_iterative(node);
+
+            if let Some(item) = second {
+                let (node, mut meta) = extract_doc_and_meta(&item, schema)?;
+                meta.explicit_start = true;
+                emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut out)
+                    .expect("writing to String is infallible");
+                drop_yaml_node_iterative(node);
+            }
+            for item in items {
+                let item = item?;
+                let (node, mut meta) = extract_doc_and_meta(&item, schema)?;
+                meta.explicit_start = true;
+                emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut out)
+                    .expect("writing to String is infallible");
+                drop_yaml_node_iterative(node);
+            }
+            Ok(Some(out))
         }
         EmitSink::Stream(stream) => {
-            let n = items.len();
             let mut writer = PyStreamWriter::new(stream.unbind());
-            for (i, item) in items.iter().enumerate() {
-                let (node, mut meta) = extract_doc_and_meta(item, schema)?;
-                // Synthetic explicit_start so multi-doc streams always emit `---`
-                // separators (matches the emit_docs behaviour for batched emit).
-                meta.explicit_start |= (n > 1 && i == 0) || i > 0;
+
+            let (node, mut meta) = extract_doc_and_meta(&first, schema)?;
+            meta.explicit_start |= multiple;
+            let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
+            let result = writer.finish();
+            drop_yaml_node_iterative(node);
+            result?;
+
+            if let Some(item) = second {
+                let (node, mut meta) = extract_doc_and_meta(&item, schema)?;
+                meta.explicit_start = true;
                 let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
-                if let Some(err) = writer.take_error() {
-                    return Err(err);
-                }
+                let result = writer.finish();
+                drop_yaml_node_iterative(node);
+                result?;
+            }
+            for item in items {
+                let item = item?;
+                let (node, mut meta) = extract_doc_and_meta(&item, schema)?;
+                meta.explicit_start = true;
+                let _ = emit_docs_to(std::slice::from_ref(&node), &[meta], indent, &mut writer);
+                let result = writer.finish();
+                drop_yaml_node_iterative(node);
+                result?;
             }
             Ok(None)
         }
@@ -296,61 +360,63 @@ fn iter_loads_all(
 }
 
 #[pyfunction]
-#[pyo3(signature = (doc, stream, *, schema=None, indent=2))]
+#[pyo3(signature = (doc, stream, *, schema=None, indent=Indent(2)))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dump(
     doc: &Bound<'_, PyAny>,
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
-    indent: usize,
+    indent: Indent,
 ) -> PyResult<()> {
     freeze_schema(doc.py(), schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    do_dump(doc, EmitSink::Stream(stream.clone()), sb, indent)?;
+    do_dump(doc, EmitSink::Stream(stream.clone()), sb, indent.0)?;
     Ok(())
 }
 
 #[pyfunction]
-#[pyo3(signature = (doc, *, schema=None, indent=2))]
+#[pyo3(signature = (doc, *, schema=None, indent=Indent(2)))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
-fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: usize) -> PyResult<String> {
+fn dumps(doc: &Bound<'_, PyAny>, schema: Option<Py<Schema>>, indent: Indent) -> PyResult<String> {
     freeze_schema(doc.py(), schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(doc.py()));
-    Ok(do_dump(doc, EmitSink::String, sb, indent)?.unwrap_or_default())
+    Ok(do_dump(doc, EmitSink::String, sb, indent.0)?.unwrap_or_default())
 }
 
 #[pyfunction]
-#[pyo3(signature = (docs, stream, *, schema=None, indent=2))]
+#[pyo3(signature = (docs, stream, *, schema=None, indent=Indent(2)))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dump_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,
     stream: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
-    indent: usize,
+    indent: Indent,
 ) -> PyResult<()> {
     freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
-    do_dump_all(docs, EmitSink::Stream(stream.clone()), sb, indent)?;
+    do_dump_all(docs, EmitSink::Stream(stream.clone()), sb, indent.0)?;
     Ok(())
 }
 
 #[pyfunction]
-#[pyo3(signature = (docs, *, schema=None, indent=2))]
+#[pyo3(signature = (docs, *, schema=None, indent=Indent(2)))]
 #[allow(clippy::needless_pass_by_value)] // pyfunction: PyO3 requires Option<Py<T>> by value
 fn dumps_all(
     py: Python<'_>,
     docs: &Bound<'_, PyAny>,
     schema: Option<Py<Schema>>,
-    indent: usize,
+    indent: Indent,
 ) -> PyResult<String> {
     freeze_schema(py, schema.as_ref());
     let sb = schema.as_ref().map(|s| s.bind(py));
-    Ok(do_dump_all(docs, EmitSink::String, sb, indent)?.unwrap_or_default())
+    Ok(do_dump_all(docs, EmitSink::String, sb, indent.0)?.unwrap_or_default())
 }
 
 /// The yarutsk module (private implementation, re-exported via `yarutsk/__init__.py`).
-#[pymodule]
+// PyO3 0.29 defaults to this setting, but keep the declaration explicit: the
+// release matrix tests and publishes native free-threaded CPython wheels.
+#[pymodule(gil_used = false)]
 fn _yarutsk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("YarutskError", m.py().get_type::<YarutskError>())?;
     m.add("ParseError", m.py().get_type::<ParseError>())?;

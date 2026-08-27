@@ -1,6 +1,7 @@
 // Copyright (c) yarutsk authors. Licensed under MIT — see LICENSE.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -52,11 +53,10 @@ pub struct Schema {
     pub(crate) dumpers: Vec<(Py<PyAny>, Py<PyAny>)>,
     /// Tags for which the builder must skip `ScalarValue` coercion.
     pub(crate) raw_tags: HashSet<String>,
-    /// Once set, further `add_loader` / `add_dumper` calls raise. Set on the
-    /// first load/dump that binds the schema; concurrent loads sharing the
-    /// same schema briefly contend on the pyclass mut-borrow during this
-    /// one-time flip, which is fine in practice.
-    pub(crate) frozen: bool,
+    /// Once set, further `add_loader` / `add_dumper` calls raise. This is
+    /// atomic because free-threaded Python can bind the same schema from
+    /// multiple threads simultaneously.
+    pub(crate) frozen: AtomicBool,
 }
 
 #[pymethods]
@@ -146,7 +146,7 @@ impl Schema {
     }
 
     fn check_unfrozen(&self, op: &str) -> PyResult<()> {
-        if self.frozen {
+        if self.frozen.load(Ordering::Acquire) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Schema.{op}() called after the schema was used in a load/dump call; \
                  schemas are immutable once bound. Construct a fresh Schema \
@@ -158,16 +158,11 @@ impl Schema {
 }
 
 /// Mark *schema* frozen so its loader/dumper sets cannot be mutated for the
-/// remainder of the load/dump call. No-op if `schema` is `None` or already
-/// frozen — the read-then-mut-borrow pattern avoids contending on the
-/// pyclass mut-borrow when concurrent loads share a schema (the common case
-/// is "all threads see frozen=true and skip the mut path").
+/// remainder of its lifetime. The atomic store permits multiple
+/// free-threaded callers to bind the same schema concurrently without
+/// contending on a mutable pyclass borrow.
 pub(crate) fn freeze_schema(py: Python<'_>, schema: Option<&Py<Schema>>) {
     if let Some(s) = schema {
-        let bound = s.bind(py);
-        if bound.borrow().frozen {
-            return;
-        }
-        bound.borrow_mut().frozen = true;
+        s.bind(py).borrow().frozen.store(true, Ordering::Release);
     }
 }

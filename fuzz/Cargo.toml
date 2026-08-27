@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 [dependencies.yarutsk]
+package = "yarutsk"
 path = ".."
 
 # Prevent this Cargo.toml from being picked up as a workspace member of the
@@ -47,4 +48,3 @@ path = "fuzz_targets/idempotent_emit.rs"
 test = false
 doc = false
 bench = false
-

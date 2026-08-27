@@ -1,9 +1,80 @@
 """Tests for YAML serialization: dump, dump_all, multi-document, empty docs."""
 
 import io
+import subprocess
+import sys
+from collections.abc import Iterator
 from textwrap import dedent
 
+import pytest
+
 import yarutsk
+
+
+def test_deep_dump_does_not_use_native_call_stack() -> None:
+    code = """
+import yarutsk
+value = 0
+for _ in range(1500):
+    value = [value]
+assert yarutsk.dumps(value).count("-") == 1500
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize("indent", [False, True, 0, -1, 129, 1.5, "2"])
+def test_invalid_indent_rejected(indent: object) -> None:
+    with pytest.raises(ValueError, match="1 through 128"):
+        yarutsk.dumps({"a": {"b": 1}}, indent=indent)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("indent", [1, 128])
+def test_indent_boundaries(indent: int) -> None:
+    out = yarutsk.dumps({"a": {"b": 1}}, indent=indent)
+    assert f"\n{' ' * indent}b: 1\n" in out
+
+
+def test_dump_preserves_non_type_write_error() -> None:
+    class BrokenStream:
+        def write(self, value: str | bytes) -> None:
+            raise OSError("disk failure")
+
+    with pytest.raises(OSError, match="disk failure"):
+        yarutsk.dump({"a": 1}, BrokenStream())  # type: ignore[arg-type]
+
+
+def test_dump_buffers_small_writes() -> None:
+    class CountingStream:
+        def __init__(self) -> None:
+            self.parts: list[str] = []
+
+        def write(self, value: str) -> None:
+            self.parts.append(value)
+
+    stream = CountingStream()
+    yarutsk.dump({"a": 1, "b": 2}, stream)  # type: ignore[arg-type]
+    assert stream.parts == ["a: 1\nb: 2\n"]
+
+
+def test_dump_all_consumes_generator_incrementally() -> None:
+    events: list[str] = []
+
+    def docs() -> Iterator[dict[str, int]]:
+        events.append("yield-1")
+        yield {"a": 1}
+        events.append("yield-2")
+        yield {"b": 2}
+        events.append("yield-3")
+        yield {"c": 3}
+
+    class ObservingStream(io.StringIO):
+        def write(self, value: str) -> int:
+            events.append(f"write-{value.splitlines()[-1]}")
+            return super().write(value)
+
+    stream = ObservingStream()
+    yarutsk.dump_all(docs(), stream)
+    assert events.index("write-a: 1") < events.index("yield-3")
 
 
 class TestSerialization:

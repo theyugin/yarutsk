@@ -19,6 +19,10 @@ The complete public surface of yarutsk on a single page. Authoritative signature
 
 `load` / `loads` return a `YamlMapping`, `YamlSequence`, or `YamlScalar` (for a top-level scalar document), or `None` for empty input. Nested container nodes are `YamlMapping` or `YamlSequence`; scalar leaves inside mappings and sequences are returned as native Python primitives (`int`, `float`, `bool`, `str`, `bytes`, `datetime.datetime`, `datetime.date`, or `None`).
 
+Single-document loaders stop as soon as the first document is complete. They
+do not parse or validate later documents. A file-like source may have been read
+ahead within the current 8 KiB input chunk.
+
 `dump` / `dumps` accept `YamlMapping`, `YamlSequence`, and `YamlScalar` objects (preserving comments, styles, and tags), but also plain Python types: `dict`, `list`, `tuple`, `set`, `frozenset`, `bytes`, `bytearray`, scalar primitives, and any `collections.abc.Mapping` or iterable. Plain types are auto-converted with default formatting.
 
 `iter_load_all` / `iter_loads_all` return a `YamlIter` object that drives the parser on demand and yields documents one at a time — never accumulating all documents in memory:
@@ -29,7 +33,7 @@ import yarutsk
 
 stream = io.StringIO("---\na: 1\n---\nb: 2\n---\nc: 3\n")
 for doc in yarutsk.iter_load_all(stream):
-    print(doc)   # {'a': 1}, then {'b': 2}, then {'c': 3}
+    print(doc)  # {'a': 1}, then {'b': 2}, then {'c': 3}
 ```
 
 `load` / `load_all` also stream from IO in 8 KB chunks rather than reading the entire input first, but they still build and return the full document tree.
@@ -42,6 +46,14 @@ doc = yarutsk.loads(out)
 ```
 
 Non-UTF-8 bytes raise `UnicodeDecodeError`; any other type raises `TypeError`.
+
+All dump functions accept `indent` values from 1 through 128. Booleans, zero,
+negative values, non-integers, and larger values raise `ValueError`.
+
+`dump_all` consumes its input incrementally and writes each document once one
+item of lookahead has established whether document markers are required. If a
+later conversion or stream write fails, output for earlier documents remains
+in the destination.
 
 ## Type conversions
 
@@ -80,15 +92,15 @@ import datetime, yarutsk
 
 # !!binary
 doc = yarutsk.loads("data: !!binary aGVsbG8=\n")
-doc["data"]                            # b'hello'
+doc["data"]  # b'hello'
 
 # !!timestamp
 doc = yarutsk.loads("ts: !!timestamp 2024-01-15T10:30:00\n")
-doc["ts"]                              # datetime.datetime(2024, 1, 15, 10, 30)
+doc["ts"]  # datetime.datetime(2024, 1, 15, 10, 30)
 
 # !!float promotes integers
 doc = yarutsk.loads("x: !!float 1\n")
-doc["x"]                               # 1.0  (float, not int)
+doc["x"]  # 1.0  (float, not int)
 ```
 
 Dumping Python `bytes` / `datetime` auto-applies the appropriate tag.
@@ -115,15 +127,18 @@ Loader receives a `YamlMapping`; dumper returns a `(tag, dict)` tuple:
 ```python
 import yarutsk
 
+
 class Point:
-    def __init__(self, x, y): self.x, self.y = x, y
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
 
 schema = yarutsk.Schema()
 schema.add_loader("!point", lambda d: Point(d["x"], d["y"]))
 schema.add_dumper(Point, lambda p: ("!point", {"x": p.x, "y": p.y}))
 
 doc = yarutsk.loads("origin: !point\n  x: 0\n  y: 0\n", schema=schema)
-doc["origin"]                          # Point(0, 0)
+doc["origin"]  # Point(0, 0)
 ```
 
 ### Scalar types
@@ -132,7 +147,9 @@ Loader receives the raw scalar string; dumper returns a `(tag, str)` tuple:
 
 ```python
 class Color:
-    def __init__(self, r, g, b): self.r, self.g, self.b = r, g, b
+    def __init__(self, r, g, b):
+        self.r, self.g, self.b = r, g, b
+
 
 schema = yarutsk.Schema()
 schema.add_loader("!color", lambda s: Color(*[int(x) for x in s.split(",")]))
@@ -149,7 +166,7 @@ Registering a loader for `!!int`, `!!float`, `!!bool`, `!!null`, or `!!str` bypa
 schema = yarutsk.Schema()
 schema.add_loader("!!int", lambda raw: int(raw, 0))  # parses 0xFF, 0o77, etc.
 doc = yarutsk.loads("x: !!int 0xFF\n", schema=schema)
-doc["x"]                               # 255
+doc["x"]  # 255
 ```
 
 Multiple dumpers for the same type are checked in registration order; the first `isinstance` match wins.
@@ -168,37 +185,37 @@ Top-level scalar documents are wrapped in a `YamlScalar` node:
 
 ```python
 doc = yarutsk.loads("42")
-doc.value                              # 42 (Python int)
-doc.to_python()                        # same as .value
+doc.value  # 42 (Python int)
+doc.to_python()  # same as .value
 
 # .value applies built-in tag handling
 doc = yarutsk.loads("!!binary aGVsbG8=")
-doc.value                              # b'hello'
+doc.value  # b'hello'
 doc = yarutsk.loads("!!timestamp 2024-01-01")
-doc.value                              # datetime.date(2024, 1, 1)
+doc.value  # datetime.date(2024, 1, 1)
 
 # Style
 doc = yarutsk.loads("---\n'hello'\n")
-doc.style                              # 'single'
-doc.style = "double"                   # 'plain'|'single'|'double'|'literal'|'folded'
+doc.style  # 'single'
+doc.style = "double"  # 'plain'|'single'|'double'|'literal'|'folded'
 
 # Tag
 doc = yarutsk.loads("!!str 42")
-doc.tag                                # '!!str'
+doc.tag  # '!!str'
 
 # Anchor (demonstrated on a scalar root)
 doc = yarutsk.loads("&root 42\n")
-doc.anchor                             # 'root'
+doc.anchor  # 'root'
 ```
 
 `YamlScalar` can be constructed directly to control emission when assigning into a mapping or sequence:
 
 ```python
 # Constructor: YamlScalar(value, *, style="plain", tag=None)
-doc["x"] = yarutsk.YamlScalar("hello", style="double")    # 'x: "hello"\n'
-doc["x"] = yarutsk.YamlScalar("42", tag="!!str")          # 'x: !!str 42\n'
-doc["x"] = yarutsk.YamlScalar(b"hello")                   # 'x: !!binary aGVsbG8=\n'
-doc["x"] = yarutsk.YamlScalar(datetime.date(2024, 1, 15)) # 'x: !!timestamp 2024-01-15\n'
+doc["x"] = yarutsk.YamlScalar("hello", style="double")  # 'x: "hello"\n'
+doc["x"] = yarutsk.YamlScalar("42", tag="!!str")  # 'x: !!str 42\n'
+doc["x"] = yarutsk.YamlScalar(b"hello")  # 'x: !!binary aGVsbG8=\n'
+doc["x"] = yarutsk.YamlScalar(datetime.date(2024, 1, 15))  # 'x: !!timestamp 2024-01-15\n'
 ```
 
 - `value` — `bool`, `int`, `float`, `str`, `None`, `bytes`, `bytearray`, `datetime.datetime`, or `datetime.date`
@@ -211,10 +228,10 @@ Comments and blank-lines-before live directly on each node. Reach the child via 
 
 ```python
 doc = yarutsk.loads("port: 5432  # db port\n")
-doc.node("port").comment_inline          # 'db port'
+doc.node("port").comment_inline  # 'db port'
 
 doc.node("port").comment_inline = "updated"
-yarutsk.dumps(doc)                       # 'port: 5432  # updated\n'
+yarutsk.dumps(doc)  # 'port: 5432  # updated\n'
 
 doc.node("port").blank_lines_before = 2  # int property, clamped 0–255
 ```
@@ -223,8 +240,8 @@ For bare-scalar documents, `comment_before` and `comment_inline` are both preser
 
 ```python
 doc = yarutsk.loads("# hello\n42  # answer\n")
-doc.comment_before                       # 'hello'
-doc.comment_inline                       # 'answer'
+doc.comment_before  # 'hello'
+doc.comment_inline  # 'answer'
 ```
 
 ## YamlMapping
@@ -237,7 +254,7 @@ insertion-ordered keys. **`isinstance(m, dict)` is False** — call
 ```python
 # YamlMapping(mapping=None, *, style="block", tag=None)
 m = yarutsk.YamlMapping({"a": 1, "b": 2}, style="flow")
-yarutsk.dumps(m)                       # '{a: 1, b: 2}\n'
+yarutsk.dumps(m)  # '{a: 1, b: 2}\n'
 ```
 
 The full method surface, grouped by concern:
@@ -259,12 +276,12 @@ Style, comments, and blank-lines-before live on each child node. Reach the child
 ```python
 doc["nested"] = yarutsk.YamlMapping(style="flow")
 doc["nested"]["x"] = 1
-doc["nested"].node("x").style = "double"           # scalar style
+doc["nested"].node("x").style = "double"  # scalar style
 
-doc.node("key").comment_inline = "hi"              # comment on a child
-doc.node("key").comment_inline = None              # clear
+doc.node("key").comment_inline = "hi"  # comment on a child
+doc.node("key").comment_inline = None  # clear
 doc.node("key").comment_before = "block\ncomment"
-doc.node("key").blank_lines_before = 2             # int, clamped 0–255
+doc.node("key").blank_lines_before = 2  # int, clamped 0–255
 ```
 
 `node(key)` returns a live handle: setter calls propagate to the parent, so the change is visible on the next `dumps(doc)`.
@@ -282,11 +299,11 @@ doc.node("key").blank_lines_before = 2             # int, clamped 0–255
 
 ```python
 doc = yarutsk.loads("base: &val 1\nref: *val\n")
-doc.get_alias("ref")                   # 'val'
-doc.get_alias("base")                  # None (has anchor, not alias)
-doc["ref"]                             # 1  (resolved value always accessible)
+doc.get_alias("ref")  # 'val'
+doc.get_alias("base")  # None (has anchor, not alias)
+doc["ref"]  # 1  (resolved value always accessible)
 
-doc.set_alias("other", "anchor")       # mark value as emitting *anchor
+doc.set_alias("other", "anchor")  # mark value as emitting *anchor
 ```
 
 Aliases share Python identity with the anchored container, so mutations
@@ -297,16 +314,16 @@ semantics as plain Python dicts and lists:
 doc = yarutsk.loads("a: &x {port: 8080}\nb: *x\n")
 assert doc["a"] is doc["b"]
 doc["b"]["port"] = 9090
-assert doc["a"]["port"] == 9090        # shared via the anchor
+assert doc["a"]["port"] == 9090  # shared via the anchor
 ```
 
 ### Sorting
 
 ```python
-doc.sort_keys()                        # alphabetical, in-place
+doc.sort_keys()  # alphabetical, in-place
 doc.sort_keys(reverse=True)
-doc.sort_keys(key=lambda k: len(k))    # custom key
-doc.sort_keys(recursive=True)          # also sort nested mappings
+doc.sort_keys(key=lambda k: len(k))  # custom key
+doc.sort_keys(recursive=True)  # also sort nested mappings
 ```
 
 Sorting preserves per-entry comments — each entry carries its inline and before-key comments with it.
@@ -331,7 +348,7 @@ Constructor:
 ```python
 # YamlSequence(iterable=None, *, style="block", tag=None)
 s = yarutsk.YamlSequence([1, 2, 3], style="flow")
-yarutsk.dumps(s)                       # '[1, 2, 3]\n'
+yarutsk.dumps(s)  # '[1, 2, 3]\n'
 ```
 
 The list protocol works as expected: indexing (negative supported), slicing, `append`, `insert`, `pop`, `remove`, `extend`, `index`, `count`, `reverse`, `sort`, `clear`, `copy`, `in`, `len`, iteration, equality and ordering comparisons, `+` / `+=` / `*` / `*=`, pickle round-trip.
@@ -340,12 +357,12 @@ Per-item metadata is reached the same way as mappings — via `seq.node(i)`. `In
 
 ```python
 # Underlying node access
-doc.node(0)                              # YamlScalar / YamlMapping / YamlSequence
-doc.nodes()                              # [node, node, ...] preserving metadata
+doc.node(0)  # YamlScalar / YamlMapping / YamlSequence
+doc.nodes()  # [node, node, ...] preserving metadata
 
 # Style
-doc.node(0).style = "double"             # scalar: plain|single|double|literal|folded
-doc.node(1).style = "flow"               # container: block|flow
+doc.node(0).style = "double"  # scalar: plain|single|double|literal|folded
+doc.node(1).style = "flow"  # container: block|flow
 doc[0] = yarutsk.YamlScalar("item", style="single")
 
 # Comments
@@ -356,7 +373,7 @@ doc.node(2).comment_before = "group B"
 doc.node(0).blank_lines_before = 1
 
 # Aliases
-doc.get_alias(idx)                       # anchor name if alias, else None
+doc.get_alias(idx)  # anchor name if alias, else None
 doc.set_alias(idx, "anchor")
 
 # Sorting (preserves comment metadata)
