@@ -4,8 +4,8 @@ title: yarutsk
 
 # yarutsk
 
-!!! warning "AI-authored"
-    This library — design, implementation, tests, and documentation — was written by [Claude Code](https://claude.ai/code) (Anthropic) under human direction.
+!!! warning "LLM-assisted"
+    This library — including its design, implementation, tests, and documentation — was developed with extensive assistance from large language models under human direction.
 
 A Python YAML library that round-trips documents while preserving **comments**, **insertion order**, **scalar styles**, **tags**, **anchors and aliases**, **blank lines**, and **explicit document markers**.
 
@@ -15,11 +15,13 @@ Most YAML libraries silently drop comments on load. yarutsk keeps them attached 
 import io
 import yarutsk
 
-doc = yarutsk.load(io.StringIO("""
+doc = yarutsk.load(
+    io.StringIO("""
 # database config
 host: localhost  # primary
 port: 5432
-"""))
+""")
+)
 
 doc["port"] = 5433
 

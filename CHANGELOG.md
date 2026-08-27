@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-27
+
+### Fixed
+- Binary streams ending in an incomplete UTF-8 codepoint now raise `UnicodeDecodeError` instead of silently dropping trailing bytes; all invalid binary UTF-8 uses the same exception.
+- Stream dumping preserves non-type `write()` failures and buffers small emitter fragments instead of issuing one Python call per fragment.
+- PyO3 was upgraded to 0.29.2 to incorporate the fixes for RUSTSEC-2026-0176 and RUSTSEC-2026-0177; the deprecated tuple superclass initialisers were replaced with `PyClassInitializer`.
+
+### Changed
+- `load` / `loads` stop after the first completed document without validating trailing documents.
+- Dump indentation is validated consistently and must be an integer from 1 through 128.
+- `dump_all` consumes generators incrementally with one-document lookahead.
+- Python 3.12 remains the minimum supported version. Release CI now builds and smoke-tests x86_64 and ARM64 artifacts for CPython 3.12–3.14 plus free-threaded 3.14t; Python 3.15 prereleases are tracked in non-blocking CI.
+- Rust and Python dependencies were refreshed, including base64 0.23.1 and maturin 1.15.0. GitHub workflows now use `actions/checkout` and `actions/setup-python` v7.
+- Weekly bounded fuzzing covers all four fuzz targets.
+
+### Internal
+- Introduced a flat document-arena representation and iterative tree adapter as the migration base for stack-safe parsing, live views, and emission.
+- yaml-test-suite metadata is decoded independently with PyYAML and fixture failures are no longer silently omitted.
+- The root `Cargo.lock` is tracked, CI and release builds use current stable Rust with locked dependencies, and the tested sdist is included in the publish job. The explicit Rust 1.85 floor was removed because yarutsk is distributed as a Python extension rather than a reusable Rust crate.
+
 ## [0.8.3] - 2026-04-28
 
 ### Internal
@@ -271,7 +291,9 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/theyugin/yarutsk/compare/v0.8.3...v0.9.0
+[0.8.3]: https://github.com/theyugin/yarutsk/compare/v0.8.2...v0.8.3
 [0.8.0]: https://github.com/theyugin/yarutsk/compare/v0.7.8...v0.8.0
 [0.7.8]: https://github.com/theyugin/yarutsk/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/theyugin/yarutsk/compare/v0.7.6...v0.7.7

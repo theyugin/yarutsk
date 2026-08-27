@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## What this project is
 
@@ -9,12 +9,12 @@
 **After any Rust change, use maturin directly — `uv run` clobbers the maturin build.**
 
 ```bash
-uv sync --group dev                              # first-time setup
-.venv/bin/maturin develop                        # debug rebuild after Rust changes
+uv sync --frozen --group dev                     # first-time setup
+.venv/bin/maturin develop --locked               # debug rebuild after Rust changes
 .venv/bin/pytest tests/ --ignore=tests/test_yaml_suite.py -v
 .venv/bin/pytest tests/test_yaml_suite.py -q     # yaml-test-suite compliance
 .venv/bin/mypy
-cargo fmt && cargo clippy -- -D warnings         # clippy must be clean before done
+cargo fmt && cargo clippy --all-targets --locked -- -D warnings
 .venv/bin/ruff check .
 ```
 
@@ -81,7 +81,7 @@ doc = yarutsk.load(text, schema=schema)
 
 Loaders receive the default-coerced value; dumpers return `(tag, data)`. Built-ins (always active): `!!binary` ↔ `bytes`, `!!timestamp` ↔ `datetime`/`date`. Tags registered in the schema bypass `ScalarValue` coercion via `TagPolicy` (`src/core/builder.rs`) so loaders see the raw YAML string.
 
-`Schema` may also be populated via constructor kwargs (`Schema(loaders={...}, dumpers=[...])`) and is **frozen** the first time it is bound to a load/dump call — subsequent `add_loader`/`add_dumper` calls raise `RuntimeError`. The freeze flag is an `AtomicBool` so concurrent loads sharing a schema don't contend on a pyclass mut-borrow.
+`Schema` may also be populated via constructor kwargs (`Schema(loaders={...}, dumpers=[...])`) and is **frozen** the first time it is bound to a load/dump call — subsequent `add_loader`/`add_dumper` calls raise `RuntimeError`. The flag lives on the PyO3-managed schema object; the fast path takes only a shared borrow after the first binding.
 
 ## Tests
 

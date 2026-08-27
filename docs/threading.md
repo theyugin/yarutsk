@@ -6,4 +6,9 @@ A single `Schema` instance can be shared read-only across threads as long as you
 
 Individual `YamlMapping` / `YamlSequence` / `YamlScalar` instances follow the same rule as plain Python `dict` / `list`: they are not protected against concurrent mutation from multiple threads. Either scope one instance per thread or serialise access externally.
 
-The [`tests/test_threading.py`](https://github.com/theyugin/yarutsk/blob/main/tests/test_threading.py) suite exercises 30 concurrent load/dump scenarios under the GIL and on free-threaded Python.
+CPython 3.14t is supported and published as a separate wheel. Importing yarutsk
+does not re-enable the GIL. CI exercises the full test suite on Linux, macOS,
+and Windows with the GIL disabled; the focused
+[`tests/test_threading.py`](https://github.com/theyugin/yarutsk/blob/main/tests/test_threading.py)
+suite covers shared reads, independent mutation, streaming, aliases, and
+custom schemas.
