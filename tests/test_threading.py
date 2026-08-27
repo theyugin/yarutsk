@@ -331,11 +331,14 @@ class TestConcurrentSchema:
         schema = yarutsk.Schema()
         schema.add_loader("!tag", lambda s: Tag(s))
         schema.add_dumper(Tag, lambda t: ("!tag", t.v))
+        barrier = threading.Barrier(N_THREADS)
 
         def work(tid: int, i: int) -> None:
             doc = yarutsk.loads("x: placeholder\n")
             assert isinstance(doc, yarutsk.YamlMapping)
             doc["x"] = Tag(f"t_{tid}_{i}")
+            if i == 0:
+                barrier.wait()
             result = yarutsk.dumps(doc, schema=schema)
             assert f"t_{tid}_{i}" in result
 
