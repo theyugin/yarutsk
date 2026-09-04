@@ -37,9 +37,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let out1 = emit_docs(&b1.docs, &b1.docs_meta, 2);
-    let Some(b2) = parse(&out1) else {
-        return;
-    };
+    let b2 = parse(&out1).expect("emitted YAML must reparse within the event budget");
     assert_eq!(b1.docs.len(), b2.docs.len(), "doc count drift on re-parse");
     let out2 = emit_docs(&b2.docs, &b2.docs_meta, 2);
     assert_eq!(out1, out2, "emit not idempotent after one reparse");

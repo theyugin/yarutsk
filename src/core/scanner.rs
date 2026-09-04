@@ -921,9 +921,18 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                     need_whitespace = false;
                 }
                 '#' => {
+                    let comment_mark = self.mark;
+                    self.skip_non_blank();
+                    if self.look_ch() == ' ' {
+                        self.skip_blank();
+                    }
+                    let mut comment = String::new();
                     while !is_breakz(self.look_ch()) {
+                        comment.push(self.look_ch());
                         self.skip_non_blank();
                     }
+                    self.tokens
+                        .push_back(Token(comment_mark, TokenType::Comment(comment)));
                 }
                 _ => break,
             }
@@ -1351,7 +1360,8 @@ impl<T: Iterator<Item = char>> Scanner<T> {
 
     fn scan_uri_escapes(&mut self, mark: &Marker) -> Result<char, ScanError> {
         let mut width = 0usize;
-        let mut code = 0u32;
+        let mut octets = [0u8; 4];
+        let mut length = 0;
         loop {
             self.lookahead(3);
 
@@ -1376,16 +1386,14 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                         ));
                     }
                 };
-                code = octet;
-            } else {
-                if octet & 0xc0 != 0x80 {
-                    return Err(ScanError::new(
-                        *mark,
-                        "while parsing a tag, found an incorrect trailing UTF-8 octet",
-                    ));
-                }
-                code = (code << 8) + octet;
+            } else if octet & 0xc0 != 0x80 {
+                return Err(ScanError::new(
+                    *mark,
+                    "while parsing a tag, found an incorrect trailing UTF-8 octet",
+                ));
             }
+            octets[length] = u8::try_from(octet).expect("two hex digits fit in a byte");
+            length += 1;
 
             self.skip_n_non_blank(3);
 
@@ -1395,7 +1403,10 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             }
         }
 
-        match char::from_u32(code) {
+        match std::str::from_utf8(&octets[..length])
+            .ok()
+            .and_then(|s| s.chars().next())
+        {
             Some(ch) => Ok(ch),
             None => Err(ScanError::new(
                 *mark,
@@ -1471,6 +1482,8 @@ impl<T: Iterator<Item = char>> Scanner<T> {
 
         let start_mark = self.mark;
         self.skip_non_blank();
+        // Close the collection before exposing its trailing comment to the builder.
+        self.tokens.push_back(Token(start_mark, tok));
         self.skip_ws_to_eol(SkipTabs::Yes)?;
 
         // A flow collection within a flow mapping can be a key. In that case, the value may be
@@ -1482,7 +1495,6 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             self.adjacent_value_allowed_at = self.mark.index;
         }
 
-        self.tokens.push_back(Token(start_mark, tok));
         Ok(())
     }
 
@@ -1716,9 +1728,14 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                 // Otherwise, the newline after chomping is ignored.
                 Chomping::Keep => trailing_breaks,
             };
+            let content_end_line = if chomping == Chomping::Keep {
+                self.mark.line()
+            } else {
+                start_mark.line() + 1
+            };
             return Ok(Token(
                 start_mark,
-                TokenType::Scalar(style, contents, Some(self.mark.line()), Some(chomping)),
+                TokenType::Scalar(style, contents, Some(content_end_line), Some(chomping)),
             ));
         }
 
@@ -1730,7 +1747,9 @@ impl<T: Iterator<Item = char>> Scanner<T> {
         }
 
         let mut line_buffer = String::with_capacity(100);
-        let start_mark = self.mark;
+        let mut content_end_line = start_mark.line() + 1;
+        // Keep the indicator's marker so header comments and leading blank
+        // content lines can be distinguished from spacing before the node.
         while self.mark.col == indent && !is_z(self.ch()) {
             if indent == 0 {
                 self.lookahead(4);
@@ -1757,6 +1776,7 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             leading_blank = is_blank(self.ch());
 
             self.scan_block_scalar_content_line(&mut string, &mut line_buffer);
+            content_end_line = self.mark.line() + 1;
 
             // break on EOF
             if is_z(self.ch()) {
@@ -1783,11 +1803,12 @@ impl<T: Iterator<Item = char>> Scanner<T> {
 
         if chomping == Chomping::Keep {
             string.push_str(&trailing_breaks);
+            content_end_line = self.mark.line();
         }
 
         Ok(Token(
             start_mark,
-            TokenType::Scalar(style, string, Some(self.mark.line()), Some(chomping)),
+            TokenType::Scalar(style, string, Some(content_end_line), Some(chomping)),
         ))
     }
 
@@ -2221,6 +2242,7 @@ impl<T: Iterator<Item = char>> Scanner<T> {
         self.unroll_non_block_indents();
         let indent = self.indent + 1;
         let start_mark = self.mark;
+        let mut content_end_line = start_mark.line();
 
         if self.flow_level > 0 && (start_mark.col as isize) < indent {
             return Err(ScanError::new(
@@ -2240,7 +2262,11 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                 break;
             }
 
-            if self.flow_level > 0 && self.ch() == '-' && is_flow(self.buffer[1]) {
+            if string.is_empty()
+                && self.flow_level > 0
+                && self.ch() == '-'
+                && is_flow(self.buffer[1])
+            {
                 return Err(ScanError::new(
                     self.mark,
                     "plain scalar cannot start with '-' followed by ,[]{}",
@@ -2270,6 +2296,7 @@ impl<T: Iterator<Item = char>> Scanner<T> {
                 }
 
                 // We can unroll the first iteration of the loop.
+                content_end_line = self.mark.line();
                 string.push(self.ch());
                 self.skip_non_blank();
                 self.lookahead(2);
@@ -2336,13 +2363,15 @@ impl<T: Iterator<Item = char>> Scanner<T> {
             self.allow_simple_key();
         }
 
-        // Plain scalars can technically span lines (folded to spaces), but
-        // their scanner eats trailing whitespace including line breaks, so
-        // `self.mark.line()` here is not a reliable end-of-content marker.
-        // Leave `end_line` unset; the builder falls back to `node_line`.
+        // Record the last content line before scanning trailing whitespace.
         Ok(Token(
             start_mark,
-            TokenType::Scalar(TScalarStyle::Plain, string, None, None),
+            TokenType::Scalar(
+                TScalarStyle::Plain,
+                string,
+                (content_end_line > start_mark.line()).then_some(content_end_line),
+                None,
+            ),
         ))
     }
 

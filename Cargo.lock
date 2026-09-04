@@ -177,7 +177,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "yarutsk"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arraydeque",
  "base64",

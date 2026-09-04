@@ -6,6 +6,8 @@
 //! adapted into this arena iteratively; the builder will eventually allocate
 //! these records directly.
 
+use std::collections::HashSet;
+
 use crate::core::builder::DocMetadata;
 use crate::core::types::{ContainerStyle, MapKey, NodeMeta, ScalarStyle, YamlNode, YamlScalar};
 
@@ -64,14 +66,14 @@ impl ArenaDocument {
         struct EntryTemplate {
             key: MapKey,
             key_style: ScalarStyle,
-            key_anchor: Option<String>,
-            key_alias: Option<String>,
             key_tag: Option<String>,
             has_key_node: bool,
         }
 
         enum Task<'a> {
             Visit(&'a YamlNode),
+            Key(Option<&'a str>, Option<&'a str>),
+            RestoreAnchor(&'a str, &'a NodeMeta),
             FinishMapping {
                 templates: Vec<EntryTemplate>,
                 style: ContainerStyle,
@@ -90,15 +92,52 @@ impl ArenaDocument {
         let mut tasks = vec![Task::Visit(root)];
         let mut completed = Vec::<NodeId>::new();
         let mut nodes = Vec::<ArenaNode>::new();
+        let mut anchors = HashSet::<String>::new();
+        let mut keys = Vec::<(Option<String>, Option<String>)>::new();
 
         while let Some(task) = tasks.pop() {
             match task {
+                Task::Key(anchor, alias) => {
+                    let mut anchor = anchor.map(str::to_owned);
+                    let mut alias = alias.map(str::to_owned);
+                    if let Some(name) = &alias
+                        && !anchors.contains(name)
+                    {
+                        anchor = alias.take();
+                    }
+                    if let Some(name) = &anchor {
+                        anchors.insert(name.clone());
+                    }
+                    keys.push((anchor, alias));
+                }
+                Task::RestoreAnchor(name, alias_meta) => {
+                    let id = *completed.last().expect("resolved alias was lowered");
+                    let meta = nodes[id.0].meta_mut();
+                    meta.anchor = Some(name.to_owned());
+                    meta.comment_before.clone_from(&alias_meta.comment_before);
+                    meta.comment_inline.clone_from(&alias_meta.comment_inline);
+                    meta.blank_lines_before = alias_meta.blank_lines_before;
+                }
                 Task::Visit(YamlNode::Scalar(scalar)) => {
+                    if let Some(name) = &scalar.meta.anchor {
+                        anchors.insert(name.clone());
+                    }
                     let id = NodeId(nodes.len());
                     nodes.push(ArenaNode::Scalar(scalar.clone()));
                     completed.push(id);
                 }
-                Task::Visit(YamlNode::Alias { name, meta, .. }) => {
+                Task::Visit(YamlNode::Alias {
+                    name,
+                    resolved,
+                    meta,
+                }) => {
+                    // A duplicate key or user mutation may have removed the
+                    // original anchor. Restore it at its first surviving use.
+                    if anchors.insert(name.clone()) {
+                        tasks.push(Task::RestoreAnchor(name, meta));
+                        tasks.push(Task::Visit(resolved));
+                        continue;
+                    }
                     let id = NodeId(nodes.len());
                     nodes.push(ArenaNode::Alias {
                         name: name.clone(),
@@ -107,6 +146,9 @@ impl ArenaDocument {
                     completed.push(id);
                 }
                 Task::Visit(YamlNode::Sequence(sequence)) => {
+                    if let Some(name) = &sequence.meta.anchor {
+                        anchors.insert(name.clone());
+                    }
                     tasks.push(Task::FinishSequence {
                         len: sequence.items.len(),
                         style: sequence.style,
@@ -118,14 +160,15 @@ impl ArenaDocument {
                     }
                 }
                 Task::Visit(YamlNode::Mapping(mapping)) => {
+                    if let Some(name) = &mapping.meta.anchor {
+                        anchors.insert(name.clone());
+                    }
                     let mut templates = Vec::with_capacity(mapping.entries.len());
                     let mut child_count = 0;
                     for (key, entry) in &mapping.entries {
                         templates.push(EntryTemplate {
                             key: key.clone(),
                             key_style: entry.key_style,
-                            key_anchor: entry.key_anchor.clone(),
-                            key_alias: entry.key_alias.clone(),
                             key_tag: entry.key_tag.clone(),
                             has_key_node: entry.key_node.is_some(),
                         });
@@ -143,6 +186,10 @@ impl ArenaDocument {
                         if let Some(key_node) = entry.key_node.as_deref() {
                             tasks.push(Task::Visit(key_node));
                         }
+                        tasks.push(Task::Key(
+                            entry.key_anchor.as_deref(),
+                            entry.key_alias.as_deref(),
+                        ));
                     }
                 }
                 Task::FinishSequence {
@@ -173,7 +220,10 @@ impl ArenaDocument {
                     let drained: Vec<NodeId> = completed.drain(start..).collect();
                     let mut children = drained.into_iter();
                     let mut entries = Vec::with_capacity(templates.len());
-                    for template in templates {
+                    let key_start = keys.len() - templates.len();
+                    for (template, (key_anchor, key_alias)) in
+                        templates.into_iter().zip(keys.drain(key_start..))
+                    {
                         let key_node = template.has_key_node.then(|| {
                             children
                                 .next()
@@ -186,8 +236,8 @@ impl ArenaDocument {
                             key: template.key,
                             value,
                             key_style: template.key_style,
-                            key_anchor: template.key_anchor,
-                            key_alias: template.key_alias,
+                            key_anchor,
+                            key_alias,
                             key_tag: template.key_tag,
                             key_node,
                         });
@@ -214,6 +264,15 @@ impl ArenaDocument {
 }
 
 impl ArenaNode {
+    fn meta_mut(&mut self) -> &mut NodeMeta {
+        match self {
+            ArenaNode::Mapping { meta, .. }
+            | ArenaNode::Sequence { meta, .. }
+            | ArenaNode::Alias { meta, .. } => meta,
+            ArenaNode::Scalar(scalar) => &mut scalar.meta,
+        }
+    }
+
     #[must_use]
     pub fn meta(&self) -> &NodeMeta {
         match self {

@@ -306,6 +306,9 @@ doc["ref"]  # 1  (resolved value always accessible)
 doc.set_alias("other", "anchor")  # mark value as emitting *anchor
 ```
 
+If an anchor definition is removed or overwritten, dumping restores the anchor
+at its first surviving alias using that alias's resolved value.
+
 Aliases share Python identity with the anchored container, so mutations
 through any reference are visible through the others — same reference
 semantics as plain Python dicts and lists:

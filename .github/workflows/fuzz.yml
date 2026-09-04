@@ -35,8 +35,14 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Seed corpus
-        run: ./fuzz/seed_corpus.sh
+        run: |
+          python3 -m pip install PyYAML==6.0.3
+          ./fuzz/seed_corpus.sh
 
       - name: Run bounded fuzz target
         run: >-
