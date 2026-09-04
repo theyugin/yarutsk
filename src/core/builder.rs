@@ -50,6 +50,10 @@ pub struct Builder {
     /// Monotonically increasing count of `DocumentEnd` events processed.  Used
     /// by the streaming iterator to detect when a full document is ready.
     pub doc_end_count: usize,
+    /// Whether the current document's root node has already been pushed.
+    /// Quoted root scalars can expose their trailing comment before this
+    /// happens, while plain root scalars expose it afterwards.
+    current_doc_has_root: bool,
     /// Line of the last SCALAR content token (key or value), for inline comment detection.
     /// Only scalars update this; MappingEnd/SequenceEnd do not.
     last_content_line: Option<usize>,
@@ -230,6 +234,7 @@ impl Builder {
             docs_meta: Vec::new(),
             next_meta: DocMetadata::default(),
             doc_end_count: 0,
+            current_doc_has_root: false,
             last_content_line: None,
             pending_before: Vec::new(),
             pending_inline: None,
@@ -283,11 +288,17 @@ impl Builder {
                 }
             }
             None => {
-                // Stack is empty: the last doc was just pushed; retroactively update it
-                if let Some(doc) = self.docs.last_mut()
-                    && doc.comment_inline().is_none()
-                {
-                    doc.set_comment_inline(Some(text));
+                // A plain root scalar is pushed before the scanner reaches its
+                // trailing comment, while a quoted/block root scalar is pushed
+                // afterwards.  Defer the latter until its Scalar event arrives.
+                if self.current_doc_has_root {
+                    if let Some(doc) = self.docs.last_mut()
+                        && doc.comment_inline().is_none()
+                    {
+                        doc.set_comment_inline(Some(text));
+                    }
+                } else {
+                    self.pending_inline = Some(text);
                 }
             }
         }
@@ -341,6 +352,7 @@ impl Builder {
             None => {
                 self.commit_next_meta();
                 self.docs.push(node);
+                self.current_doc_has_root = true;
             }
             Some(Frame::Mapping(mf)) => {
                 if let Some(node) = mf.pending.insert_entry(&mut mf.mapping, node) {
@@ -379,6 +391,7 @@ impl Builder {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
 
             Event::DocumentStart(explicit, version, tag_dirs) => {
+                self.current_doc_has_root = false;
                 self.next_meta = DocMetadata {
                     explicit_start: explicit,
                     explicit_end: false,
@@ -388,10 +401,24 @@ impl Builder {
                 // Record the document-start line so blank lines between `---` and
                 // the first key are counted correctly by count_blank_lines.
                 self.last_content_line = Some(mark.line());
+                // For an implicit document whose root is quoted, the scanner
+                // reads through the trailing comment while producing the
+                // DocumentStart event.  absorb_comments ran before this arm,
+                // so the same-line comment was provisionally classified as a
+                // before-comment; defer it for the upcoming root scalar.
+                if let Some(pos) = self
+                    .pending_before
+                    .iter()
+                    .position(|(line, _)| *line == mark.line())
+                {
+                    let (_, text) = self.pending_before.remove(pos);
+                    self.pending_inline = Some(text);
+                }
             }
 
             Event::DocumentEnd(explicit_end) => {
                 self.doc_end_count += 1;
+                self.current_doc_has_root = false;
                 // The doc root node has been pushed, so `docs_meta` has an entry
                 // for this doc.  Update its end marker.
                 if let Some(m) = self.docs_meta.last_mut() {
@@ -675,6 +702,7 @@ impl Builder {
                         node.set_comment_inline(deferred_inline);
                         self.commit_next_meta();
                         self.docs.push(node);
+                        self.current_doc_has_root = true;
                     }
                     Some(Frame::Mapping(mf)) => {
                         if mf.pending.has_key() {
