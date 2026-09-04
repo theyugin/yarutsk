@@ -878,6 +878,13 @@ class TestScalarComments:
         assert doc.comment_before == "hello"
         assert doc.comment_inline == "answer"
 
+    def test_bare_quoted_scalar_empty_inline_comment(self) -> None:
+        yaml = '"\\v"  # \n'
+        doc = yarutsk.loads(yaml)
+        assert doc is not None
+        assert doc.comment_inline == ""
+        assert yarutsk.dumps(doc) == yaml
+
     def test_bare_scalar_doc_roundtrip(self) -> None:
         src = "# hello\n42  # answer\n"
         doc = yarutsk.loads(src)
