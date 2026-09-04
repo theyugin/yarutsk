@@ -467,6 +467,42 @@ class TestExplicitDocumentMarker:
 
 
 class TestBlankLinePreservation:
+    @pytest.mark.parametrize("nested", ["- - item\n\n- end\n", "- a: b\n\n- end\n"])
+    def test_compact_nested_container_trailing_blanks_are_preserved(self, nested: str) -> None:
+        assert yarutsk.dumps(yarutsk.loads(nested)) == nested
+
+    def test_overwritten_multiline_value_does_not_add_trailing_blanks(self) -> None:
+        src = "a: old\nb:\n  - x: y\na: first\n  second\n  third\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        assert not out.endswith("\n\n")
+        assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+    def test_blank_lines_after_root_tag_are_stable(self) -> None:
+        src = "!root\n\na: value\n"
+        assert yarutsk.dumps(yarutsk.loads(src)) == src
+
+    @pytest.mark.parametrize("spaces", [1, 2, 3, 10])
+    @pytest.mark.parametrize("style", ["literal", "folded"])
+    def test_block_scalar_preserves_all_leading_spaces(self, spaces: int, style: str) -> None:
+        value = " " * spaces + "value\n"
+        doc = yarutsk.YamlMapping({"key": value})
+        doc.node("key").style = style
+        out = yarutsk.dumps(doc)
+        loaded = yarutsk.loads(out)
+        assert isinstance(loaded, yarutsk.YamlMapping)
+        assert loaded["key"] == value
+        assert yarutsk.dumps(loaded) == out
+
+    @pytest.mark.parametrize("src", [">+", "|+", "a: >-\n\nb: >-\n\n", "- >- # empty\n\n"])
+    def test_empty_block_scalars_are_stable(self, src: str) -> None:
+        out = yarutsk.dumps(yarutsk.loads(src))
+        assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+    def test_empty_block_scalar_key_does_not_accumulate_blank_lines(self) -> None:
+        src = "# before\n ? >\n...\nnext\n"
+        out = yarutsk.dumps_all(yarutsk.loads_all(src))
+        assert yarutsk.dumps_all(yarutsk.loads_all(out)) == out
+
     """Blank lines between mapping entries and sequence items are preserved."""
 
     def test_single_blank_line_between_keys(self) -> None:
@@ -570,11 +606,35 @@ class TestBlankLinePreservation:
         out2 = yarutsk.dumps(yarutsk.loads(out1))
         assert out1 == out2
 
+    def test_null_sequence_item_does_not_consume_following_blank_lines(self) -> None:
+        src = "-\n\n\n-\n\n\n \\%i"
+        doc = yarutsk.loads(src)
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.node(1).blank_lines_before > 0
+        out1 = yarutsk.dumps(doc)
+        out2 = yarutsk.dumps(yarutsk.loads(out1))
+        assert out1 == out2
+
     def test_empty_mapping_key_does_not_accumulate_blanks(self) -> None:
         # Regression: same root cause as the null-sequence-item case, but for
         # an empty plain scalar used as a mapping key (found by idempotent_emit
         # fuzz target on input " ?\n #*").
         src = " ?\n #*"
+        out1 = yarutsk.dumps(yarutsk.loads(src))
+        out2 = yarutsk.dumps(yarutsk.loads(out1))
+        assert out1 == out2
+
+    def test_empty_mapping_value_does_not_consume_following_blank_line(self) -> None:
+        src = "'':\n\nb: x\n"
+        doc = yarutsk.loads(src)
+        assert isinstance(doc, yarutsk.YamlMapping)
+        assert doc.node("b").blank_lines_before == 1
+        assert yarutsk.dumps(doc) == "'': \n\nb: x\n"
+
+    def test_block_complex_key_does_not_accumulate_blanks(self) -> None:
+        # The parser omits an event for the explicit `?` line, so it must still
+        # count as content when positioning the first scalar in the complex key.
+        src = "!\n? ?\n"
         out1 = yarutsk.dumps(yarutsk.loads(src))
         out2 = yarutsk.dumps(yarutsk.loads(out1))
         assert out1 == out2
@@ -590,6 +650,16 @@ class TestBlankLinePreservation:
 
 class TestNonCanonicalScalarForms:
     """Non-canonical plain scalars round-trip as their original source text."""
+
+    def test_tagged_multiline_plain_scalar_is_quoted_before_refolding(self) -> None:
+        src = "!-0\n9%\n!\n\n\n\ni\n\nO"
+        doc = yarutsk.loads(src)
+        assert isinstance(doc, yarutsk.YamlScalar)
+        value = doc.value
+        out1 = yarutsk.dumps(doc)
+        doc2 = yarutsk.loads(out1)
+        assert doc2 == value
+        assert yarutsk.dumps(doc2) == out1
 
     def test_null_tilde(self) -> None:
         src = "x: ~\n"

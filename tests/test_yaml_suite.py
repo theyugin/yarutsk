@@ -30,6 +30,13 @@ def yaml_test_case(request: pytest.FixtureRequest) -> Any:
 class TestYamlSuite:
     """Run yaml-test-suite tests against yarutsk."""
 
+    def test_emit_idempotence(self, yaml_test_case: dict[str, Any]) -> None:
+        """Keep the fuzz target's fixed-point property covered in normal CI."""
+        if yaml_test_case["fail"]:
+            pytest.skip("invalid YAML has no round-trip contract")
+        emitted = yarutsk.dumps_all(yarutsk.loads_all(yaml_test_case["yaml"]))
+        assert yarutsk.dumps_all(yarutsk.loads_all(emitted)) == emitted
+
     def test_parse(self, yaml_test_case: dict[str, Any]) -> None:
         """Valid YAML must parse without error; invalid YAML must be rejected."""
         test = yaml_test_case

@@ -579,6 +579,16 @@ class TestCommentSequenceMutations:
 class TestBlankLines:
     """blank_lines_before and trailing_blank_lines APIs on mappings and sequences."""
 
+    def test_relocated_first_entry_blank_line_is_not_emitted_at_stream_start(
+        self,
+    ) -> None:
+        doc = yarutsk.loads("?\n\n  0")
+        assert isinstance(doc, yarutsk.YamlMapping)
+        assert doc.node("0").blank_lines_before == 1
+        emitted = yarutsk.dumps(doc)
+        assert emitted == "'0': \n"
+        assert yarutsk.dumps(yarutsk.loads(emitted)) == emitted
+
     def test_mapping_blank_lines_before_roundtrip(self) -> None:
         src = dedent("""\
             a: 1
@@ -870,6 +880,40 @@ class TestExplicitCommentMethods:
 
 
 class TestScalarComments:
+    def test_complex_key_value_header_comment_is_stable(self) -> None:
+        src = "?\n  - key\n: # value\n  - item\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        assert ":  # value\n" in out
+        assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+    def test_tagged_empty_value_does_not_steal_next_item_comment(self) -> None:
+        src = "- b: !!str\n- # next\n"
+        doc = yarutsk.loads(src)
+        assert isinstance(doc, yarutsk.YamlSequence)
+        assert doc.node(1).comment_inline == "next"
+        out = yarutsk.dumps(doc)
+        assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+    @pytest.mark.parametrize("style", ["|", ">"])
+    def test_block_scalar_header_comment_in_explicit_document(self, style: str) -> None:
+        src = f"---\n{style}  # header\n\n  value\n---\nnext\n"
+        docs = yarutsk.loads_all(src)
+        assert docs[0].comment_inline == "header"
+        assert docs[0].comment_before is None
+        out = yarutsk.dumps_all(docs)
+        assert yarutsk.dumps_all(yarutsk.loads_all(out)) == out
+
+    def test_empty_document_marker_comment_is_stable(self) -> None:
+        out = yarutsk.dumps_all(yarutsk.loads_all("first\n--- #\n"))
+        assert out == "---\nfirst\n---\n# \n"
+        assert yarutsk.dumps_all(yarutsk.loads_all(out)) == out
+
+    def test_comment_inside_explicit_complex_key_is_preserved(self) -> None:
+        src = "a: value\n?\n  # inside\n  '':\n:\n"
+        out = yarutsk.dumps(yarutsk.loads(src))
+        assert "# inside" in out
+        assert yarutsk.dumps(yarutsk.loads(out)) == out
+
     """Per-scalar comments on YamlScalar nodes."""
 
     def test_bare_scalar_doc_before_and_inline(self) -> None:
@@ -884,6 +928,24 @@ class TestScalarComments:
         assert doc is not None
         assert doc.comment_inline == ""
         assert yarutsk.dumps(doc) == yaml
+
+    def test_quoted_scalar_empty_inline_comment_in_multi_document_stream(self) -> None:
+        first = yarutsk.YamlScalar("\x1a\x1a")
+        first.comment_before = "before"
+        first.comment_inline = ""
+        emitted = yarutsk.dumps_all([first, yarutsk.YamlScalar("next")])
+        docs = yarutsk.loads_all(emitted)
+        assert docs[0].comment_inline == ""
+        assert yarutsk.dumps_all(docs) == emitted
+
+    def test_bare_scalar_empty_before_comments_are_stable(self) -> None:
+        yaml = "# \n# \nvalue\n"
+        doc = yarutsk.loads(yaml)
+        assert doc is not None
+        assert doc.comment_before == "\n"
+        emitted = yarutsk.dumps(doc)
+        assert emitted == yaml
+        assert yarutsk.dumps(yarutsk.loads(emitted)) == emitted
 
     def test_bare_scalar_doc_roundtrip(self) -> None:
         src = "# hello\n42  # answer\n"

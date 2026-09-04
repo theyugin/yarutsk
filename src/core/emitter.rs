@@ -56,6 +56,7 @@ impl<W: FmtWrite> FmtWrite for LastCharTracker<W> {
 struct Emitter<'w, W: FmtWrite> {
     out: &'w mut W,
     step: usize,
+    verbatim_tags: bool,
 }
 
 /// Borrow target for `emit_nested_in_seq` — the two cases sequences nest into.
@@ -68,7 +69,16 @@ enum NestedKind<'a> {
 
 impl<'w, W: FmtWrite> Emitter<'w, W> {
     fn new(out: &'w mut W, step: usize) -> Self {
-        Self { out, step }
+        Self {
+            out,
+            step,
+            verbatim_tags: false,
+        }
+    }
+
+    fn with_verbatim_tags(mut self, enabled: bool) -> Self {
+        self.verbatim_tags = enabled;
+        self
     }
 
     /// Emit the `&anchor TAG ` inline prefix with a trailing space after each component.
@@ -81,8 +91,28 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
             self.out.write_char(' ')?;
         }
         if let Some(tag) = tag {
-            self.out.write_str(&format_tag(tag))?;
+            self.out
+                .write_str(&format_document_tag(tag, self.verbatim_tags))?;
             self.out.write_char(' ')?;
+        }
+        Ok(())
+    }
+
+    /// Emit a root block container's anchor/tag prefix on its own line.
+    fn write_anchor_tag_line(&mut self, anchor: Option<&str>, tag: Option<&str>) -> fmt::Result {
+        if let Some(anchor) = anchor {
+            self.out.write_char('&')?;
+            self.out.write_str(anchor)?;
+        }
+        if let Some(tag) = tag {
+            if anchor.is_some() {
+                self.out.write_char(' ')?;
+            }
+            self.out
+                .write_str(&format_document_tag(tag, self.verbatim_tags))?;
+        }
+        if anchor.is_some() || tag.is_some() {
+            self.out.write_char('\n')?;
         }
         Ok(())
     }
@@ -102,7 +132,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         }
         if let Some(tag) = tag {
             self.out.write_char(' ')?;
-            self.out.write_str(&format_tag(tag))?;
+            self.out
+                .write_str(&format_document_tag(tag, self.verbatim_tags))?;
         }
         Ok(())
     }
@@ -166,7 +197,10 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
     /// Emit a block comment (lines prefixed with `# `) at the given indentation.
     fn emit_comment_before(&mut self, comment: Option<&str>, indent: usize) -> fmt::Result {
         if let Some(cb) = comment {
-            for line in cb.lines() {
+            // `str::lines` drops the sole line for `""` and the final empty
+            // line for `"...\n"`. Both represent real empty YAML comments in
+            // our newline-joined metadata, so split explicitly to retain them.
+            for line in cb.split('\n') {
                 self.out.write_str(&indent_str(indent))?;
                 self.out.write_str("# ")?;
                 self.out.write_str(line)?;
@@ -202,7 +236,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         // Slow path: emit to a temp buffer so trailing newline(s) can be stripped.
         let mut tmp = String::new();
         {
-            let mut tmp_emitter = Emitter::new(&mut tmp, self.step);
+            let mut tmp_emitter =
+                Emitter::new(&mut tmp, self.step).with_verbatim_tags(self.verbatim_tags);
             tmp_emitter.emit_node(node, indent, flow_context)?;
         }
         self.out.write_str(tmp.trim_end_matches('\n'))
@@ -343,15 +378,11 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         if m.style == ContainerStyle::Flow {
             return self.emit_mapping_flow(m);
         }
-        // Top-level anchor: emit `&name` on its own line before the entries.
-        // Nested anchors are already emitted by emit_mapping_value / emit_sequence;
+        // Top-level anchor/tag: emit the prefix on its own line before the entries.
+        // Nested metadata is already emitted by emit_mapping_value / emit_sequence;
         // all non-top-level calls to emit_mapping pass indent > 0.
-        if indent == 0
-            && let Some(anchor) = &m.meta.anchor
-        {
-            self.out.write_char('&')?;
-            self.out.write_str(anchor)?;
-            self.out.write_char('\n')?;
+        if indent == 0 {
+            self.write_anchor_tag_line(m.meta.anchor.as_deref(), m.meta.tag.as_deref())?;
         }
         if m.entries.is_empty() {
             return self.out.write_str("{}\n");
@@ -428,7 +459,8 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
                 }
             }
             if let Some(tag) = tag {
-                self.out.write_str(&format_tag(tag))?;
+                self.out
+                    .write_str(&format_document_tag(tag, self.verbatim_tags))?;
                 if comment_inline.is_some() {
                     self.out.write_char(' ')?;
                 }
@@ -455,14 +487,10 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         if s.style == ContainerStyle::Flow {
             return self.emit_sequence_flow(s);
         }
-        // Top-level anchor: emit `&name` on its own line before the items.
+        // Top-level anchor/tag: emit the prefix on its own line before the items.
         // All non-top-level calls to emit_sequence pass indent > 0.
-        if indent == 0
-            && let Some(anchor) = &s.meta.anchor
-        {
-            self.out.write_char('&')?;
-            self.out.write_str(anchor)?;
-            self.out.write_char('\n')?;
+        if indent == 0 {
+            self.write_anchor_tag_line(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         }
         if s.items.is_empty() {
             return self.out.write_str("[]\n");
@@ -685,9 +713,12 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         //   Clip   → requires exactly 1 trailing AND at least one non-empty
         //            content line (clip drops all trailings when content is
         //            blank, so a `"\n"`-only value parses back as `""`)
-        //   Keep   → always consistent (preserves whatever is there)
+        //   Keep   → requires non-empty content (a header newline alone would
+        //            otherwise turn an empty value into a newline on reparse)
         let trailing_newlines = content.bytes().rev().take_while(|&b| b == b'\n').count();
-        let emit_count = if content.ends_with('\n') {
+        let emit_count = if content.is_empty() {
+            0
+        } else if content.ends_with('\n') {
             lines.len() - 1
         } else {
             lines.len()
@@ -696,7 +727,7 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         let chomping = match s.chomping {
             Some(Chomping::Strip) if trailing_newlines == 0 => "-",
             Some(Chomping::Clip) if trailing_newlines == 1 && has_content_line => "",
-            Some(Chomping::Keep) => "+",
+            Some(Chomping::Keep) if !content.is_empty() => "+",
             _ => match (trailing_newlines, has_content_line) {
                 (0, _) => "-",
                 (1, true) => "",
@@ -707,18 +738,14 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         };
         // Determine whether an explicit indentation indicator is needed:
         //
-        // Case A — every non-empty line starts with at least `min_leading` spaces:
-        //   The original used `|N` / `>N` with N = min_leading.  Emit with
-        //   content_indent = indent - min_leading so that the parser (using
-        //   base = self.indent + N) strips exactly (indent - min_leading) + N = indent
-        //   spaces, leaving the stored leading spaces in the value.
+        // Case A — every non-empty line starts with spaces: an explicit
+        //   indicator prevents those value spaces from becoming indentation.
         //
         // Case B — min_leading == 0 but the FIRST non-empty line starts with spaces:
         //   Auto-detection would pick that line's indentation as the base, which is
         //   larger than the emitter's content indent, causing lines at content_indent
-        //   to appear outside the scalar.  Force base = content_indent by emitting `>2`
-        //   (or `|2`).  The standard emitter increment is always 2, so
-        //   self.indent + 2 = content_indent in every nesting context.
+        //   to appear outside the scalar. Set an explicit indentation relative
+        //   to the parent, capped at YAML's maximum indicator of 9.
         //
         // Case C — min_leading == 0 and first non-empty line has no leading spaces:
         //   Auto-detection works correctly; no explicit indicator needed.
@@ -739,13 +766,14 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         let first_leading: usize = first_leading.unwrap_or(0);
 
         let (explicit_indicator, content_indent) = if min_leading > 0 {
-            // Case A
-            (min_leading, indent.saturating_sub(min_leading))
+            // The indicator sets indentation relative to the parent, not
+            // relative to the value's own leading spaces.
+            let indicator = min_leading.min(9);
+            (indicator, indent.saturating_sub(self.step) + indicator)
         } else if first_leading > 0 {
-            // Case B — explicit indicator equals the indent step so that the parser
-            // (using base = parent_indent + N) strips exactly content_indent + N = indent
-            // spaces, leaving the stored leading spaces in the value.
-            (self.step, indent)
+            // Case B — use the configured step when representable as a digit.
+            let indicator = self.step.min(9);
+            (indicator, indent.saturating_sub(self.step) + indicator)
         } else {
             // Case C
             (0, indent)
@@ -822,7 +850,13 @@ impl<'w, W: FmtWrite> Emitter<'w, W> {
         self.write_anchor_tag_inline(s.meta.anchor.as_deref(), s.meta.tag.as_deref())?;
         // Use preserved source text when available (e.g. float exponent form `1.5e10`,
         // non-canonical null/bool/int forms, tagged plain scalars).
-        if let Some(orig) = s.original() {
+        // A tagged multi-line plain scalar's "original" is its already-folded
+        // logical value, not source spelling. Emitting those line breaks raw
+        // would fold them again on every parse, so route controls through the
+        // normal quoting path instead.
+        if let Some(orig) = s.original()
+            && !needs_double_quote(orig)
+        {
             return self.out.write_str(orig);
         }
         self.out.write_str(&emit_scalar_value_with_style(
@@ -865,6 +899,15 @@ fn emit_scalar_value_with_style(
         }
         ScalarValue::Str(s) => Cow::Owned(emit_string_with_style(s, style, flow_context)),
     }
+}
+
+fn simple_key_too_long(rendered: &str, meta: &NodeMeta, verbatim_tags: bool) -> bool {
+    rendered.chars().count()
+        + meta.anchor.as_ref().map_or(0, |s| s.chars().count() + 2)
+        + meta.tag.as_ref().map_or(0, |s| {
+            format_document_tag(s, verbatim_tags).chars().count() + 1
+        })
+        > 1024
 }
 
 /// Emit a key string with its original quoting style.
@@ -1064,9 +1107,14 @@ fn needs_quoting(s: &str, flow_context: bool) -> bool {
     if would_parse_as_non_string(s) {
         return true;
     }
-    // Document-start/end markers: emitting plain would collide with
-    // directive-end / document-end markers on re-parse.
-    if s == "---" || s == "..." {
+    // Document-start/end markers: emitting plain would collide with a marker
+    // on re-parse. A marker may be followed by YAML whitespace, including a
+    // tab, before other content.
+    if ["---", "..."].iter().any(|marker| {
+        s.strip_prefix(marker).is_some_and(|rest| {
+            rest.is_empty() || rest.as_bytes().first().is_some_and(u8::is_ascii_whitespace)
+        })
+    }) {
         return true;
     }
     let b = s.as_bytes();
@@ -1136,8 +1184,27 @@ fn indent_str(indent: usize) -> Cow<'static, str> {
 /// - `tag:yaml.org,2002:T` → `!!T`  (built-in YAML secondary handle)
 /// - `!…` (already starts with `!`) → returned unchanged  (`!custom`, `!local`, …)
 /// - any other full URI `tag:…` → `!<tag:…>`  (YAML verbatim-tag form)
+fn format_document_tag(tag: &str, verbatim_tags: bool) -> Cow<'_, str> {
+    if !verbatim_tags {
+        return format_tag(tag);
+    }
+    let expanded = match tag.strip_prefix("!!") {
+        Some(suffix) if !suffix.is_empty() => format!("tag:yaml.org,2002:{suffix}"),
+        _ => tag.to_owned(),
+    };
+    Cow::Owned(format!("!<{}>", pct_encode_uri(&expanded)))
+}
+
+fn has_redefined_default_handle(doc: &ArenaDocument) -> bool {
+    doc.meta.tag_directives.iter().any(|(handle, prefix)| {
+        (handle == "!" && prefix != "!") || (handle == "!!" && prefix != "tag:yaml.org,2002:")
+    })
+}
+
 fn format_tag(tag: &str) -> Cow<'_, str> {
-    if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
+    if tag == "!!" || tag == "tag:yaml.org,2002:" {
+        Cow::Owned(format!("!<{tag}>"))
+    } else if let Some(suffix) = tag.strip_prefix("tag:yaml.org,2002:") {
         Cow::Owned(format!("!!{}", pct_encode_shorthand(suffix)))
     } else if let Some(suffix) = tag.strip_prefix("!!") {
         Cow::Owned(format!("!!{}", pct_encode_shorthand(suffix)))
@@ -1166,12 +1233,12 @@ fn pct_encode_uri(s: &str) -> Cow<'_, str> {
 }
 
 fn pct_encode_with(s: &str, is_allowed: fn(char) -> bool) -> Cow<'_, str> {
-    if s.chars().all(|c| c.is_ascii() && is_allowed(c)) {
+    if s.chars().all(|c| c.is_ascii() && c != '%' && is_allowed(c)) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_ascii() && is_allowed(c) {
+        if c.is_ascii() && c != '%' && is_allowed(c) {
             out.push(c);
         } else {
             let mut buf = [0u8; 4];
@@ -1210,6 +1277,8 @@ struct ArenaEmitter<'a, 'w, W: FmtWrite> {
     doc: &'a ArenaDocument,
     out: &'w mut W,
     step: usize,
+    preserve_first_spacing: bool,
+    verbatim_tags: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1232,8 +1301,19 @@ enum ArenaOp {
 }
 
 impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
-    fn new(doc: &'a ArenaDocument, out: &'w mut W, step: usize) -> Self {
-        Self { doc, out, step }
+    fn new(
+        doc: &'a ArenaDocument,
+        out: &'w mut W,
+        step: usize,
+        preserve_first_spacing: bool,
+    ) -> Self {
+        Self {
+            doc,
+            out,
+            step,
+            preserve_first_spacing,
+            verbatim_tags: has_redefined_default_handle(doc),
+        }
     }
 
     fn write_anchor_tag_inline(&mut self, meta: &NodeMeta) -> fmt::Result {
@@ -1241,7 +1321,11 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
             write!(self.out, "&{anchor} ")?;
         }
         if let Some(tag) = &meta.tag {
-            write!(self.out, "{} ", format_tag(tag))?;
+            write!(
+                self.out,
+                "{} ",
+                format_document_tag(tag, self.verbatim_tags)
+            )?;
         }
         Ok(())
     }
@@ -1251,20 +1335,24 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
             write!(self.out, " &{anchor}")?;
         }
         if let Some(tag) = &meta.tag {
-            write!(self.out, " {}", format_tag(tag))?;
+            write!(
+                self.out,
+                " {}",
+                format_document_tag(tag, self.verbatim_tags)
+            )?;
         }
         Ok(())
     }
 
     fn finish_line(&mut self, id: NodeId) -> fmt::Result {
         let comment = self.doc.node(id).meta().comment_inline.as_deref();
-        let mut helper = Emitter::new(self.out, self.step);
+        let mut helper = Emitter::new(self.out, self.step).with_verbatim_tags(self.verbatim_tags);
         helper.finish_inline_line(comment)
     }
 
     fn before_node(&mut self, id: NodeId, indent: usize) -> fmt::Result {
         let meta = self.doc.node(id).meta();
-        let mut helper = Emitter::new(self.out, self.step);
+        let mut helper = Emitter::new(self.out, self.step).with_verbatim_tags(self.verbatim_tags);
         helper.write_blank_lines(meta.blank_lines_before)?;
         helper.emit_comment_before(meta.comment_before.as_deref(), indent)
     }
@@ -1276,7 +1364,7 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
         flow_context: bool,
         inline_comment: Option<&str>,
     ) -> fmt::Result {
-        let mut helper = Emitter::new(self.out, self.step);
+        let mut helper = Emitter::new(self.out, self.step).with_verbatim_tags(self.verbatim_tags);
         if is_block_scalar(scalar) {
             let effective = if indent == 0 { self.step } else { indent };
             helper.emit_block_scalar(scalar, effective, inline_comment)
@@ -1304,7 +1392,8 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                 },
             };
             self.out.write_str("? ")?;
-            let mut helper = Emitter::new(self.out, self.step);
+            let mut helper =
+                Emitter::new(self.out, self.step).with_verbatim_tags(self.verbatim_tags);
             helper.emit_block_scalar(&scalar, indent + self.step, None)?;
             write!(self.out, "{}:", indent_str(indent))
         } else {
@@ -1313,12 +1402,18 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                 tag: entry.key_tag.clone(),
                 ..NodeMeta::default()
             };
+            let rendered = emit_key(entry.key.as_scalar().unwrap_or(""), entry.key_style, false);
+            // YAML simple keys are limited to 1024 source characters. Escaping
+            // control characters can make an otherwise short key exceed it.
+            let explicit = simple_key_too_long(&rendered, &meta, self.verbatim_tags);
+            if explicit {
+                self.out.write_str("? ")?;
+            }
             self.write_anchor_tag_inline(&meta)?;
-            self.out.write_str(&emit_key(
-                entry.key.as_scalar().unwrap_or(""),
-                entry.key_style,
-                false,
-            ))?;
+            self.out.write_str(&rendered)?;
+            if explicit {
+                write!(self.out, "\n{}", indent_str(indent))?;
+            }
             self.out.write_char(':')
         }
     }
@@ -1328,10 +1423,17 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
         id: NodeId,
         indent: usize,
         flow_context: bool,
+        preserve_first_spacing: bool,
     ) -> Result<String, fmt::Error> {
         let mut tmp = String::new();
-        ArenaEmitter::new(self.doc, &mut tmp, self.step).run(id, indent, flow_context)?;
-        Ok(tmp.trim_end_matches('\n').to_owned())
+        ArenaEmitter::new(self.doc, &mut tmp, self.step, preserve_first_spacing).run(
+            id,
+            indent,
+            flow_context,
+        )?;
+        // Only the final line terminator belongs to the surrounding syntax.
+        // Earlier newlines may be semantic content of a keep-chomped scalar.
+        Ok(tmp.strip_suffix('\n').unwrap_or(&tmp).to_owned())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1364,7 +1466,7 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                         }
                     );
                     if needs_strip {
-                        let rendered = self.emit_inline_to_temp(id, indent, flow)?;
+                        let rendered = self.emit_inline_to_temp(id, indent, flow, true)?;
                         self.out.write_str(&rendered)?;
                     } else {
                         ops.push(ArenaOp::Node(id, indent, flow));
@@ -1384,10 +1486,11 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                         ops.push(ArenaOp::MappingFlow(id));
                         continue;
                     }
-                    if indent == 0
-                        && let Some(anchor) = &meta.anchor
-                    {
-                        writeln!(self.out, "&{anchor}")?;
+                    if indent == 0 {
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper
+                            .write_anchor_tag_line(meta.anchor.as_deref(), meta.tag.as_deref())?;
                     }
                     if entries.is_empty() {
                         self.out.write_str("{}\n")?;
@@ -1405,7 +1508,14 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                     let Some(entry) = entries.get(index) else {
                         continue;
                     };
-                    self.before_node(entry.value, indent)?;
+                    if index == 0 && !self.preserve_first_spacing {
+                        let comment = self.doc.node(entry.value).meta().comment_before.as_deref();
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper.emit_comment_before(comment, indent)?;
+                    } else {
+                        self.before_node(entry.value, indent)?;
+                    }
                     self.out.write_str(&indent_str(indent))?;
                     ops.push(ArenaOp::MappingEntry(id, index + 1, indent));
                     ops.push(ArenaOp::MappingValue(id, index, indent));
@@ -1425,7 +1535,7 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             self.out.write_char('\n')?;
                         }
                         let rendered =
-                            self.emit_inline_to_temp(key_id, indent + self.step, false)?;
+                            self.emit_inline_to_temp(key_id, indent + self.step, false, false)?;
                         self.out.write_str(&rendered)?;
                         write!(self.out, "\n{}:", indent_str(indent))?;
                     } else {
@@ -1466,19 +1576,17 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             self.finish_line(value)?;
                             ops.push(ArenaOp::Sequence(value, indent + self.step));
                         }
-                        ArenaNode::Mapping { .. } => {
-                            let mut helper = Emitter::new(self.out, self.step);
-                            helper.push_inline_comment(
-                                self.doc.node(value).meta().comment_inline.as_deref(),
-                            )?;
-                            self.out.write_str(" {}\n")?;
+                        ArenaNode::Mapping { meta, .. } => {
+                            self.out.write_char(' ')?;
+                            self.write_anchor_tag_inline(meta)?;
+                            self.out.write_str("{}")?;
+                            self.finish_line(value)?;
                         }
-                        ArenaNode::Sequence { .. } => {
-                            let mut helper = Emitter::new(self.out, self.step);
-                            helper.push_inline_comment(
-                                self.doc.node(value).meta().comment_inline.as_deref(),
-                            )?;
-                            self.out.write_str(" []\n")?;
+                        ArenaNode::Sequence { meta, .. } => {
+                            self.out.write_char(' ')?;
+                            self.write_anchor_tag_inline(meta)?;
+                            self.out.write_str("[]")?;
+                            self.finish_line(value)?;
                         }
                         ArenaNode::Scalar(scalar) if is_block_scalar(scalar) => {
                             self.out.write_char(' ')?;
@@ -1517,7 +1625,7 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                         self.out.write_str(", ")?;
                     }
                     if let Some(key_node) = entry.key_node {
-                        let key = self.emit_inline_to_temp(key_node, 0, true)?;
+                        let key = self.emit_inline_to_temp(key_node, 0, true, true)?;
                         self.out.write_str(&key)?;
                     } else if let Some(alias) = &entry.key_alias {
                         write!(self.out, "*{alias} ")?;
@@ -1527,12 +1635,13 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             tag: entry.key_tag.clone(),
                             ..NodeMeta::default()
                         };
+                        let rendered =
+                            emit_key(entry.key.as_scalar().unwrap_or(""), entry.key_style, true);
+                        if simple_key_too_long(&rendered, &meta, self.verbatim_tags) {
+                            self.out.write_str("? ")?;
+                        }
                         self.write_anchor_tag_inline(&meta)?;
-                        self.out.write_str(&emit_key(
-                            entry.key.as_scalar().unwrap_or(""),
-                            entry.key_style,
-                            true,
-                        ))?;
+                        self.out.write_str(&rendered)?;
                     }
                     self.out.write_str(": ")?;
                     ops.push(ArenaOp::MappingFlowEntry(id, index + 1));
@@ -1552,10 +1661,11 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                         ops.push(ArenaOp::SequenceFlow(id));
                         continue;
                     }
-                    if indent == 0
-                        && let Some(anchor) = &meta.anchor
-                    {
-                        writeln!(self.out, "&{anchor}")?;
+                    if indent == 0 {
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper
+                            .write_anchor_tag_line(meta.anchor.as_deref(), meta.tag.as_deref())?;
                     }
                     if items.is_empty() {
                         self.out.write_str("[]\n")?;
@@ -1573,7 +1683,14 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                     let Some(&item) = items.get(index) else {
                         continue;
                     };
-                    self.before_node(item, indent)?;
+                    if index == 0 && !self.preserve_first_spacing {
+                        let comment = self.doc.node(item).meta().comment_before.as_deref();
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper.emit_comment_before(comment, indent)?;
+                    } else {
+                        self.before_node(item, indent)?;
+                    }
                     write!(self.out, "{}- ", indent_str(indent))?;
                     ops.push(ArenaOp::SequenceItem(id, index + 1, indent));
                     match self.doc.node(item) {
@@ -1590,6 +1707,7 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             if meta.anchor.is_some()
                                 || meta.tag.is_some()
                                 || meta.comment_inline.is_some()
+                                || entries.iter().any(|entry| entry.key_node.is_some())
                             {
                                 self.write_anchor_tag_inline(meta)?;
                                 if let Some(comment) = &meta.comment_inline {
@@ -1622,11 +1740,13 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                                 ops.push(ArenaOp::SequenceInlineFirst(item, 0, indent + self.step));
                             }
                         }
-                        ArenaNode::Mapping { .. } => {
+                        ArenaNode::Mapping { meta, .. } => {
+                            self.write_anchor_tag_inline(meta)?;
                             self.out.write_str("{}")?;
                             self.finish_line(item)?;
                         }
-                        ArenaNode::Sequence { .. } => {
+                        ArenaNode::Sequence { meta, .. } => {
+                            self.write_anchor_tag_inline(meta)?;
                             self.out.write_str("[]")?;
                             self.finish_line(item)?;
                         }
@@ -1681,21 +1801,37 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                     }
                 }
                 ArenaOp::MappingInlineFirst(id, index, indent) => {
-                    let ArenaNode::Mapping { entries, .. } = self.doc.node(id) else {
+                    let ArenaNode::Mapping {
+                        entries,
+                        trailing_blank_lines,
+                        ..
+                    } = self.doc.node(id)
+                    else {
                         unreachable!()
                     };
                     let Some(entry) = entries.get(index) else {
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper.write_blank_lines(*trailing_blank_lines)?;
                         continue;
                     };
                     if entry.value.0 > self.doc.nodes.len() {
                         unreachable!()
                     }
                     let before = self.doc.node(entry.value).meta().comment_before.as_deref();
+                    if index > 0 {
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper.write_blank_lines(
+                            self.doc.node(entry.value).meta().blank_lines_before,
+                        )?;
+                    }
                     if let Some(comment) = before {
                         if index == 0 {
                             self.out.write_char('\n')?;
                         }
-                        let mut helper = Emitter::new(self.out, self.step);
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
                         helper.emit_comment_before(Some(comment), indent)?;
                         self.out.write_str(&indent_str(indent))?;
                     } else if index > 0 {
@@ -1706,22 +1842,32 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                     ops.push(ArenaOp::MappingValue(id, index, indent));
                 }
                 ArenaOp::SequenceInlineFirst(id, index, indent) => {
-                    let ArenaNode::Sequence { items, .. } = self.doc.node(id) else {
+                    let ArenaNode::Sequence {
+                        items,
+                        trailing_blank_lines,
+                        ..
+                    } = self.doc.node(id)
+                    else {
                         unreachable!()
                     };
                     let Some(&item) = items.get(index) else {
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
+                        helper.write_blank_lines(*trailing_blank_lines)?;
                         continue;
                     };
                     let meta = self.doc.node(item).meta();
                     if index > 0 {
-                        let mut helper = Emitter::new(self.out, self.step);
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
                         helper.write_blank_lines(meta.blank_lines_before)?;
                     }
                     if let Some(before) = meta.comment_before.as_deref() {
                         if index == 0 {
                             self.out.write_char('\n')?;
                         }
-                        let mut helper = Emitter::new(self.out, self.step);
+                        let mut helper = Emitter::new(self.out, self.step)
+                            .with_verbatim_tags(self.verbatim_tags);
                         helper.emit_comment_before(Some(before), indent)?;
                         self.out.write_str(&indent_str(indent))?;
                     } else if index > 0 {
@@ -1740,12 +1886,16 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             ops.push(ArenaOp::MappingFlow(item));
                         }
                         ArenaNode::Mapping { entries, .. } if !entries.is_empty() => {
-                            if meta.comment_inline.is_some() {
-                                writeln!(
-                                    self.out,
-                                    "# {}",
-                                    meta.comment_inline.as_deref().unwrap()
-                                )?;
+                            if meta.comment_inline.is_some()
+                                || meta.anchor.is_some()
+                                || meta.tag.is_some()
+                                || entries.iter().any(|entry| entry.key_node.is_some())
+                            {
+                                self.write_anchor_tag_inline(meta)?;
+                                if let Some(comment) = &meta.comment_inline {
+                                    write!(self.out, "# {comment}")?;
+                                }
+                                self.out.write_char('\n')?;
                                 ops.push(ArenaOp::Mapping(item, indent + self.step));
                             } else {
                                 ops.push(ArenaOp::MappingInlineFirst(item, 0, indent + self.step));
@@ -1758,22 +1908,27 @@ impl<'a, 'w, W: FmtWrite> ArenaEmitter<'a, 'w, W> {
                             ops.push(ArenaOp::SequenceFlow(item));
                         }
                         ArenaNode::Sequence { items, .. } if !items.is_empty() => {
-                            if meta.comment_inline.is_some() {
-                                writeln!(
-                                    self.out,
-                                    "# {}",
-                                    meta.comment_inline.as_deref().unwrap()
-                                )?;
+                            if meta.comment_inline.is_some()
+                                || meta.anchor.is_some()
+                                || meta.tag.is_some()
+                            {
+                                self.write_anchor_tag_inline(meta)?;
+                                if let Some(comment) = &meta.comment_inline {
+                                    write!(self.out, "# {comment}")?;
+                                }
+                                self.out.write_char('\n')?;
                                 ops.push(ArenaOp::Sequence(item, indent + self.step));
                             } else {
                                 ops.push(ArenaOp::SequenceInlineFirst(item, 0, indent + self.step));
                             }
                         }
                         ArenaNode::Mapping { .. } => {
+                            self.write_anchor_tag_inline(meta)?;
                             self.out.write_str("{}")?;
                             self.finish_line(item)?;
                         }
                         ArenaNode::Sequence { .. } => {
+                            self.write_anchor_tag_inline(meta)?;
                             self.out.write_str("[]")?;
                             self.finish_line(item)?;
                         }
@@ -1810,36 +1965,50 @@ pub fn emit_arena_docs_to<W: FmtWrite>(
     let step = if indent_step == 0 { 2 } else { indent_step };
     for doc in docs {
         let meta = &doc.meta;
-        if meta.yaml_version.is_some()
+        let emits_start_marker = meta.yaml_version.is_some()
             || !meta.tag_directives.is_empty()
             || docs.len() > 1
-            || meta.explicit_start
-        {
+            || meta.explicit_start;
+        if emits_start_marker {
             if let Some((major, minor)) = meta.yaml_version {
                 writeln!(out, "%YAML {major}.{minor}")?;
             }
             for (handle, prefix) in &meta.tag_directives {
-                writeln!(out, "%TAG {handle} {prefix}")?;
+                writeln!(out, "%TAG {handle} {}", pct_encode_uri(prefix))?;
             }
             out.write_str("---\n")?;
         }
         let mut tracker = LastCharTracker::new(&mut *out);
         {
             let root_meta = doc.node(doc.root).meta();
-            let mut helper = Emitter::new(&mut tracker, step);
+            let mut helper = Emitter::new(&mut tracker, step)
+                .with_verbatim_tags(has_redefined_default_handle(doc));
             helper.write_blank_lines(root_meta.blank_lines_before)?;
             helper.emit_comment_before(root_meta.comment_before.as_deref(), 0)?;
         }
         if let ArenaNode::Scalar(scalar) = doc.node(doc.root) {
-            let mut helper = Emitter::new(&mut tracker, step);
+            let mut helper = Emitter::new(&mut tracker, step)
+                .with_verbatim_tags(has_redefined_default_handle(doc));
             if is_block_scalar(scalar) {
                 helper.emit_block_scalar(scalar, step, scalar.meta.comment_inline.as_deref())?;
+            } else if scalar.original() == Some("")
+                && scalar.meta.anchor.is_none()
+                && scalar.meta.tag.is_none()
+            {
+                // An implicit null has no text to put an inline comment after.
+                helper.emit_comment_before(scalar.meta.comment_inline.as_deref(), 0)?;
             } else {
                 helper.emit_scalar(scalar, false)?;
                 helper.push_inline_comment(scalar.meta.comment_inline.as_deref())?;
             }
         } else {
-            ArenaEmitter::new(doc, &mut tracker, step).run(doc.root, 0, false)?;
+            let root_meta = doc.node(doc.root).meta();
+            let preserve_first_spacing = emits_start_marker
+                || root_meta.comment_before.is_some()
+                || root_meta.anchor.is_some()
+                || root_meta.tag.is_some();
+            ArenaEmitter::new(doc, &mut tracker, step, preserve_first_spacing)
+                .run(doc.root, 0, false)?;
         }
         if !tracker.ends_with_newline() {
             tracker.write_char('\n')?;

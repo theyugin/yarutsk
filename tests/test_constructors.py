@@ -950,18 +950,23 @@ class TestCombinedFromScratch:
 class TestKnownLimitations:
     """Document known emitter limitations so they don't become surprise failures."""
 
-    def test_top_level_mapping_tag_not_emitted(self) -> None:
-        # Tags on a top-level mapping document are currently not emitted.
-        # This is a pre-existing emitter limitation, not specific to constructors.
+    def test_top_level_mapping_tag_emitted(self) -> None:
         m = yarutsk.YamlMapping(tag="!top")
         m["k"] = "v"
-        assert "!top" not in yarutsk.dumps(m)  # tag is silently dropped by the emitter
+        out = yarutsk.dumps(m)
+        assert out == "!top\nk: v\n"
+        loaded = yarutsk.loads(out)
+        assert loaded is not None
+        assert loaded.tag == "!top"
 
-    def test_top_level_sequence_tag_not_emitted(self) -> None:
-        # Same limitation for top-level sequences.
+    def test_top_level_sequence_tag_emitted(self) -> None:
         s = yarutsk.YamlSequence(tag="!top")
         s.append(1)
-        assert "!top" not in yarutsk.dumps(s)
+        out = yarutsk.dumps(s)
+        assert out == "!top\n- 1\n"
+        loaded = yarutsk.loads(out)
+        assert loaded is not None
+        assert loaded.tag == "!top"
 
     def test_non_string_scalar_style_not_applied(self) -> None:
         # Requesting double-quoted style on an int/float/bool/null scalar

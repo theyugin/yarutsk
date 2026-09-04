@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-05
+
+### Fixed
+- Preserve comments and blank-line placement around quoted roots, implicit nulls, block scalars, collection boundaries, and nested sequence items.
+- Preserve block-scalar indentation and chomping, complex mapping keys, and tags and anchors on empty or nested containers when dumping.
+- Quote scalar spellings that would otherwise change parsing, and emit oversized mapping keys using explicit-key syntax.
+- Restore an anchor at its first surviving alias when the original definition was removed or overwritten.
+- Correct UTF-8 percent-decoding in tags, percent-encode directive prefixes, and use verbatim tags when default tag handles are redefined.
+- Accept flow plain scalars ending in a separated dash.
+
+### Internal
+- Run fuzz targets with the GNU target on Linux and seed all four corpora from the pinned YAML test suite's actual fixture format.
+- Treat failures to parse emitted YAML as fuzz failures instead of silently ignoring them; add focused regression coverage and YAML-suite emission checks.
+- Refresh the vendored yaml-rust2 patch to match the in-tree scanner and parser changes.
+
+### Known limitations
+- Fuzzing exposed further emission-idempotence edge cases. A clean final idempotence run was not established; the checks remain enabled, and this release does not claim byte-stable output for every accepted YAML input.
+
 ## [0.9.0] - 2026-08-28
 
 ### Fixed
@@ -262,7 +280,8 @@ Breaking API refresh: every per-key/per-index accessor is now a `get_/set_` pair
 ### Changed
 - Significant internal refactor of the Rust data model and PyO3 bindings.
 
-[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/theyugin/yarutsk/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/theyugin/yarutsk/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/theyugin/yarutsk/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/theyugin/yarutsk/compare/v0.8.2...v0.8.3
 [0.8.0]: https://github.com/theyugin/yarutsk/compare/v0.7.8...v0.8.0

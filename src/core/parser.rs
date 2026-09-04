@@ -70,9 +70,10 @@ pub enum Event {
     /// Value, style, anchor name (None if no anchor), tag, end-line,
     /// source chomping indicator.
     ///
-    /// - `end_line` — 0-indexed line of the scalar's last source line when
-    ///   the scalar spans multiple lines (block `|` / `>`, or a wrapped
-    ///   quoted scalar). `None` for single-line scalars. The builder uses
+    /// - `end_line` — 1-based source line boundary for a multiline scalar:
+    ///   exclusive for block scalars, inclusive for wrapped quoted scalars.
+    ///   Strip/clip block scalars exclude discarded trailing blank lines.
+    ///   `None` for single-line scalars. The builder uses
     ///   this to advance `last_content_line` correctly for folded/chomped
     ///   values whose newline count no longer reflects the source.
     /// - `chomping` — the chomping indicator for block scalars only
@@ -730,7 +731,9 @@ impl<T: Iterator<Item = char>> Parser<T> {
         self.anchor_names.get(&id).cloned()
     }
 
+    #[allow(clippy::too_many_lines)] // Dispatch scalar, alias, and container nodes with their properties.
     fn parse_node(&mut self, block: bool, indentless_sequence: bool) -> ParseResult {
+        let node_mark = self.peek_token()?.0;
         let mut anchor_name: Option<String> = None;
         let mut tag = None;
         match *self.peek_token()? {
@@ -780,10 +783,14 @@ impl<T: Iterator<Item = char>> Parser<T> {
             _ => {}
         }
         let has_anchor = anchor_name.is_some();
+        let property_mark = (has_anchor || tag.is_some()).then_some(node_mark);
         match *self.peek_token()? {
             Token(mark, TokenType::BlockEntry) if indentless_sequence => {
                 self.state = State::IndentlessSequenceEntry;
-                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
+                Ok((
+                    Event::SequenceStart(anchor_name, tag, false),
+                    property_mark.unwrap_or(mark),
+                ))
             }
             Token(_, TokenType::Scalar(..)) => {
                 self.pop_state();
@@ -808,16 +815,22 @@ impl<T: Iterator<Item = char>> Parser<T> {
             }
             Token(mark, TokenType::BlockSequenceStart) if block => {
                 self.state = State::BlockSequenceFirstEntry;
-                Ok((Event::SequenceStart(anchor_name, tag, false), mark))
+                Ok((
+                    Event::SequenceStart(anchor_name, tag, false),
+                    property_mark.unwrap_or(mark),
+                ))
             }
             Token(mark, TokenType::BlockMappingStart) if block => {
                 self.state = State::BlockMappingFirstKey;
-                Ok((Event::MappingStart(anchor_name, tag, false), mark))
+                Ok((
+                    Event::MappingStart(anchor_name, tag, false),
+                    property_mark.unwrap_or(mark),
+                ))
             }
             // ex 7.2, an empty scalar can follow a secondary tag
-            Token(mark, _) if tag.is_some() || has_anchor => {
+            Token(_, _) if tag.is_some() || has_anchor => {
                 self.pop_state();
-                Ok((Event::empty_scalar_with_anchor(anchor_name, tag), mark))
+                Ok((Event::empty_scalar_with_anchor(anchor_name, tag), node_mark))
             }
             Token(mark, _) => Err(ScanError::new(
                 mark,
@@ -834,14 +847,14 @@ impl<T: Iterator<Item = char>> Parser<T> {
             self.skip();
         }
         match *self.peek_token()? {
-            Token(_, TokenType::Key) => {
+            Token(key_mark, TokenType::Key) => {
                 self.skip();
-                if let Token(mark, TokenType::Key | TokenType::Value | TokenType::BlockEnd) =
+                if let Token(_, TokenType::Key | TokenType::Value | TokenType::BlockEnd) =
                     *self.peek_token()?
                 {
                     self.state = State::BlockMappingValue;
                     // empty scalar
-                    Ok((Event::empty_scalar(), mark))
+                    Ok((Event::empty_scalar(), key_mark))
                 } else {
                     self.push_state(State::BlockMappingValue);
                     self.parse_node(true, true)
@@ -866,17 +879,24 @@ impl<T: Iterator<Item = char>> Parser<T> {
 
     fn block_mapping_value(&mut self) -> ParseResult {
         match *self.peek_token()? {
-            Token(_, TokenType::Value) => {
+            Token(value_mark, TokenType::Value) => {
                 self.skip();
-                if let Token(mark, TokenType::Key | TokenType::Value | TokenType::BlockEnd) =
+                if let Token(_, TokenType::Key | TokenType::Value | TokenType::BlockEnd) =
                     *self.peek_token()?
                 {
                     self.state = State::BlockMappingKey;
                     // empty scalar
-                    Ok((Event::empty_scalar(), mark))
+                    Ok((Event::empty_scalar(), value_mark))
                 } else {
                     self.push_state(State::BlockMappingKey);
-                    self.parse_node(true, true)
+                    let (event, mark) = self.parse_node(true, true)?;
+                    let mark =
+                        if matches!(event, Event::MappingStart(..) | Event::SequenceStart(..)) {
+                            value_mark
+                        } else {
+                            mark
+                        };
+                    Ok((event, mark))
                 }
             }
             Token(mark, _) => {
@@ -1013,24 +1033,24 @@ impl<T: Iterator<Item = char>> Parser<T> {
     }
 
     fn indentless_sequence_entry(&mut self) -> ParseResult {
-        match *self.peek_token()? {
-            Token(_, TokenType::BlockEntry) => (),
+        let entry_mark = match *self.peek_token()? {
+            Token(mark, TokenType::BlockEntry) => mark,
             Token(mark, _) => {
                 self.pop_state();
                 return Ok((Event::SequenceEnd, mark));
             }
-        }
+        };
         self.skip();
         if let Token(
-            mark,
+            _,
             TokenType::BlockEntry | TokenType::Key | TokenType::Value | TokenType::BlockEnd,
         ) = *self.peek_token()?
         {
             self.state = State::IndentlessSequenceEntry;
-            Ok((Event::empty_scalar(), mark))
+            Ok((Event::empty_scalar(), entry_mark))
         } else {
             self.push_state(State::IndentlessSequenceEntry);
-            self.parse_node(true, false)
+            self.parse_sequence_item(entry_mark)
         }
     }
 
@@ -1047,16 +1067,14 @@ impl<T: Iterator<Item = char>> Parser<T> {
                 self.skip();
                 Ok((Event::SequenceEnd, mark))
             }
-            Token(_, TokenType::BlockEntry) => {
+            Token(entry_mark, TokenType::BlockEntry) => {
                 self.skip();
-                if let Token(mark, TokenType::BlockEntry | TokenType::BlockEnd) =
-                    *self.peek_token()?
-                {
+                if let Token(_, TokenType::BlockEntry | TokenType::BlockEnd) = *self.peek_token()? {
                     self.state = State::BlockSequenceEntry;
-                    Ok((Event::empty_scalar(), mark))
+                    Ok((Event::empty_scalar(), entry_mark))
                 } else {
                     self.push_state(State::BlockSequenceEntry);
-                    self.parse_node(true, false)
+                    self.parse_sequence_item(entry_mark)
                 }
             }
             Token(mark, _) => Err(ScanError::new(
@@ -1064,6 +1082,16 @@ impl<T: Iterator<Item = char>> Parser<T> {
                 "while parsing a block collection, did not find expected '-' indicator",
             )),
         }
+    }
+
+    fn parse_sequence_item(&mut self, entry_mark: Marker) -> ParseResult {
+        let (event, mark) = self.parse_node(true, false)?;
+        let mark = if matches!(event, Event::MappingStart(..) | Event::SequenceStart(..)) {
+            entry_mark
+        } else {
+            mark
+        };
+        Ok((event, mark))
     }
 
     fn flow_sequence_entry_mapping_key(&mut self) -> ParseResult {

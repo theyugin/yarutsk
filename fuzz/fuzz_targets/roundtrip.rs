@@ -35,8 +35,6 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let out = emit_docs(&b1.docs, &b1.docs_meta, 2);
-    let Some(b2) = parse(&out) else {
-        return;
-    };
+    let b2 = parse(&out).expect("emitted YAML must reparse within the event budget");
     assert_eq!(b1.docs.len(), b2.docs.len(), "doc count drift on re-parse");
 });

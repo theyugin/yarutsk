@@ -5,10 +5,77 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from textwrap import dedent
+from typing import Literal
 
 import pytest
 
 import yarutsk
+
+
+def test_redefined_primary_handle_uses_verbatim_tag() -> None:
+    src = "%TAG ! ...\n%TAG !m! !m,y\n---\n!m!light green\n"
+    assert yarutsk.dumps(yarutsk.loads(src)) == (
+        "%TAG ! ...\n%TAG !m! !m,y\n---\n!<!m,ylight> green\n"
+    )
+
+
+def test_flow_plain_scalar_ending_in_dash_reparses() -> None:
+    doc = yarutsk.loads("[na:e - , next]\n")
+    out = yarutsk.dumps(doc)
+    assert out == "[na:e -, next]\n"
+    assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+
+def test_verbatim_double_bang_tag_does_not_become_empty_shorthand() -> None:
+    out = yarutsk.dumps(yarutsk.loads("!<!!>"))
+    assert out.startswith("!<!!>")
+    assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+
+@pytest.mark.parametrize("escaped", ["%20", "%25", "%09", "%C3%A9", "%E2%82%AC", "%F0%9F%98%80"])
+def test_tag_directive_uri_is_percent_encoded(escaped: str) -> None:
+    src = f"%TAG !e! tag:example.com,{escaped}00:app/\n---\n!e!thing value\n"
+    out = yarutsk.dumps(yarutsk.loads(src))
+    assert f"%TAG !e! tag:example.com,{escaped}00:app/\n" in out
+    assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+
+@pytest.mark.parametrize("style", ["block", "flow"])
+def test_escaped_long_key_uses_explicit_syntax(style: Literal["block", "flow"]) -> None:
+    key = "\x01" * 300
+    doc = yarutsk.YamlMapping({key: "value"}, style=style)
+    out = yarutsk.dumps(doc)
+    assert "? " in out
+    loaded = yarutsk.loads(out)
+    assert isinstance(loaded, yarutsk.YamlMapping)
+    assert loaded[key] == "value"
+    assert yarutsk.dumps(loaded) == out
+
+
+@pytest.mark.parametrize("value", ["1", "[1, 2]", "{x: 1}", "{}", "[]"])
+def test_overwritten_anchor_restored_at_surviving_alias(value: str) -> None:
+    doc = yarutsk.loads(f"a: &x {value}\na: 2\nb: *x\nc: *x\n")
+    out = yarutsk.dumps(doc)
+    assert "b: &x " in out
+    assert "c: *x" in out
+    loaded = yarutsk.loads(out)
+    assert loaded is not None and doc is not None
+    assert loaded.to_python() == doc.to_python()
+    assert yarutsk.dumps(loaded) == out
+
+
+def test_overwritten_key_anchor_restored_at_alias_key() -> None:
+    doc = yarutsk.loads("&x a: 1\na: 2\n*x : 3\n")
+    out = yarutsk.dumps(doc)
+    assert yarutsk.dumps(yarutsk.loads(out)) == out
+
+
+@pytest.mark.parametrize(
+    "src", ["- - ? [key]\n    : value\n", "?\n - - - - ? - # comment\n", "? []: |\n"]
+)
+def test_nested_sequence_complex_keys_are_stable(src: str) -> None:
+    out = yarutsk.dumps(yarutsk.loads(src))
+    assert yarutsk.dumps(yarutsk.loads(out)) == out
 
 
 def test_deep_dump_does_not_use_native_call_stack() -> None:
@@ -264,6 +331,16 @@ class TestMultiDocument:
         out = io.StringIO()
         yarutsk.dump_all(docs, out)
         assert "---" not in out.getvalue()
+
+    @pytest.mark.parametrize("marker", ["---", "..."])
+    def test_scalar_marker_prefix_followed_by_tab_does_not_split_document(
+        self, marker: str
+    ) -> None:
+        value = f"{marker}\tvalue"
+        out = yarutsk.dumps_all([yarutsk.YamlScalar("first"), yarutsk.YamlScalar(value)])
+        docs = yarutsk.loads_all(out)
+        assert len(docs) == 2
+        assert docs[1] == value
 
     def test_docs_are_independent_objects(self) -> None:
         docs = yarutsk.load_all(io.StringIO(self.MULTI_DOC))

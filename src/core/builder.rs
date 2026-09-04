@@ -54,8 +54,7 @@ pub struct Builder {
     /// Quoted root scalars can expose their trailing comment before this
     /// happens, while plain root scalars expose it afterwards.
     current_doc_has_root: bool,
-    /// Line of the last SCALAR content token (key or value), for inline comment detection.
-    /// Only scalars update this; MappingEnd/SequenceEnd do not.
+    /// Last consumed content line, including container boundaries, for spacing.
     last_content_line: Option<usize>,
     /// Comments not yet associated with any node (before-key candidates).
     pending_before: Vec<(usize, String)>,
@@ -65,6 +64,8 @@ pub struct Builder {
     /// comment is drained into `absorb_comments` before the seq item / mapping
     /// entry has been inserted.  Consumed when the next scalar is added.
     pending_inline: Option<String>,
+    /// Block-end marks point at the next token, not a line accepting inline comments.
+    last_content_is_block_end: bool,
     /// Anchor table: maps anchor name → completed node, for alias resolution.
     /// `Rc` so each `*alias` shares storage with the anchor instead of cloning
     /// the whole subtree (avoids quadratic memory blow-up for docs with many
@@ -238,6 +239,7 @@ impl Builder {
             last_content_line: None,
             pending_before: Vec::new(),
             pending_inline: None,
+            last_content_is_block_end: false,
             anchor_table: HashMap::new(),
         }
     }
@@ -250,7 +252,7 @@ impl Builder {
     /// Process newly collected comments: inline if on same line as last scalar, else before-key.
     pub fn absorb_comments(&mut self, new_comments: Vec<(Marker, String)>) {
         for (mark, text) in new_comments {
-            if self.last_content_line == Some(mark.line()) {
+            if !self.last_content_is_block_end && self.last_content_line == Some(mark.line()) {
                 self.attach_inline(text);
             } else {
                 self.pending_before.push((mark.line(), text));
@@ -329,20 +331,29 @@ impl Builder {
     /// Take all pending before-comments with line < `node_line`, join with newline.
     fn take_before(&mut self, node_line: usize) -> Option<String> {
         let mut result: Option<String> = None;
-        for (_, text) in self
-            .pending_before
-            .drain(..)
-            .filter(|(l, _)| *l < node_line)
-        {
-            match result.as_mut() {
-                None => result = Some(text),
-                Some(r) => {
-                    r.push('\n');
-                    r.push_str(&text);
+        let pending = std::mem::take(&mut self.pending_before);
+        for (line, text) in pending {
+            if line < node_line {
+                match result.as_mut() {
+                    None => result = Some(text),
+                    Some(r) => {
+                        r.push('\n');
+                        r.push_str(&text);
+                    }
                 }
+            } else {
+                self.pending_before.push((line, text));
             }
         }
         result
+    }
+
+    fn take_container_inline(&mut self, line: usize) -> Option<String> {
+        if !matches!(self.stack.last(), Some(Frame::Mapping(mf)) if mf.pending.has_key()) {
+            return None;
+        }
+        let pos = self.pending_before.iter().position(|(l, _)| *l == line)?;
+        Some(self.pending_before.remove(pos).1)
     }
 
     /// Push a completed node into the current parent context.
@@ -387,6 +398,7 @@ impl Builder {
     /// Process a single parser event.
     #[allow(clippy::too_many_lines)] // single event-dispatch state machine
     pub fn process_event(&mut self, ev: Event, mark: Marker, policy: Option<&TagPolicy>) {
+        self.last_content_is_block_end = false;
         match ev {
             Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
 
@@ -434,21 +446,16 @@ impl Builder {
             }
 
             Event::MappingStart(anchor_name, tag, is_flow) => {
+                if self.stack.is_empty() && (anchor_name.is_some() || tag.is_some()) {
+                    self.last_content_line = Some(mark.line());
+                }
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
                     // Only drain before-comments when our parent is a sequence item;
                     // for mapping/root parents, leave comments in pending_before so the
                     // first key scalar can pick them up.
-                    //
-                    // For block mappings with a tag (e.g. `- !tag\n  key: val`), the
-                    // parser emits MappingStart at the first KEY line, not at the `!tag`
-                    // line. Use `mark.line() - 1` as the reference so blank-line counting
-                    // reflects the actual `- !tag` line where the item begins.
-                    let ref_line = if !is_flow && tag.is_some() && mark.line() > 0 {
-                        mark.line() - 1
-                    } else {
-                        mark.line()
-                    };
+                    // Container items are marked at their sequence dash.
+                    let ref_line = mark.line();
                     let blank_lines = self.count_blank_lines(ref_line);
                     let before = self.take_before(ref_line);
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
@@ -457,9 +464,10 @@ impl Builder {
                     }
                     // Update last_content_line to the container start so the first key
                     // inside this mapping doesn't see a spurious gap.
-                    self.last_content_line = Some(mark.line() - 1);
+                    self.last_content_line = Some(mark.line());
                 }
                 let mut mapping = YamlMapping::new();
+                mapping.meta.comment_inline = self.take_container_inline(mark.line());
                 mapping.style = if is_flow {
                     ContainerStyle::Flow
                 } else {
@@ -479,6 +487,7 @@ impl Builder {
                     mf.mapping.trailing_blank_lines = self.count_blank_lines(mark.line());
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
+                    self.last_content_is_block_end = mf.mapping.style == ContainerStyle::Block;
                     let anchor_name = mf.anchor_name.as_deref();
                     let node = YamlNode::Mapping(mf.mapping);
                     self.register_anchor(anchor_name, &node);
@@ -487,25 +496,22 @@ impl Builder {
             }
 
             Event::SequenceStart(anchor_name, tag, is_flow) => {
+                if self.stack.is_empty() && (anchor_name.is_some() || tag.is_some()) {
+                    self.last_content_line = Some(mark.line());
+                }
                 let is_seq_parent = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 if is_seq_parent {
-                    // Same adjustment as for MappingStart: when a block sequence with a
-                    // tag appears as a sequence item (`- !tag\n  - item`), the parser
-                    // emits SequenceStart at the first ITEM line, not the `- !tag` line.
-                    let ref_line = if !is_flow && tag.is_some() && mark.line() > 0 {
-                        mark.line() - 1
-                    } else {
-                        mark.line()
-                    };
+                    let ref_line = mark.line();
                     let blank_lines = self.count_blank_lines(ref_line);
                     let before = self.take_before(ref_line);
                     if let Some(Frame::Sequence(sf)) = self.stack.last_mut() {
                         sf.current_comment_before = before;
                         sf.current_blank_lines = blank_lines;
                     }
-                    self.last_content_line = Some(mark.line() - 1);
+                    self.last_content_line = Some(mark.line());
                 }
                 let mut seq = YamlSequence::new();
+                seq.meta.comment_inline = self.take_container_inline(mark.line());
                 seq.style = if is_flow {
                     ContainerStyle::Flow
                 } else {
@@ -526,6 +532,7 @@ impl Builder {
                     sf.seq.trailing_blank_lines = self.count_blank_lines(mark.line());
                     // Advance last_content_line so outer containers don't double-count.
                     self.last_content_line = Some(mark.line());
+                    self.last_content_is_block_end = sf.seq.style == ContainerStyle::Block;
                     let anchor_name = sf.anchor_name.as_deref();
                     let node = YamlNode::Sequence(sf.seq);
                     self.register_anchor(anchor_name, &node);
@@ -640,39 +647,43 @@ impl Builder {
                     // so they can be attached to the scalar itself.
                     Some(Frame::Sequence(_)) | None => true,
                 };
-                // yaml-rust2 reports empty plain scalars (implicit nulls) at
-                // the position of the next token, not where the node
-                // logically begins. Using that shifted mark for blank-line
-                // accounting produces phantom blanks for null sequence items
-                // and empty mapping keys, breaking round-trip idempotency.
+                // Empty plain scalars (implicit nulls) have no textual width.
+                // Do not infer spacing from their marker; for mapping keys and
+                // values it may still point at a following token.
                 let is_empty_plain = is_plain && value.is_empty();
-                let in_seq = matches!(self.stack.last(), Some(Frame::Sequence(_)));
                 let (blank_lines, comment_before) = if needs_context {
                     let blanks = if is_empty_plain {
                         0
                     } else {
                         self.count_blank_lines(node_line)
                     };
-                    // For null sequence items, the shifted scalar mark also
-                    // misclassifies comments on the dash line as before-comments
-                    // instead of inline. Promote any pending before-comment on
-                    // `node_line - 1` (the likely dash line) to inline via
-                    // `pending_inline`, which the insertion code below consumes.
-                    if is_empty_plain && in_seq && node_line > 0 {
-                        let dash_line = node_line - 1;
-                        if let Some(pos) = self
-                            .pending_before
-                            .iter()
-                            .position(|(l, _)| *l == dash_line)
-                        {
-                            let (_, text) = self.pending_before.remove(pos);
-                            self.pending_inline = Some(text);
-                        }
-                    }
                     (blanks, self.take_before(node_line))
                 } else {
                     (0, None)
                 };
+
+                // The scanner can collect a quoted/block scalar's trailing
+                // comment while producing that scalar event. Because comments
+                // are absorbed before the event is processed, it was initially
+                // classified as a before-comment against the preceding content.
+                // Block-scalar comments belong to the header line; their end
+                // marker may point at a following standalone comment.
+                let inline_line =
+                    if matches!(scalar_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+                        node_line
+                    } else {
+                        effective_scalar_end_line
+                    };
+                if let Some(pos) = self
+                    .pending_before
+                    .iter()
+                    .position(|(line, _)| *line == inline_line)
+                {
+                    let (_, text) = self.pending_before.remove(pos);
+                    if self.pending_inline.is_none() {
+                        self.pending_inline = Some(text);
+                    }
+                }
 
                 // Build the scalar node once; all four placement arms below consume or
                 // clone it. `scalar_tag` is cloned here because the mapping-key arm also
@@ -742,7 +753,13 @@ impl Builder {
                         sf.seq.items.push(node);
                     }
                 }
-                self.last_content_line = Some(effective_scalar_end_line);
+                self.last_content_line = Some(
+                    if matches!(scalar_style, ScalarStyle::Literal | ScalarStyle::Folded) {
+                        effective_scalar_end_line.saturating_sub(1).max(node_line)
+                    } else {
+                        effective_scalar_end_line
+                    },
+                );
 
                 // Register anchor after releasing the mutable borrow on self.stack.
                 if let Some(node) = anchor_node {
@@ -751,6 +768,7 @@ impl Builder {
             }
 
             Event::Alias(name) => {
+                self.last_content_line = Some(mark.line());
                 // Look up the anchor and share its storage via Rc — multiple
                 // aliases for the same anchor reference one underlying node.
                 let resolved = self
